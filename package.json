@@ -1,0 +1,19 @@
+{
+  "name": "legal-platform",
+  "version": "0.0.1",
+  "private": true,
+  "description": "法务AI平台 — 统一登录与权限管理 + 三端工作台",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:api": "cd api && npm run start:dev",
+    "dev:web": "cd web && npm run dev",
+    "build": "cd api && npm run build && cd ../web && npm run build",
+    "start": "cd api && npm run start:prod",
+    "prisma:migrate": "cd api && npx prisma migrate dev",
+    "prisma:seed": "cd api && npx ts-node prisma/seed.ts",
+    "setup": "cd api && npm install && cd ../web && npm install && cd .. && npm run prisma:migrate && npm run prisma:seed"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
