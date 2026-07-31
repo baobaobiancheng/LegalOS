@@ -1,0 +1,288 @@
+/* ═══════════════════════════════════════════════════
+   Apple Human Interface Guidelines 全局样式
+   ═══════════════════════════════════════════════════ */
+
+:root {
+  --blue: #0071e3;
+  --blue-hover: #0077ed;
+  --bg: #F5F5F7;
+  --text: #1d1d1f;
+  --text-secondary: #86868b;
+  --text-tertiary: #aeaeb2;
+  --card-bg: rgba(255, 255, 255, 0.80);
+  --card-border: rgba(0, 0, 0, 0.06);
+  --input-bg: #F2F2F7;
+  --btn-secondary: #E5E5EA;
+  --radius: 24px;
+  --radius-sm: 16px;
+  --radius-xs: 12px;
+  --gap: 28px;
+  --max-w: 1120px;
+  --spring: cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  color: var(--text);
+  background: var(--bg);
+  overflow-x: hidden;
+}
+
+/* ── Aurora 动态弥散背景 ── */
+.aurora {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.aurora .orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(100px);
+  opacity: 0.5;
+  animation: orb-float 20s ease-in-out infinite;
+}
+.aurora .orb-1 {
+  width: 60vw; height: 60vw;
+  top: -20vh; left: -15vw;
+  background: radial-gradient(circle, rgba(162,210,255,0.45), transparent 70%);
+  animation-delay: 0s;
+}
+.aurora .orb-2 {
+  width: 50vw; height: 50vw;
+  bottom: -15vh; right: -10vw;
+  background: radial-gradient(circle, rgba(200,180,255,0.35), transparent 70%);
+  animation-delay: -7s;
+}
+.aurora .orb-3 {
+  width: 40vw; height: 40vw;
+  top: 40vh; left: 40vw;
+  background: radial-gradient(circle, rgba(162,210,255,0.25), transparent 70%);
+  animation-delay: -14s;
+}
+
+@keyframes orb-float {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  25% { transform: translate(30px, -20px) scale(1.05); }
+  50% { transform: translate(-15px, 25px) scale(0.95); }
+  75% { transform: translate(-25px, -15px) scale(1.03); }
+}
+
+/* ── 毛玻璃卡片 ── */
+.glass-card {
+  background: var(--card-bg);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+}
+
+/* ── 按钮体系 ── */
+.btn-primary {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 12px 28px;
+  border: none; border-radius: 980px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 15px; font-weight: 590; letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: all 0.35s var(--spring);
+}
+.btn-primary:hover {
+  background: var(--blue-hover);
+  transform: scale(1.02);
+  box-shadow: 0 8px 24px rgba(0,113,227,0.30);
+}
+.btn-primary:active { transform: scale(0.98); }
+
+.btn-secondary {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 10px 20px;
+  border: none; border-radius: 980px;
+  background: var(--btn-secondary);
+  color: var(--text);
+  font-size: 14px; font-weight: 500; letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: all 0.35s var(--spring);
+}
+.btn-secondary:hover {
+  background: #DCDCE0;
+  transform: scale(1.02);
+}
+
+/* ── 输入框 ── */
+.input-apple {
+  width: 100%;
+  padding: 14px 16px;
+  border: none; border-radius: var(--radius-xs);
+  background: var(--input-bg);
+  color: var(--text);
+  font-family: inherit; font-size: 15px; letter-spacing: -0.01em;
+  outline: none;
+  transition: all 0.3s var(--spring);
+}
+.input-apple:focus {
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(0,113,227,0.12);
+}
+.input-apple::placeholder { color: var(--text-tertiary); }
+
+/* ── 文本层级 ── */
+.text-h1 {
+  font-size: 34px; font-weight: 700; letter-spacing: -0.02em;
+  color: var(--text); margin: 0;
+}
+.text-h2 {
+  font-size: 22px; font-weight: 600; letter-spacing: -0.01em;
+  color: var(--text); margin: 0;
+}
+.text-body {
+  font-size: 15px; font-weight: 400; line-height: 1.6;
+  color: var(--text-secondary); margin: 0;
+}
+.text-caption {
+  font-size: 12px; font-weight: 400;
+  color: var(--text-tertiary); margin: 0;
+}
+
+/* ── 入场动画 ── */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-in {
+  animation: fade-in-up 0.65s var(--spring) both;
+}
+.animate-in:nth-child(1) { animation-delay: 0.05s; }
+.animate-in:nth-child(2) { animation-delay: 0.12s; }
+.animate-in:nth-child(3) { animation-delay: 0.19s; }
+.animate-in:nth-child(4) { animation-delay: 0.26s; }
+
+/* ── 侧栏毛玻璃 ── */
+.sidebar-glass {
+  background: rgba(250,250,252,0.82);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border-right: 1px solid rgba(0,0,0,0.06);
+}
+
+/* ── 顶栏 ── */
+.topbar-glass {
+  background: rgba(255,255,255,0.70);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+
+/* ── Layout shell ── */
+.app-shell {
+  display: flex; min-height: 100vh;
+  position: relative; z-index: 1;
+}
+.app-sidebar {
+  position: fixed; inset: 0 auto 0 0; z-index: 10;
+  display: flex; flex-direction: column;
+  width: 252px; padding: 24px 14px 16px;
+  overflow-y: auto;
+}
+.app-main {
+  flex: 1; margin-left: 252px;
+  display: flex; flex-direction: column;
+}
+.app-topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 56px; padding: 0 32px; flex-shrink: 0;
+}
+.app-content {
+  flex: 1; padding: 32px;
+  max-width: var(--max-w); width: 100%;
+}
+
+/* ── 侧栏导航 ── */
+.nav-section { margin-top: 24px; }
+.nav-section:first-child { margin-top: 0; }
+.nav-label {
+  margin: 0 10px 6px;
+  font-size: 10px; font-weight: 650; letter-spacing: 0.05em;
+  color: var(--text-tertiary); text-transform: uppercase;
+}
+.nav-btn {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; min-height: 36px; padding: 0 10px;
+  border: none; border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text); font-family: inherit; font-size: 13px; font-weight: 500;
+  letter-spacing: -0.01em; text-align: left; cursor: pointer;
+  transition: all 0.3s var(--spring);
+}
+.nav-btn:hover, .nav-btn.active {
+  background: rgba(0,113,227,0.08);
+  color: var(--blue);
+}
+.nav-btn:disabled {
+  opacity: 0.35; cursor: not-allowed;
+}
+
+/* ── 品牌 ── */
+.app-brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 10px 20px;
+  border: none; background: none;
+  color: var(--text); text-align: left; cursor: pointer;
+}
+.app-brand .brand-icon {
+  display: grid; width: 32px; height: 32px; place-items: center;
+  border-radius: var(--radius-xs);
+  background: linear-gradient(135deg, rgba(0,113,227,0.12), rgba(0,113,227,0.06));
+  font-size: 17px;
+}
+.app-brand .brand-text b { display: block; font-size: 14px; font-weight: 700; letter-spacing: -0.01em; }
+.app-brand .brand-text small { display: block; margin-top: 2px; font-size: 10px; font-weight: 400; color: var(--text-tertiary); }
+
+/* ── 用户区 ── */
+.sidebar-footer {
+  margin-top: auto; padding-top: 12px;
+  border-top: 1px solid rgba(0,0,0,0.06);
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; font-weight: 500; color: var(--text-secondary);
+}
+.sidebar-footer .logout-link {
+  border: none; background: none; color: #FF3B30;
+  font-family: inherit; font-size: 11px; font-weight: 500; cursor: pointer;
+  padding: 4px 8px; border-radius: 8px;
+  transition: all 0.3s var(--spring);
+}
+.sidebar-footer .logout-link:hover { background: rgba(255,59,48,0.08); }
+
+/* ── 占位页 ── */
+.placeholder-page {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 80px 32px; text-align: center; gap: 12px;
+}
+.placeholder-page .ph-icon {
+  width: 64px; height: 64px; border-radius: 20px;
+  background: linear-gradient(135deg, rgba(0,113,227,0.1), rgba(162,210,255,0.2));
+  display: grid; place-items: center; font-size: 28px;
+  margin-bottom: 8px;
+}
+
+/* ── 响应式 ── */
+@media (max-width: 840px) {
+  .app-sidebar {
+    position: sticky; top: 0; width: 100%; height: auto;
+    flex-direction: row; align-items: center; padding: 12px 16px;
+    overflow: hidden;
+  }
+  .app-sidebar .nav-section, .app-sidebar .sidebar-footer,
+  .app-sidebar .app-brand .brand-text { display: none; }
+  .app-main { margin-left: 0; }
+  .app-content { padding: 20px 16px; }
+}
