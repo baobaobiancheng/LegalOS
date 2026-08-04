@@ -36,3 +36,99 @@ export type ApiError = {
   statusCode: number
   lockedUntil?: string
 }
+
+// ── 工单类型 ──
+export type ProjectKind = 'consult' | 'contract' | 'research' | 'draft'
+export type ProjectStatus = '分析中' | '待处理' | '待复核' | '已回传' | '已取消'
+export type RiskLevel = 'P0' | 'P1' | 'P2'
+
+export type ProjectListItem = {
+  id: string
+  kind: ProjectKind
+  title: string
+  status: ProjectStatus
+  risk: RiskLevel
+  route: string
+  isFailed: boolean
+  creator: UserBrief
+  owner: UserBrief
+  legalBp?: UserBrief
+  requesterName?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type ProjectDetail = ProjectListItem & {
+  skillId?: string
+  skillName?: string
+  model?: string
+  result?: string
+  crmReference?: string
+  crmCustomer?: string
+  contractTemplateSlug?: string
+  files?: ContractFile[]
+  messages: MessageDto[]
+  events: EventDto[]
+}
+
+export type UserBrief = {
+  id: string
+  username: string
+  displayName: string
+  role: Role
+}
+
+export type MessageDto = {
+  id: string
+  role: 'user' | 'assistant' | 'legal' | 'event'
+  text: string
+  label?: string
+  createdAt: string
+}
+
+export type EventDto = {
+  id: string
+  text: string
+  createdAt: string
+}
+
+export type ProjectListResponse = {
+  items: ProjectListItem[]
+  groups: Record<string, ProjectListItem[]>
+  total: number
+  page: number
+  size: number
+}
+
+// ── 合同协作类型 ──
+import type { ContractDocStyle } from './utils/markdown-to-docx'
+
+export type ContractElementField = {
+  key: string
+  label: string
+  type: 'text' | 'textarea'
+  required?: boolean
+  placeholder?: string
+  /** 表单分组：basic=基本信息（默认显示）/ details=详细信息（可折叠） */
+  group?: 'basic' | 'details'
+}
+
+export type ContractTemplate = {
+  slug: string
+  name: string
+  category: string
+  description?: string
+  /** 导出样式（每模板独立：字体/字号/页边距/行距） */
+  style?: ContractDocStyle
+  /** 合同要素表单 schema（前端动态渲染） */
+  elementsSchema?: ContractElementField[]
+}
+
+export type ContractFile = {
+  id: string
+  kind: 'revised' | 'final'
+  originalName: string
+  size: number
+  createdAt: string
+  uploader?: { displayName: string }
+}

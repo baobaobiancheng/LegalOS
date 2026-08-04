@@ -16,7 +16,7 @@ const router = createRouter({
     {
       path: '/403',
       name: 'forbidden',
-      component: () => import('../views/errors/403View.vue'),
+      component: () => import('../views/errors/ForbiddenView.vue'),
     },
 
     // 法务端
@@ -26,6 +26,12 @@ const router = createRouter({
       meta: { roles: LEGAL_ROLES, title: '工单管理' },
       component: () => import('../views/legal/ProjectsView.vue'),
     },
+    {
+      path: '/legal/projects/:id',
+      name: 'legal-project-detail',
+      meta: { roles: LEGAL_ROLES, title: '工单详情' },
+      component: () => import('../views/legal/ProjectDetailView.vue'),
+    },
 
     // 业务端
     {
@@ -33,6 +39,24 @@ const router = createRouter({
       name: 'business-consult',
       meta: { roles: [Role.BUSINESS], title: '法律咨询' },
       component: () => import('../views/business/ConsultView.vue'),
+    },
+    {
+      path: '/business/contract',
+      name: 'business-contract',
+      meta: { roles: [Role.BUSINESS], title: '合同助手' },
+      component: () => import('../views/business/ContractView.vue'),
+    },
+    {
+      path: '/business/records',
+      name: 'business-records',
+      meta: { roles: [Role.BUSINESS], title: '我的记录' },
+      component: () => import('../views/business/RecordsView.vue'),
+    },
+    {
+      path: '/business/records/:id',
+      name: 'business-record-detail',
+      meta: { roles: [Role.BUSINESS], title: '咨询详情' },
+      component: () => import('../views/business/RecordDetailView.vue'),
     },
 
     // 管理端

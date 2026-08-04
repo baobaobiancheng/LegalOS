@@ -1,0 +1,59 @@
+<script setup lang="ts">
+import { ref } from 'vue'
+import { useFileUpload } from '../composables/useFileUpload'
+import type { AttachedFile } from '../composables/useFileUpload'
+
+const props = defineProps<{
+  disabled?: boolean
+  placeholder?: string
+}>()
+
+const emit = defineEmits<{
+  send: [text: string, files: AttachedFile[]]
+}>()
+
+const input = ref('')
+const { files, fileInput, triggerFilePick, removeFile, formatSize, handleFiles, clearFiles } = useFileUpload()
+
+const canSend = () => (input.value.trim().length >= 10 || files.value.length > 0) && !props.disabled
+
+const handleSend = () => {
+  if (!canSend()) return
+  emit('send', input.value.trim(), [...files.value])
+  input.value = ''
+  clearFiles()
+}
+</script>
+
+<template>
+  <div class="doubao-input-area">
+    <div v-if="files.length" class="file-preview-bar">
+      <div v-for="f in files" :key="f.id" class="file-chip">
+        <span class="fc-icon">📄</span>
+        <span class="fc-name">{{ f.name }}</span>
+        <span class="fc-size">{{ formatSize(f.size) }}</span>
+        <button class="fc-remove" @click="removeFile(f.id)">×</button>
+      </div>
+    </div>
+
+    <div class="input-container">
+      <button class="attach-btn" @click="triggerFilePick" title="上传文件">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+      </button>
+      <textarea
+        v-model="input"
+        :placeholder="placeholder || '描述您的法律问题，可上传合同、协议等文件…'"
+        rows="1"
+        :disabled="disabled"
+        @keydown.enter.exact.prevent="handleSend"
+      />
+      <button class="send-btn" @click="handleSend" :disabled="!canSend()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+      </button>
+    </div>
+
+    <input ref="fileInput" type="file" multiple hidden
+      accept=".txt,.md,.json,.docx,.pdf,.xlsx,.pptx,.doc,.xls,.ppt,.csv"
+      @change="handleFiles" />
+  </div>
+</template>

@@ -14,6 +14,27 @@ enum Role {
   admin
 }
 
+enum ProjectKind {
+  consult
+  contract
+  research
+  draft
+}
+
+enum ProjectStatus {
+  分析中
+  待处理
+  待复核
+  已回传
+  已取消
+}
+
+enum RiskLevel {
+  P0
+  P1
+  P2
+}
+
 model User {
   id             String    @id @default(uuid())
   username       String    @unique
@@ -26,10 +47,137 @@ model User {
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  loginAudits   LoginAudit[]
-  refreshTokens RefreshToken[]
+  loginAudits    LoginAudit[]
+  refreshTokens  RefreshToken[]
+  createdProjects Project[]      @relation("CreatedProjects")
+  ownedProjects   Project[]      @relation("OwnedProjects")
+  legalBpProjects Project[]      @relation("LegalBpProjects")
+  contractFiles   ContractFile[]
 
   @@map("users")
+}
+
+model Project {
+  id                  String        @id @default(uuid())
+  kind                ProjectKind
+  title               String        @db.VarChar(256)
+  status              ProjectStatus @default(分析中)
+  risk                RiskLevel     @default(P2)
+  route               String        @default("legalbp") @db.VarChar(32)  // llm | legalbp
+  isFailed            Boolean       @default(false) @map("is_failed")
+  skillId             String?       @map("skill_id") @db.VarChar(64)
+  skillName           String?       @map("skill_name") @db.VarChar(128)
+  model               String?       @db.VarChar(128)
+  deliveryMode        String?       @map("delivery_mode") @db.VarChar(32)
+  result              String?       @db.Text
+
+  // 创建者 & 处理人
+  creator             User          @relation("CreatedProjects", fields: [creatorId], references: [id])
+  creatorId           String        @map("creator_id")
+  owner              User          @relation("OwnedProjects", fields: [ownerId], references: [id])
+  ownerId            String        @map("owner_id")
+  legalBp            User?         @relation("LegalBpProjects", fields: [legalBpId], references: [id])
+  legalBpId          String?       @map("legal_bp_id")
+
+  // 提出人信息
+  requesterName       String?       @map("requester_name") @db.VarChar(128)
+  requesterDepartment String?       @map("requester_department") @db.VarChar(128)
+
+  // CRM 上下文（Adapter 占位）
+  crmReference        String?       @map("crm_reference") @db.VarChar(256)
+  crmCustomer         String?       @map("crm_customer") @db.VarChar(256)
+  crmOpportunity      String?       @map("crm_opportunity") @db.VarChar(256)
+
+  // 钉钉（Adapter 占位）
+  dingtalkChatId      String?       @map("dingtalk_chat_id") @db.VarChar(256)
+  dingtalkMembers     String?       @map("dingtalk_members") @db.VarChar(1024)
+
+  // 周报预留
+  weeklyReportLabel   String?       @map("weekly_report_label") @db.VarChar(128)
+
+  // 合同模板溯源（合同协作模块）
+  contractTemplateSlug String?      @map("contract_template_slug") @db.VarChar(64)
+
+  // 类型特有扩展字段（2026-08-03 架构决策）：research/draft 等新类型的冷字段进 JSON，
+  // 避免每类型加列导致表膨胀。频繁过滤的字段仍用独立列。
+  extra               Json?
+
+  createdAt           DateTime      @default(now()) @map("created_at")
+  updatedAt           DateTime      @updatedAt @map("updated_at")
+
+  messages            ProjectMessage[]
+  events              ProjectEvent[]
+  files               ContractFile[]
+
+  @@index([creatorId])
+  @@index([ownerId])
+  @@index([status])
+  @@index([kind])
+  @@map("projects")
+}
+
+model ProjectMessage {
+  id        String   @id @default(uuid())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String   @map("project_id")
+  role      String   @db.VarChar(32)  // user | assistant | legal | event
+  text      String   @db.Text
+  label     String?  @db.VarChar(256)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([projectId])
+  @@map("project_messages")
+}
+
+model ProjectEvent {
+  id        String   @id @default(uuid())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String   @map("project_id")
+  text      String   @db.Text  // "14:32 · 工单已创建并通知法务BP"
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([projectId])
+  @@map("project_events")
+}
+
+// 合同模板（3 个内置模板种子数据；P1 模板管理直接复用此表）
+model ContractTemplate {
+  id          String   @id @default(uuid())
+  slug        String   @unique @db.VarChar(64)  // ai-service | nda-institution | tech-dev
+  name        String   @db.VarChar(128)         // 百融AI服务协议 | 保密协议V4.5 | 技术开发合同
+  category    String   @db.VarChar(32)          // AI服务 | 保密 | 技术开发
+  description String?  @db.VarChar(512)         // 适用场景说明
+  prompt      String   @db.Text                 // 生成 prompt 模板（章节框架 + 要素占位符）
+
+  // 模板升级（2026-08-03）：每模板独立导出样式 + 要素表单 + 源文件
+  style          Json?    // 导出样式参数（字体/字号/标题/页边距/行距，每模板独立）
+  elementsSchema Json?    // 合同要素表单 schema（字段定义数组，前端动态渲染）
+  sourceFile     String?  @map("source_file") @db.VarChar(256)  // 模板源文件（storage/contract-templates/{slug}/ 内）
+
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("contract_templates")
+}
+
+// 合同附件（本地磁盘文件，DB 只存元数据）
+// kind 仅 revised | final：草稿走前端 markdown→docx（DownloadMenu），不落盘
+model ContractFile {
+  id           String   @id @default(uuid())
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId    String   @map("project_id")
+  kind         String   @db.VarChar(32)  // revised | final
+  originalName String   @map("original_name") @db.VarChar(256)
+  storedName   String   @map("stored_name") @db.VarChar(256)  // uuid.ext，磁盘文件名
+  mimeType     String?  @map("mime_type") @db.VarChar(128)
+  size         Int
+  uploadedBy   String   @map("uploaded_by")                  // FK → users.id
+  uploader     User     @relation(fields: [uploadedBy], references: [id])
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([projectId])
+  @@map("contract_files")
 }
 
 model RefreshToken {

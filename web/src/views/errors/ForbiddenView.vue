@@ -18,7 +18,7 @@ const router = useRouter()
 const home = HOME_BY_ROLE[useAuthStore().currentRole as Role] || '/login'
 </script>
 
-<script lang="ts">export default { name: '403View' }</script>
+<script lang="ts">export default { name: 'ForbiddenView' }</script>
 
 <style scoped>
 .error-scene {

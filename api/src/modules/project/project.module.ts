@@ -1,0 +1,26 @@
+import { Module } from '@nestjs/common';
+import { ProjectController } from './project.controller';
+import { ProjectService } from './project.service';
+import { PrismaModule } from '../../prisma/prisma.module';
+import { CodexService } from '../../common/services/codex.service';
+import { LLMRiskService } from '../../common/services/llm-risk.service';
+import { MockCrmAdapter } from './adapters/mock-crm.adapter';
+import { MockDingTalkAdapter } from './adapters/mock-dingtalk.adapter';
+import {
+  CRM_ADAPTER,
+  DINGTALK_ADAPTER,
+} from './adapters/adapter.interfaces';
+
+@Module({
+  imports: [PrismaModule],
+  controllers: [ProjectController],
+  providers: [
+    ProjectService,
+    CodexService,
+    LLMRiskService,
+    { provide: CRM_ADAPTER, useClass: MockCrmAdapter },
+    { provide: DINGTALK_ADAPTER, useClass: MockDingTalkAdapter },
+  ],
+  exports: [ProjectService],
+})
+export class ProjectModule {}
