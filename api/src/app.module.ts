@@ -7,6 +7,8 @@ import { RolesGuard } from './common/guards/roles.guard';
 import { AuthModule } from './modules/auth/auth.module';
 import { ProjectModule } from './modules/project/project.module';
 import { ContractModule } from './modules/contract/contract.module';
+import { SkillModule } from './modules/skill/skill.module';
+import { MembersModule } from './modules/members/members.module';
 import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
@@ -17,6 +19,8 @@ import { PrismaModule } from './prisma/prisma.module';
     AuthModule,
     ProjectModule,
     ContractModule,
+    SkillModule,
+    MembersModule,
   ],
   providers: [
     // 顺序即执行顺序：限流 → 认证 → 授权
