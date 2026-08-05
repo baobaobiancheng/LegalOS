@@ -21,6 +21,7 @@ import { randomUUID } from 'crypto';
 import * as mammoth from 'mammoth';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CodexService } from '../../common/services/codex.service';
+import { injectSkillSection } from '../../common/utils/skill-prompt';
 import { DINGTALK_ADAPTER, DingTalkAdapter } from '../project/adapters/adapter.interfaces';
 import { ContractTemplateService } from './contract-template.service';
 import { CreateContractDto, ContractElementsDto } from './dto/create-contract.dto';
@@ -35,9 +36,10 @@ import { Project } from '@prisma/client';
  *     → 流结束: assistant 消息落库 + status 分析中→待复核
  *   submitReview（business 发起法务审阅）
  *     → 原子更新 WHERE route=llm → legalbp/待复核
- *   reviewContract（legal AI 风险审查）
+ *   reviewContract（legal AI 风险审查，2026-08-04 起可选技能）
  *     → 取最新合同文本（修订版 mammoth 抽取优先，否则草稿）
- *     → executeStream(审查 prompt) → SSE → assistant 消息落库
+ *     → 技能解析（可选 skillId，实时 prompt，审查时选择）→ 持久化 skillId/skillName
+ *     → executeStream(审查 prompt + 技能段) → SSE → assistant 消息落库
  *   uploadFile / downloadFile（附件，diskStorage 落盘 + ownership 校验）
  */
 @Injectable()
@@ -189,11 +191,43 @@ export class ContractService {
   async reviewContract(
     projectId: string,
     userId: string,
+    skillId?: string,
   ): Promise<{ projectId: string; stream: ChildProcess }> {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('工单不存在');
     if (project.kind !== 'contract') throw new BadRequestException('非合同工单');
     if (project.status !== '待复核') throw new BadRequestException('当前状态不可发起审查');
+
+    // 技能解析（2026-08-04 技能库）：合同审查的技能选择发生在审查时 → 读实时 prompt（工程决策 R-2）
+    // 可用范围 = 公有 + 自己的私有（与 usable 列表同语义）
+    let skillName: string | null = null;
+    let skillPrompt: string | null = null;
+    if (skillId) {
+      const skill = await this.prisma.skill
+        .findFirst({
+          where: {
+            id: skillId,
+            isActive: true,
+            OR: [{ visibility: 'public' }, { creatorId: userId, visibility: 'private' }],
+          },
+        })
+        .catch(() => null);
+      if (skill) {
+        skillName = skill.name;
+        skillPrompt = skill.prompt;
+      } else {
+        // 解析失败（不存在/停用/无权）→ 按无技能审查 + 日志（工程决策 OV#2 兜底语义）
+        this.logger.warn(`审查技能 skillId=${skillId} 解析失败，按无技能审查`);
+      }
+    }
+
+    // 审查所用技能持久化到工单（工程决策 OV#2：工单详情可溯源，成功标准 6 对合同工单可验证）
+    if (skillName) {
+      await this.prisma.project.update({
+        where: { id: projectId },
+        data: { skillId: skillId ?? null, skillName },
+      });
+    }
 
     // 最新合同文本：assistant 消息按时间倒序取 1 条
     // （上传修订版时 mammoth 抽取文本以 assistant/label=修订版文本 入消息，比草稿新）
@@ -203,7 +237,7 @@ export class ContractService {
     });
     if (!latest?.text?.trim()) throw new BadRequestException('未找到可审查的合同文本');
 
-    const prompt = this.buildReviewPrompt(latest.text);
+    const prompt = this.buildReviewPrompt(latest.text, skillName ?? undefined, skillPrompt ?? undefined);
     const stream = this.codexService.executeStream(prompt, {
       timeout: 600_000,
       sessionId: projectId,
@@ -416,9 +450,9 @@ export class ContractService {
     return filled;
   }
 
-  /** 法务端 AI 风险审查 prompt */
-  private buildReviewPrompt(text: string): string {
-    return `你是企业合同审查专家。审查下方合同内容，逐条识别法律风险。
+  /** 法务端 AI 风险审查 prompt（技能指令段注入顶部，工程决策 #3/#5） */
+  private buildReviewPrompt(text: string, skillName?: string, skillPrompt?: string): string {
+    const base = `你是企业合同审查专家。审查下方合同内容，逐条识别法律风险。
 
 ## 输出格式（每条风险独立成块）
 ### 第 N 条 · {条款标题}
@@ -440,6 +474,8 @@ export class ContractService {
 
 ## 合同内容
 ${text}`;
+    // 技能段由共享 util 注入（含边界标记剥除，同样应用于合同审查路径——工程决策 OV#1 修订）
+    return injectSkillSection(base, skillName ?? '', skillPrompt ?? '');
   }
 
   private tryCleanup(path?: string) {

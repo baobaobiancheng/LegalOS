@@ -80,15 +80,16 @@ export class ContractController {
     return this.contractService.submitReview(id, userId);
   }
 
-  /** legal AI 风险审查 — SSE 流式 */
+  /** legal AI 风险审查 — SSE 流式（可选技能 skillId，2026-08-04 技能库） */
   @Post('contracts/:id/review')
   @Roles(Role.legal_bp, Role.legal_lead)
   async review(
     @Param('id') id: string,
+    @Body('skillId') skillId: string | undefined,
     @CurrentUser('id') userId: string,
     @Res() res: Response,
   ) {
-    const result = await this.contractService.reviewContract(id, userId);
+    const result = await this.contractService.reviewContract(id, userId, skillId);
     if (result.stream) {
       sendSSE(res, result.stream, { projectId: result.projectId });
     } else {
