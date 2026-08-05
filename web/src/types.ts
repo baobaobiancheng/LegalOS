@@ -132,3 +132,45 @@ export type ContractFile = {
   createdAt: string
   uploader?: { displayName: string }
 }
+
+// ── 技能库类型（2026-08-04 技能库模块） ──
+export type SkillVisibility = 'private' | 'pending' | 'public'
+
+export type Skill = {
+  id: string
+  slug: string
+  name: string
+  group: string
+  description: string
+  /** 列表接口对 business 剥离（后端保证）；法务详情可见 */
+  prompt?: string
+  visibility: SkillVisibility
+  isActive: boolean
+  creator?: UserBrief
+  approver?: UserBrief
+  approvedAt?: string
+  /** append-only 审核记录（我的技能列表与法务详情可见）：[{action, reviewerId, reason?, at}] */
+  reviewLog?: { action: 'approve' | 'reject'; reviewerId: string; reason?: string; at: string }[]
+  createdAt: string
+  updatedAt: string
+}
+
+/** 最近一次驳回原因（审核历史可查，设计文档 §2） */
+export const lastRejectReason = (s: Skill): string | undefined =>
+  [...(s.reviewLog || [])].reverse().find((l) => l.action === 'reject')?.reason
+
+/** 技能组白名单（与后端 skill.constants 同源） */
+export const SKILL_GROUPS = [
+  '合规法务',
+  '合同与交易',
+  '劳动法务',
+  '争议法务',
+  '法律研究',
+  '知识运营',
+] as const
+
+/** prompt 长度上限（与后端 skill.constants SKILL_PROMPT_MAX_LENGTH 同源） */
+export const SKILL_PROMPT_MAX_LENGTH = 4000
+
+/** 兜底技能（不落库：选中提交 skillId=null，后端不注入） */
+export const GENERAL_SKILL = { slug: 'general', name: '通用法务咨询' }

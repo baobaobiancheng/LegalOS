@@ -77,7 +77,10 @@ button:disabled, a.disabled { cursor: not-allowed; }
 .aurora .orb {
   position: absolute;
   border-radius: 50%;
-  filter: blur(100px);
+  /* 性能修复（2026-08-05）：去掉 filter: blur(100px) —— radial-gradient 边缘已柔和，
+     blur 在 40-60vw 巨型元素上每帧重采样导致整屏重绘卡顿（记录页滚动明显）。
+     will-change: transform 把动画提升到合成器线程（transform 是合成器属性，不触发重绘） */
+  will-change: transform;
   opacity: 0.5;
   animation: orb-float 20s ease-in-out infinite;
 }
@@ -107,11 +110,13 @@ button:disabled, a.disabled { cursor: not-allowed; }
   75% { transform: translate(-25px, -15px) scale(1.03); }
 }
 
-/* ── 毛玻璃卡片 ── */
+/* ── 毛玻璃卡片 ──
+   性能修复（2026-08-05）：滚动容器内的 backdrop-filter 每帧重采样背景（Chrome 卡顿模式），
+   blur 20→10px 降低重采样成本；滚动列表内的卡片改用半透明白（glass-card 仅用于非滚动区域） */
 .glass-card {
   background: var(--card-bg);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(10px) saturate(150%);
+  -webkit-backdrop-filter: blur(10px) saturate(150%);
   border: 1px solid var(--card-border);
   border-radius: var(--radius);
 }
@@ -249,16 +254,27 @@ button:disabled, a.disabled { cursor: not-allowed; }
 /* ── 对话页布局（ConsultView / RecordDetailView 共享，全局定义：BusinessSidebarLayout 渲染的容器收不到页面 scoped 样式）── */
 .chat-content {
   display: flex; flex-direction: column;
-  max-width: 960px; width: 100%;
+  max-width: none; width: 100%;
+  /* 抵消 .app-content 的 32px padding：滚动容器铺满窗口（滚动条贴右缘），内容内部限宽居中 */
+  margin: -32px -32px 0;
   padding: 0;
   height: calc(100vh - 56px); /* 顶栏 56px，消息区滚动 + 输入框吸附底部 */
+  overflow: hidden;
 }
 .chat-content .msg-scroll {
   flex: 1; overflow-y: auto;
   padding: 24px 32px 8px;
 }
+/* 消息内容限宽居中（滚动条贴边，内容保持 860px 阅读宽度） */
+.chat-content .msg-thread {
+  max-width: 860px; margin: 0 auto;
+}
 .chat-content .doubao-input-area {
   flex-shrink: 0;
+}
+/* 输入框限宽居中（与消息内容同宽） */
+.chat-content .doubao-input-area .input-container {
+  max-width: 860px; margin: 0 auto;
 }
 
 /* ── 合同助手页布局（ContractView，BusinessSidebarLayout 渲染的容器收不到页面 scoped 样式）── */
@@ -419,6 +435,9 @@ button:disabled, a.disabled { cursor: not-allowed; }
   border-left: 4px solid transparent;
   cursor: pointer;
   transition: all 0.35s var(--spring);
+  /* 性能修复（2026-08-05）：滚动列表内禁用 backdrop-filter（同 record-card，滚动卡顿源） */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .project-card:hover {
   transform: translateX(6px);
@@ -460,6 +479,14 @@ button:disabled, a.disabled { cursor: not-allowed; }
 .status-待复核 { background: rgba(255,149,0,0.12); color: #C46200; }
 .status-已回传 { background: rgba(52,199,89,0.12); color: #0E7A3C; }
 .status-已取消 { background: rgba(142,142,147,0.14); color: #5A5A5E; }
+
+/* 工单详情技能名（2026-08-04 技能库模块，读 Project.skillName 快照） */
+.skill-chip {
+  display: inline-flex; align-items: center;
+  padding: 4px 12px; border-radius: 12px;
+  font-size: 11px; font-weight: 600; letter-spacing: -0.01em;
+  background: rgba(88,86,214,0.12); color: #5E5CE6;
+}
 
 /* ── 消息气泡体系 ── */
 .msg-thread { display: flex; flex-direction: column; gap: 6px; padding: 4px 0; }

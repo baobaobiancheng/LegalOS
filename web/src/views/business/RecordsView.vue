@@ -203,6 +203,10 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
   display: flex; align-items: center; gap: 16px;
   padding: 16px 20px; border-radius: var(--radius-sm);
   cursor: pointer; transition: all 0.3s var(--spring);
+  /* 性能修复（2026-08-05）：滚动列表内禁用 backdrop-filter（滚动时每帧重采样背景 → 明显卡顿）；
+     背景已是半透明白 rgba(255,255,255,0.80)，视觉近似毛玻璃 */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .record-card:hover {
   transform: translateX(4px);

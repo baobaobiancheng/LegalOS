@@ -18,7 +18,7 @@
           <span class="nav-ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
           法规检索
         </button>
-        <button class="nav-btn" disabled>
+        <button class="nav-btn" @click="router.push('/legal/skills')">
           <span class="nav-ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></span>
           技能库
         </button>
@@ -47,10 +47,8 @@
           <small class="tb-path">法务 Legal OS</small>
           <strong class="tb-title">工单管理</strong>
         </div>
-        <div class="tb-right">
-          <span v-if="loading" class="tb-status muted">加载中…</span>
-          <span v-else class="tb-status ok">就绪</span>
-        </div>
+        <!-- 2026-08-05：右上角状态徽章（就绪/数量）无信息量，已删除 -->
+
       </header>
 
       <div class="app-content animate-in">
@@ -192,10 +190,6 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
 .tb-path { font-size: 11px; color: var(--text-tertiary); font-weight: 590; }
 .tb-title { font-size: 14px; font-weight: 650; color: var(--text); letter-spacing: -0.01em; }
 .tb-right { display: flex; align-items: center; }
-.tb-status { font-size: 11px; font-weight: 590; }
-.tb-status.ok { color: #34C759; }
-.tb-status.muted { color: var(--text-tertiary); }
-
 /* ── 统计概览 ── */
 .stats-row {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;

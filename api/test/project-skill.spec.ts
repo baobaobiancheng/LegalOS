@@ -1,0 +1,102 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { ProjectService } from '../src/modules/project/project.service';
+
+/**
+ * 工单创建时的技能解析覆盖/快照/兜底（工程评审决策 OV#2）：
+ * - 客户端 skillId/skillName 仅参考，服务端解析覆盖（防伪造与快照分歧）
+ * - prompt 快照入 extra.skillPrompt（在途多轮对话稳定）
+ * - 解析失败 → 按无技能处理 + 工单事件提示
+ */
+
+const mockProject = (over: any = {}) => ({
+  id: 'p-1',
+  kind: 'consult',
+  route: 'legalbp',
+  ...over,
+});
+
+const mockSkill = {
+  id: 'sk-1',
+  slug: 'data-compliance',
+  name: '数据合规评估',
+  prompt: '你是数据合规专家。',
+};
+
+describe('ProjectService.create 技能解析', () => {
+  let service: ProjectService;
+  let prisma: any;
+  let risk: any;
+  let codex: any;
+  let crm: any;
+  let dingtalk: any;
+
+  beforeEach(() => {
+    prisma = {
+      skill: { findFirst: vi.fn() },
+      project: {
+        create: vi.fn(),
+        update: vi.fn(),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }), // 原子认领（/review 2026-08-05）
+        findUnique: vi.fn(),
+      },
+      projectMessage: { create: vi.fn() },
+      projectEvent: { create: vi.fn() },
+      // 2026-08-05 钉钉拉群：BP 匹配（无映射 + 无兜底负责人 → 不指派）
+      bpDomainMap: { findMany: vi.fn().mockResolvedValue([]) },
+      user: { findUnique: vi.fn().mockResolvedValue(undefined), findFirst: vi.fn().mockResolvedValue(null) },
+    };
+    risk = { assess: vi.fn().mockResolvedValue({ risk: 'P1', route: 'legalbp', domain: null }) }; // legalbp 避免触发 AI
+    codex = { executeStream: vi.fn() };
+    crm = { writeBack: vi.fn() };
+    dingtalk = {
+      createGroup: vi.fn().mockResolvedValue({ chatId: 'c1', members: ['m1'] }),
+      sendNotification: vi.fn(),
+    };
+    service = new ProjectService(prisma as any, codex as any, risk as any, crm as any, dingtalk as any);
+    prisma.project.create.mockResolvedValue(mockProject());
+  });
+
+  it('有效技能：服务端解析覆盖 skillId/skillName + prompt 快照进 extra（忽略客户端伪造名）', async () => {
+    prisma.skill.findFirst.mockResolvedValue(mockSkill);
+    await service.create(
+      { kind: 'consult', title: '测试工单', input: '这是一个足够长的测试问题', skillId: 'sk-1', skillName: '伪造名' },
+      'u-1',
+    );
+    const data = prisma.project.create.mock.calls[0][0].data;
+    expect(data.skillId).toBe('sk-1');
+    expect(data.skillName).toBe('数据合规评估'); // 覆盖客户端伪造名
+    expect(data.extra).toEqual({ skillPrompt: '你是数据合规专家。' });
+  });
+
+  it('无效 skillId：按无技能处理（skillId null + 无快照）+ 工单事件提示', async () => {
+    prisma.skill.findFirst.mockResolvedValue(null); // 不存在/停用/无权
+    await service.create(
+      { kind: 'consult', title: '测试工单', input: '这是一个足够长的测试问题', skillId: 'junk-id' },
+      'u-1',
+    );
+    const data = prisma.project.create.mock.calls[0][0].data;
+    expect(data.skillId).toBeNull();
+    expect(data.skillName).toBeNull();
+    expect(data.extra).toBeDefined(); // Prisma.JsonNull
+
+    // 用户可见反馈事件
+    const events = prisma.projectEvent.create.mock.calls.map((c: any) => c[0].data.text);
+    expect(events.some((t: string) => t.includes('所选技能不可用'))).toBe(true);
+  });
+
+  it('不传 skillId：无技能字段，无兜底事件', async () => {
+    await service.create({ kind: 'consult', title: '测试工单', input: '这是一个足够长的测试问题' }, 'u-1');
+    const data = prisma.project.create.mock.calls[0][0].data;
+    expect(data.skillId).toBeNull();
+    const events = prisma.projectEvent.create.mock.calls.map((c: any) => c[0].data.text);
+    expect(events.some((t: string) => t.includes('所选技能不可用'))).toBe(false);
+  });
+
+  it('技能解析查询异常：不阻断工单创建（按无技能处理）', async () => {
+    prisma.skill.findFirst.mockRejectedValue(new Error('db down'));
+    await expect(
+      service.create({ kind: 'consult', title: '测试工单', input: '这是一个足够长的测试问题', skillId: 'sk-1' }, 'u-1'),
+    ).resolves.toBeDefined();
+    expect(prisma.project.create).toHaveBeenCalled();
+  });
+});

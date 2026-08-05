@@ -32,6 +32,12 @@ const router = createRouter({
       meta: { roles: LEGAL_ROLES, title: '工单详情' },
       component: () => import('../views/legal/ProjectDetailView.vue'),
     },
+    {
+      path: '/legal/skills',
+      name: 'legal-skills',
+      meta: { roles: [...LEGAL_ROLES, Role.ADMIN], title: '技能库' },
+      component: () => import('../views/legal/SkillsView.vue'),
+    },
 
     // 业务端
     {
@@ -65,6 +71,12 @@ const router = createRouter({
       name: 'admin-dashboard',
       meta: { roles: [Role.ADMIN], title: '数据看板' },
       component: () => import('../views/admin/DashboardView.vue'),
+    },
+    {
+      path: '/admin/members',
+      name: 'admin-members',
+      meta: { roles: [Role.ADMIN], title: '成员管理' },
+      component: () => import('../views/admin/MembersView.vue'),
     },
 
     { path: '/', redirect: '/login' },

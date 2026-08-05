@@ -180,9 +180,9 @@ const submitReview = async () => {
         <small class="tb-path">Business OS</small>
         <strong class="tb-title">合同助手</strong>
       </div>
-      <span class="tb-badge online" v-if="!draftComplete && !submittedReview">在线</span>
-      <span class="tb-badge draft" v-else-if="draftComplete && !submittedReview">草稿已生成</span>
-      <span class="tb-badge submitted" v-else>已提交审阅</span>
+      <!-- 2026-08-05：无信息量的"在线"徽章已删除；仅保留真实流程状态 -->
+      <span class="tb-badge draft" v-if="draftComplete && !submittedReview">草稿已生成</span>
+      <span class="tb-badge submitted" v-else-if="submittedReview">已提交审阅</span>
     </template>
         <!-- 步骤指示 -->
         <div class="step-bar">
@@ -336,7 +336,6 @@ const submitReview = async () => {
 .tb-path { font-size: 11px; color: var(--text-tertiary); font-weight: 590; }
 .tb-title { font-size: 14px; font-weight: 650; color: var(--text); letter-spacing: -0.01em; }
 .tb-badge { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 10px; }
-.tb-badge.online { background: rgba(52,199,89,0.08); color: #34C759; }
 .tb-badge.draft { background: rgba(0,113,227,0.08); color: var(--blue); }
 .tb-badge.submitted { background: rgba(175,82,222,0.08); color: #AF52DE; }
 

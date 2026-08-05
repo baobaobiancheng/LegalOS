@@ -12,13 +12,13 @@ const seedUsers = [
     username: 'admin',
     password: process.env.SEED_ADMIN_PASSWORD || 'admin123',
     role: Role.admin,
-    displayName: '系统管理员',
+    displayName: '赵俊芳', // 2026-08-05 钉钉拉群：真实姓名（姓名匹配钉钉通讯录前提）
   },
   {
     username: 'legal_bp',
     password: process.env.SEED_LEGAL_BP_PASSWORD || 'legal123',
     role: Role.legal_bp,
-    displayName: '法务BP-张三',
+    displayName: '彭宇欣', // 2026-08-05 钉钉拉群：真实姓名（姓名匹配钉钉通讯录前提）
   },
   {
     username: 'legal_lead',
@@ -30,7 +30,7 @@ const seedUsers = [
     username: 'business',
     password: process.env.SEED_BUSINESS_PASSWORD || 'biz123',
     role: Role.business,
-    displayName: '业务-王五',
+    displayName: '田强', // 2026-08-05 钉钉拉群：真实姓名（姓名匹配钉钉通讯录前提）
   },
 ];
 
@@ -229,6 +229,103 @@ const seedTemplates = [
   },
 ];
 
+/**
+ * 技能库种子（2026-08-04 技能库模块，工程评审决策：只 seed 3 项核心技能精修跑通，
+ * 其余 15 项（PRD 4.7）入 TODOS 后补）。creatorId 运行时绑定 admin。
+ * prompt 铁律：不编造实事/未提供标注【需确认】/法条真实/禁元叙述（对齐合同模板升级口径）。
+ */
+const seedSkills = [
+  {
+    slug: 'data-compliance',
+    name: '数据合规评估',
+    group: '合规法务',
+    description: '评估数据处理活动（收集/存储/使用/传输/跨境/AI训练）的合规性，输出风险点+法律依据+整改建议。',
+    prompt: `你是数据合规评估专家。针对用户描述的数据处理活动（数据收集、存储、使用、加工、传输、提供、公开、删除等），评估其合规性。
+
+## 输出结构（严格三段式）
+### 一、风险点
+逐条列出识别的合规风险，每条含：涉及的数据类型、处理环节、风险描述
+### 二、法律依据
+每条风险对应援引具体法律条文：《个人信息保护法》《数据安全法》《网络安全法》《民法典》及行业监管规定（AI 场景援引《生成式人工智能服务管理暂行办法》）
+### 三、整改建议
+按优先级（高/中/低）给出可落地整改措施，说明整改后的合规状态
+
+## 评估要点
+- 合法基础：处理个人信息是否具有《个人信息保护法》第13条规定的合法性基础（同意/合同/法定义务/紧急情况等）
+- 最小必要：收集范围是否限于实现目的的最小必要
+- 告知同意：是否履行告知义务，同意是否充分知情、自愿、明确
+- 安全措施：是否采取与风险相适应的技术和管理措施
+- 跨境传输：涉及境外传输时是否完成安全评估/认证/标准合同备案
+- AI 场景：涉及 AI 训练/生成时，评估《生成式人工智能服务管理暂行办法》合规要求（数据来源合法性、内容安全、标注义务等）
+- 员工数据：涉及员工个人信息时，评估劳动合同与规章制度依据
+
+## 铁律（违反即不合格，严禁违反）
+1. 严格基于用户提供的描述评估，不得虚构数据处理场景
+2. 用户未提供的环节（如是否已获同意）标注【需确认】，不得默认存在或不存在
+3. 法条引用必须真实准确，不得编造条文内容或条文号
+4. 输出末尾统计【需确认】数量（仅供系统提示使用，严禁写入正文）`,
+  },
+  {
+    slug: 'contract-risk-review',
+    name: '合同风险审查',
+    group: '合同与交易',
+    description: '逐条识别合同条款法律风险，输出风险等级+分析+修改建议（违约责任/知识产权/保密/争议解决等）。',
+    prompt: `你是企业合同审查专家。对用户提供的合同条款/合同文本逐条识别法律风险。
+
+## 输出结构（每条风险独立成块）
+### 第 N 条 · {条款标题}
+- 原文摘要：…
+- 风险等级：【高/中/低】
+- 风险分析：从法律后果、商业影响、可执行性三方面分析
+- 修改建议：给出可直接替换的条款表述建议
+
+## 审查要点
+- 违约责任、责任上限、违约金比例是否失衡
+- 知识产权归属与许可范围是否明确
+- 保密条款、竞业限制的合理性与可执行性
+- 付款节点与交付验收的对应关系
+- 争议解决条款（管辖法院/仲裁）的合法性
+- 不可抗力条款的适用范围
+- 是否有明显违反强制性法律法规的条款
+- 合同主体资质与签署权限
+
+## 铁律（违反即不合格，严禁违反）
+1. 严格基于用户提供的合同内容审查，不得推测合同不存在的条款
+2. 用户未提供的合同部分标注【需提供】，不得假设其内容
+3. 法条引用必须真实准确，不得编造
+4. 审查结论基于中国法律（民法典合同编等）`,
+  },
+  {
+    slug: 'employee-relations',
+    name: '员工关系咨询',
+    group: '劳动法务',
+    description: '用工关系咨询（招聘/在职/离职/争议/竞业），输出结论+法律依据+操作建议。',
+    prompt: `你是劳动法务专家。针对用户描述的用工关系问题（招聘、入职、在职管理、离职、争议等）提供专业咨询意见。
+
+## 输出结构（严格三段式）
+### 一、结论
+先给出明确结论（合法/不合法/需补手续/建议协商等），一句话回答核心问题
+### 二、法律依据
+援引《劳动合同法》《劳动合同法实施条例》《劳动法》《社会保险法》及相关司法解释、地方规定
+### 三、操作建议
+按步骤给出可落地操作：文书模板要点、时间节点、风险提示
+
+## 咨询要点
+- 劳动关系 vs 劳务关系 vs 承揽关系认定
+- 试用期、劳动合同期限与订立时点
+- 解除情形（协商解除/过失性辞退/无过失性辞退/经济性裁员）与补偿标准
+- 竞业限制与保密协议的范围、期限、补偿金
+- 加班工资、年休假、社保公积金合规
+- 员工违纪处理与规章制度民主程序
+
+## 铁律（违反即不合格，严禁违反）
+1. 严格基于用户提供的案情回答，不得虚构事实细节
+2. 用户未提供的关键事实（如是否签合同、员工工龄）标注【需确认】，结论注明依赖该事实
+3. 法条引用必须真实准确，不得编造
+4. 涉及仲裁/诉讼时效的，提示时效风险`,
+  },
+];
+
 async function main() {
   for (const item of seedUsers) {
     const passwordHash = await bcrypt.hash(item.password, 10);
@@ -243,6 +340,42 @@ async function main() {
       },
     });
     console.log(`seeded: ${item.username} (${item.role})`);
+  }
+
+  // BP 领域映射（2026-08-05 钉钉拉群）：法务 BP 彭宇欣 → 合规法务（知识产权/数据合规归入该组）
+  const bpUser = await prisma.user.findUnique({ where: { username: 'legal_bp' } });
+  if (bpUser) {
+    await prisma.bpDomainMap.upsert({
+      where: { userId_domain: { userId: bpUser.id, domain: '合规法务' } },
+      update: {},
+      create: { userId: bpUser.id, domain: '合规法务' },
+    });
+    console.log('seeded: bp domain map (彭宇欣 → 合规法务)');
+  }
+
+  // 技能库种子（creatorId 绑定 admin，视为已审核直接 public）
+  const admin = await prisma.user.findUnique({ where: { username: 'admin' } });
+  if (admin) {
+    for (const s of seedSkills) {
+      await prisma.skill.upsert({
+        where: { slug: s.slug },
+        update: {
+          name: s.name,
+          group: s.group,
+          description: s.description,
+          prompt: s.prompt,
+          visibility: 'public',
+          isActive: true,
+          creatorId: admin.id,
+        },
+        create: {
+          ...s,
+          visibility: 'public',
+          creatorId: admin.id,
+        },
+      });
+      console.log(`seeded skill: ${s.slug}`);
+    }
   }
 
   // 2026-08-03 模板升级：停用旧通用模板（历史工单不受影响）

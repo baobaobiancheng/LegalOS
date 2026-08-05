@@ -46,7 +46,6 @@
           <small style="font-size:11px;color:#aeaeb2;font-weight:590">管理端</small>
           <strong style="font-size:14px;font-weight:650;color:#1d1d1f;letter-spacing:-0.01em">数据看板</strong>
         </div>
-        <span style="font-size:11px;color:#34C759;font-weight:590">系统就绪</span>
       </header>
 
       <div class="app-content animate-in">

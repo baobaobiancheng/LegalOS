@@ -221,6 +221,7 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
           <template v-if="project">
             <span class="sep">/</span>
             <strong class="tb-title">{{ project.title }}</strong>
+            <span v-if="project.skillName" class="skill-chip">{{ project.skillName }}</span>
             <span :class="['risk-chip', 'risk-' + project.risk + '-bg']">{{ project.risk }}</span>
             <span :class="['status-chip', 'status-' + project.status]">{{ project.status }}</span>
           </template>

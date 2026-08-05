@@ -122,6 +122,7 @@ const timeFmt = (ts: string) => { const d = new Date(ts); return `${String(d.get
         <template v-if="project">
           <span class="sep">/</span>
           <strong class="tb-title">{{ project.title }}</strong>
+          <span v-if="project.skillName" class="skill-chip">{{ project.skillName }}</span>
           <span :class="['status-chip', 'status-' + project.status]">{{ project.status }}</span>
         </template>
       </div>

@@ -35,6 +35,12 @@ enum RiskLevel {
   P2
 }
 
+enum SkillVisibility {
+  private   // 私有：仅创建者可见可用
+  pending   // 待审核：已提交为公有，审核中
+  public    // 公有：全员可见可用
+}
+
 model User {
   id             String    @id @default(uuid())
   username       String    @unique
@@ -44,6 +50,11 @@ model User {
   isActive       Boolean   @default(true) @map("is_active")
   failedAttempts Int       @default(0) @map("failed_attempts")
   lockedUntil    DateTime? @map("locked_until")
+
+  // 钉钉绑定（2026-08-05 钉钉拉群）：通讯录同步写入，建群直接传 userid
+  dingtalkUserId String?  @map("dingtalk_user_id") @db.VarChar(128)
+  dingtalkPhone  String?  @map("dingtalk_phone") @db.VarChar(32)
+
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
@@ -53,8 +64,37 @@ model User {
   ownedProjects   Project[]      @relation("OwnedProjects")
   legalBpProjects Project[]      @relation("LegalBpProjects")
   contractFiles   ContractFile[]
+  createdSkills   Skill[]        @relation("CreatedSkills")
+  approvedSkills  Skill[]        @relation("ApprovedSkills")
+  bpDomainMaps    BpDomainMap[]
 
   @@map("users")
+}
+
+// 法务 BP 领域映射（2026-08-05 钉钉拉群）：BP 工作范围 → 6 领域白名单（SKILL_GROUPS 同源）
+// 意图识别/技能 group 出领域 → 查此表匹配 BP → 指派 legalBpId → 拉群
+model BpDomainMap {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  domain    String   @db.VarChar(64)  // 合规法务/合同与交易/劳动法务/争议法务/法律研究/知识运营
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, domain])
+  @@index([domain])
+  @@map("bp_domain_maps")
+}
+
+// 钉钉通讯录快照（2026-08-05）：同步结果落库，手动绑定可在快照内搜索
+model DingTalkContact {
+  id       String   @id @default(uuid())
+  userId   String   @map("user_id")   // 钉钉 userid
+  name     String   @db.VarChar(128)
+  mobile   String?  @db.VarChar(32)
+  syncedAt DateTime @default(now()) @map("synced_at")
+
+  @@unique([userId])
+  @@map("dingtalk_contacts")
 }
 
 model Project {
@@ -159,6 +199,34 @@ model ContractTemplate {
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   @@map("contract_templates")
+}
+
+// 技能库（2026-08-04 技能库模块）
+// 状态机：private →(submit)→ pending →(approve)→ public；pending →(reject/withdraw)→ private
+// 审核记录 append-only：reviewLog Json 数组 [{ action: 'approve'|'reject', reviewerId, reason?, at }]
+// （驳回历史不覆盖丢失，工程评审决策 OV#2；reviewReason 单字段已由 reviewLog 替代）
+model Skill {
+  id          String          @id @default(uuid())
+  slug        String          @unique @db.VarChar(64)   // 技能代号，创建后不可变（保留字：general + seed slug 禁注册）
+  name        String          @db.VarChar(128)
+  group       String          @db.VarChar(64)          // 6 组白名单：合规法务/合同与交易/劳动法务/争议法务/法律研究/知识运营
+  description String          @db.Text
+  prompt      String          @db.Text                 // system prompt，≤4000 字（DTO 校验）
+  visibility  SkillVisibility @default(private)
+  isActive    Boolean         @default(true)           // 停用后不可选用（历史工单快照不受影响）
+  creatorId   String
+  approvedBy  String?                                  // 最近一次审核通过人
+  approvedAt  DateTime?
+  reviewLog   Json            @default("[]")           // append-only 审核记录（含全部驳回原因）
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  creator  User  @relation("CreatedSkills", fields: [creatorId], references: [id], onDelete: Restrict)
+  approver User? @relation("ApprovedSkills", fields: [approvedBy], references: [id], onDelete: SetNull)
+
+  @@index([visibility])
+  @@index([group])
+  @@map("skills")
 }
 
 // 合同附件（本地磁盘文件，DB 只存元数据）
