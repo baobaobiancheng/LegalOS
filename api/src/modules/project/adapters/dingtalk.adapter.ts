@@ -10,16 +10,36 @@ const API_HOST = 'https://api.dingtalk.com';
 const TOKEN_TTL_MS = 7200_000; // 钉钉默认 expires_in=7200s
 const REFRESH_AHEAD_MS = 5 * 60_000; // 提前 5 分钟刷新（工程评审决策 #3）
 const REQUEST_TIMEOUT_MS = 10_000;
+const SYNC_CONCURRENCY = 3; // 通讯录同步有界并发数（2026-08-06 提速；并发 6 实测触发钉钉 qps 流控 subcode=90018，降至 3 + 流控退避重试）
+
+/**
+ * 有界并发：同时最多跑 limit 个异步任务，返回顺序与 items 一致。
+ * 2026-08-06 通讯录同步提速：原串行递归约 94 次 API 请求 ≈45s → 有界并发 ≈10s。
+ */
+function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  return Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        results[i] = await fn(items[i]);
+      }
+    }),
+  ).then(() => results);
+}
 
 /**
  * 钉钉企业内部应用适配器（2026-08-05 钉钉拉群模块，/review 2026-08-05 修正链路注释）
  *
  * 链路：
  *   gettoken(AppKey+Secret) → access_token（内存缓存，提前 5 分钟刷新，401 重试 1 次）
- *   → syncContacts: listsub 部门列表 → 逐部门 user/list 分页 → userid 去重
- *   → createGroup: 普通群 v2 /v1.0/im/group/create（内部群，群名 1~20 字符）
- *   → addMember: 普通群 v2 加人（路径待 add-group-members 文档确认）
- *   → sendNotification: /v1.0/robot/groupMessages 机器人发消息
+ *   → syncContacts: listsub 递归部门树 → 逐部门 user/list 分页 → 过滤机器人/离职 → userid 去重
+ *   → createGroup: 创建场景群 /v1.0/im/sceneGroup/create（2026-08-06 切换：
+ *     创建普通群v2 有组织 1000 建群配额已满；旧场景群接口停新申请，新应用用此新接口）
+ *   → addMember: 场景群加人 /v1.0/im/sceneGroup/member/add（权限同 qyapi_chat_manage）
+ *   → sendNotification: /v1.0/robot/groupMessages 机器人发消息（失败 2s 重试 1 次，
+ *     兼容场景群模板异步安装时序）
  *
  * token 缓存为进程内存（单实例内部工具；多实例部署需升级 Redis/DB 缓存）
  */
@@ -102,6 +122,7 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
     path: string,
     body?: Record<string, unknown>,
     retry401 = true,
+    flowRetry = 2,
   ): Promise<T> {
     const token = await this.getAccessToken();
     const res = await fetch(`${host}${path}?access_token=${token}`, {
@@ -115,7 +136,14 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
     if (retry401 && (data.errcode === 40014 || data.errcode === 401)) {
       this.logger.warn(`access_token 失效（${data.errcode}），强制刷新后重试`);
       await this.getAccessToken(true);
-      return this.requestWithToken(host, path, body, false);
+      return this.requestWithToken(host, path, body, false, flowRetry);
+    }
+    // 流控（errcode=88 / subcode=90018 qps流控，2026-08-06 并发同步实测触发）
+    // → 等 1.5s 退避重试，最多 2 次；避免有界并发突发撞限流后整次同步失败
+    if (flowRetry > 0 && this.isFlowLimited(data)) {
+      this.logger.warn(`钉钉接口触发流控（${path}），1.5s 后重试（剩余 ${flowRetry} 次）`);
+      await new Promise((r) => setTimeout(r, 1500));
+      return this.requestWithToken(host, path, body, retry401, flowRetry - 1);
     }
     // /review 2026-08-05：非 token 错误码一律抛错——否则 syncContacts 拿到 errcode≠0 的响应
     // 当空数据处理，通讯录同步"0 人"假成功、全公司无人绑定
@@ -125,24 +153,70 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
     return data as T;
   }
 
+  /** 是否 qps 流控（errcode=88 或 subcode=90018 / errmsg 含 qps 流控） */
+  private isFlowLimited(data: any): boolean {
+    const msg = `${data.errmsg || ''} ${data.submsg || ''} ${data.message || ''}`;
+    return data.errcode === 88 || msg.includes('90018') || msg.includes('qps流控');
+  }
+
   // ═══════════════════════════════════════════
   // 通讯录同步
   // ═══════════════════════════════════════════
 
-  async syncContacts(): Promise<ContactInfo[]> {
-    // 1. 部门列表（spike 2026-08-05 验证：v2 无 department/list，用 listsub 拉一级子部门）
-    // 部门树 = 根部门(1) + 一级子部门（几十人规模足够；深层部门后续扩展）
-    const deptResult = await this.oapi<any>('/topapi/v2/department/listsub', { dept_id: 1 });
-    const depts: Array<{ dept_id: number; name: string }> = deptResult.result || [];
-    if (!depts.length) {
-      this.logger.warn(`通讯录同步：未获取到部门（errcode=${deptResult.errcode} ${deptResult.errmsg || ''}）`);
-    }
+  /**
+   * 显式排除的机器人/功能账号 userid（2026-08-06 数据验证）：
+   * 这些账号 active=true 且 disable_status=false（状态规则覆盖不到），
+   * 分散在正常部门中（会议账号在重大项目管理部等）。
+   */
+  private static readonly BLOCKED_USERIDS = new Set([
+    '475920968', // 会议账号
+    '300573991', // system
+    'hr', // 人力资源部
+    'shichangbu', // 市场部
+    'zongcaiban', // 总裁办
+    '023412221736796777140', // 群问答
+  ]);
 
-    // 2. 逐部门分页拉用户
+  /** 状态规则：停用/未激活账号一律排除（离职、测试、机器人）。真人 active/disable 均为 false（2026-08-06 全量 1612 人验证）。 */
+  private isBlockedContact(u: { userid?: string; active?: boolean; disable_status?: boolean }): boolean {
+    return (
+      DingTalkAdapterImpl.BLOCKED_USERIDS.has(u.userid ?? '') ||
+      u.active === false ||
+      u.disable_status === true
+    );
+  }
+
+  async syncContacts(): Promise<ContactInfo[]> {
+    // 两阶段有界并发（2026-08-06 提速：原串行递归约 94 次请求 ≈45s → 并发 6 ≈10s）：
+    //   ① BFS + mapLimit 枚举部门树（listsub，seenDepts 防环 + 深度上限 8）
+    //   ② mapLimit 逐部门分页拉用户（user/list，userid 去重 + 过滤机器人/离职）
+    // 并发内 seen/contacts 变更均为同步语句（循环内无 await 交错），JS 单线程保证安全。
     const seen = new Set<string>();
     const contacts: ContactInfo[] = [];
-    const allDeptIds = [1, ...depts.map((d) => d.dept_id)];
-    for (const deptId of allDeptIds) {
+
+    // ① 枚举部门树（BFS，有界并发）
+    const visitedDepts = new Set<number>([1]);
+    const deptQueue: Array<{ id: number; depth: number }> = [{ id: 1, depth: 0 }];
+    while (deptQueue.length) {
+      const batch = deptQueue.splice(0, Math.min(SYNC_CONCURRENCY, deptQueue.length));
+      const subLists = await mapLimit(batch, SYNC_CONCURRENCY, async ({ id }) => {
+        const res = await this.oapi<any>('/topapi/v2/department/listsub', { dept_id: id });
+        return ((res.result || []) as Array<{ dept_id: number }>).map((d) => d.dept_id);
+      });
+      for (let b = 0; b < batch.length; b++) {
+        if (batch[b].depth >= 8) continue; // 防失控：部门树深度上限
+        for (const deptId of subLists[b]) {
+          if (!visitedDepts.has(deptId)) {
+            visitedDepts.add(deptId);
+            deptQueue.push({ id: deptId, depth: batch[b].depth + 1 });
+          }
+        }
+      }
+    }
+
+    // ② 有界并发逐部门分页拉用户
+    const allDepts = [...visitedDepts];
+    await mapLimit(allDepts, SYNC_CONCURRENCY, async (deptId) => {
       let cursor = 0;
       for (let page = 0; page < 50; page++) {
         // 防失控上限：50 页/部门
@@ -154,13 +228,15 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
         const list: any[] = res.result?.list || [];
         for (const u of list) {
           if (!u.userid || seen.has(u.userid)) continue; // 跨部门重复按 userid 去重
+          if (this.isBlockedContact(u)) continue; // 排除机器人/离职/停用/测试账号
           seen.add(u.userid);
           contacts.push({ userId: u.userid, name: u.name || '', mobile: u.mobile });
         }
         if (!res.result?.has_more) break;
         cursor = res.result?.next_cursor ?? 0;
       }
-    }
+    });
+
     this.logger.log(`通讯录同步完成：${contacts.length} 人`);
     return contacts;
   }
@@ -170,48 +246,74 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
   // ═══════════════════════════════════════════
 
   /**
-   * 建群（普通群 v2 / 创建群会话，2026-06-04 文档确认）：
-   * POST /v1.0/im/group/create，内部群（conversationTag=2），群名 1~20 字符。
-   * 注意：群主必须在应用可见性内（错误码 permession.checkFailed）。
+   * 建群（创建场景群 v1.0 REST，2026-08-06）：
+   * POST /v1.0/im/sceneGroup/create（注意 /im/ 段——早期测试 /v1.0/sceneGroup/create
+   * 报 InvalidVersion 即缺此段），按群模板创建（template_id 来自 .env）。
+   * 背景：
+   *   - 创建普通群v2（/v1.0/im/group/create）有组织 1000 建群配额，达上限返回
+   *     500 system.error / OAPI chat/create 返回 errcode=1002 "too many chat"；
+   *   - 旧场景群接口 /topapi/im/chat/scenegroup/create 已停止新应用申请；
+   *     本应用为新创建，须用此新接口（文档 create-a-scene-group）。
+   * 权限：qyapi_chat_manage（钉钉群基础信息管理权限）。
+   * 群名 ≤30 字符（截断到 20）；user_ids 为数组。
    */
   async createGroup(
     members: string[],
     projectTitle: string,
     ownerUserId?: string,
   ): Promise<DingTalkGroup> {
+    const templateId = process.env.DINGTALK_SCENE_TEMPLATE_ID;
+    if (!templateId) {
+      throw new Error('DINGTALK_SCENE_TEMPLATE_ID 未配置（场景群群模板 ID，需运维创建并发布群模板）');
+    }
     const owner = ownerUserId || members[0];
-    const res = await this.v1<any>('/v1.0/im/group/create', {
-      name: this.truncateGroupName(projectTitle),
-      owner,
-      ownerType: 'emp',
-      useridlist: members,
-      conversationTag: 2,
+    const title = this.truncateGroupName(projectTitle);
+    const res = await this.v1<any>('/v1.0/im/sceneGroup/create', {
+      title,
+      template_id: templateId,
+      owner_user_id: owner,
+      user_ids: members,
     });
-    const chatId = res.openConversationId || res.chatid;
+    const chatId =
+      res.open_conversation_id || res.openConversationId || res.chat_id || res.chatid;
     if (!chatId) throw new Error('建群失败: 响应缺少 openConversationId');
-    return { chatId, title: this.truncateGroupName(projectTitle), members };
+    return { chatId, title, members };
   }
 
   /**
-   * 加人（普通群 v2）。SPIKE_TODO：v2 加人接口路径待用户文档确认
-   * （add-group-members 页面请求地址），当前按 v1.0 REST 风格实现，联调时验证。
+   * 加人（转派）。场景群添加群成员（2026-08-06 文档确认）：
+   * POST /v1.0/im/sceneGroup/member/add，body snake_case
+   * （open_conversation_id + user_ids），权限与建群同为 qyapi_chat_manage。
    */
   async addMember(chatId: string, userId: string): Promise<void> {
-    await this.v1(`/v1.0/im/group/members/add`, {
-      openConversationId: chatId,
-      userIds: [userId],
+    await this.v1('/v1.0/im/sceneGroup/member/add', {
+      open_conversation_id: chatId,
+      user_ids: [userId],
     });
   }
 
   async sendNotification(chatId: string, message: string): Promise<void> {
     const robotCode = process.env.DINGTALK_ROBOT_CODE;
     if (!robotCode) throw new Error('DINGTALK_ROBOT_CODE 未配置，无法发送群消息');
-    await this.v1('/v1.0/robot/groupMessages/send', {
-      robotCode,
-      openConversationId: chatId,
-      msgKey: 'sampleText',
-      msgParam: JSON.stringify({ content: message }),
-    });
+    const send = () =>
+      this.v1('/v1.0/robot/groupMessages/send', {
+        robotCode,
+        openConversationId: chatId,
+        msgKey: 'sampleText',
+        msgParam: JSON.stringify({ content: message }),
+      });
+    // 场景群模板安装为异步事件：群刚建成时机器人消息可能瞬时失败，
+    // 失败后等 2s 重试 1 次（2026-08-06 场景群切换）。
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await send();
+        return;
+      } catch (e) {
+        if (attempt >= 2) throw e;
+        this.logger.warn(`群消息发送失败，等待 2s 重试（${chatId}）：${(e as Error).message}`);
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
   }
 
   /** 群名截断：总长 ≤20 字（钉钉群名限制，工程评审决策 #5）。

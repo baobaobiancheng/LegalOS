@@ -36,6 +36,15 @@ export class MembersService {
       });
     }
 
+    // 1b. 清理快照中已不存在的成员（对比现网：离职/删除/被过滤的机器人账号
+    //     不再出现在手动绑定搜索源——2026-08-06 修复首次同步残留的机器人行）
+    const freshIds = contacts.map((c) => c.userId);
+    if (freshIds.length) {
+      await this.prisma.dingTalkContact.deleteMany({
+        where: { userId: { notIn: freshIds } },
+      });
+    }
+
     // 2. 按姓名自动匹配：未绑定用户 × 通讯录（重名 → 跳过，落手动绑定）
     const unbound = await this.prisma.user.findMany({
       where: { dingtalkUserId: null },

@@ -16,7 +16,7 @@ describe('MembersService', () => {
 
   beforeEach(() => {
     prisma = {
-      dingTalkContact: { upsert: vi.fn(), findUnique: vi.fn(), findMany: vi.fn() },
+      dingTalkContact: { upsert: vi.fn(), deleteMany: vi.fn(), findUnique: vi.fn(), findMany: vi.fn() },
       user: { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn(), findFirst: vi.fn() },
       bpDomainMap: { upsert: vi.fn(), deleteMany: vi.fn() },
       project: { count: vi.fn() },
@@ -39,6 +39,10 @@ describe('MembersService', () => {
     const result = await service.syncContacts();
 
     expect(prisma.dingTalkContact.upsert).toHaveBeenCalledTimes(2);
+    // 清理快照中已不在现网的成员（2026-08-06 对比现网）
+    expect(prisma.dingTalkContact.deleteMany).toHaveBeenCalledWith({
+      where: { userId: { notIn: ['U-1', 'U-2'] } },
+    });
     // 彭宇欣唯一匹配 → 自动绑定
     expect(prisma.user.update).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -40,14 +40,14 @@ const pickSkill = (s: { id?: string; name: string }) => {
 
 // 技能组 → 图标（Apple SF 风格语义映射）
 const GROUP_ICONS: Record<string, string> = {
-  合规法务: '🛡️',
-  合同与交易: '📄',
-  劳动法务: '👥',
-  争议法务: '⚖️',
-  法律研究: '📚',
-  知识运营: '🧠',
+  合规法务: '规',
+  合同与交易: '约',
+  劳动法务: '人',
+  争议法务: '争',
+  法律研究: '研',
+  知识运营: '知',
 }
-const groupIcon = (g: string) => GROUP_ICONS[g] || '✦'
+const groupIcon = (g: string) => GROUP_ICONS[g] || '法'
 
 const scrollBottom = () => nextTick(() => {
   const el = msgContainer.value
@@ -182,7 +182,7 @@ const handleUpgrade = async () => {
             <span class="domain-label">选择咨询领域</span>
             <div class="domain-cards">
               <button class="domain-card" :class="{ active: !selectedSkill.id }" @click="pickSkill({ name: GENERAL_SKILL.name })">
-                <span class="dc-ico">✦</span>
+                <span class="dc-ico">法</span>
                 <span class="dc-name">{{ GENERAL_SKILL.name }}</span>
                 <span v-if="!selectedSkill.id" class="dc-check">✓</span>
               </button>
@@ -235,42 +235,112 @@ const handleUpgrade = async () => {
   </BusinessSidebarLayout>
 </template>
 
-/* ── 咨询领域选择（2026-08-04 技能库模块，frontend-design 重设计） ──
-   欢迎页内容卡片（对话方向感）：有内容而非控件，对话开始后不出现 */
-.domain-group { margin-top: 30px; max-width: 480px; text-align: left; animation: domain-in 0.5s var(--spring) 0.15s backwards; }
-@keyframes domain-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-.domain-label {
-  display: block; font-size: 11px; color: var(--text-tertiary);
-  font-weight: 590; letter-spacing: 0.03em; margin-bottom: 10px;
-  text-transform: uppercase;
-}
-.domain-cards { display: flex; flex-wrap: wrap; gap: 8px; }
-.domain-card {
-  display: inline-flex; align-items: center; gap: 7px;
-  padding: 9px 14px 9px 11px; border-radius: 14px;
-  background: rgba(255,255,255,0.72); border: 1px solid rgba(0,0,0,0.08);
-  backdrop-filter: blur(12px);
-  font-family: inherit; font-size: 12.5px; color: var(--text); font-weight: 550;
-  cursor: pointer; transition: all 0.25s var(--spring);
-}
-.domain-card:hover {
-  transform: translateY(-1px);
-  border-color: rgba(0,113,227,0.3);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.07);
-}
-.domain-card.active {
-  border-color: var(--blue);
-  background: rgba(0,113,227,0.08);
-  color: var(--blue);
-  box-shadow: 0 2px 12px rgba(0,113,227,0.16);
-}
-.dc-ico { font-size: 13px; line-height: 1; }
-.dc-name { line-height: 1.1; }
-.dc-check { margin-left: 1px; font-size: 11px; font-weight: 700; }
-
 <script lang="ts">export default { name: 'ConsultView' }</script>
 
 <style scoped>
+.domain-group {
+  width: min(620px, 100%);
+  margin-top: 26px;
+  text-align: left;
+  animation: domain-in 0.5s var(--spring) 0.15s backwards;
+}
+@keyframes domain-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.domain-label {
+  display: block;
+  margin: 0 0 10px 2px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+}
+.domain-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.domain-card {
+  position: relative;
+  display: flex;
+  min-height: 78px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 13px 12px 12px;
+  border: 1px solid rgba(30, 58, 138, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.25s var(--spring), border-color 0.25s var(--spring), background 0.25s var(--spring), box-shadow 0.25s var(--spring);
+}
+.domain-card::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(30, 58, 138, 0.14);
+}
+.domain-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(30, 58, 138, 0.30);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 8px 20px rgba(30, 58, 138, 0.08);
+}
+.domain-card.active {
+  border-color: #1e3a8a;
+  background: linear-gradient(145deg, rgba(239, 245, 255, 0.96), rgba(228, 237, 255, 0.78));
+  color: #1e3a8a;
+  box-shadow: 0 7px 18px rgba(30, 58, 138, 0.12);
+}
+.domain-card.active::after {
+  background: #1e3a8a;
+  box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.10);
+}
+.dc-ico {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid rgba(30, 58, 138, 0.12);
+  border-radius: 9px;
+  background: rgba(30, 58, 138, 0.06);
+  color: #1e3a8a;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1;
+}
+.domain-card.active .dc-ico {
+  border-color: rgba(30, 58, 138, 0.18);
+  background: #1e3a8a;
+  color: #fff;
+}
+.dc-name { max-width: calc(100% - 4px); line-height: 1.2; }
+.dc-check {
+  position: absolute;
+  top: 12px;
+  right: 11px;
+  display: grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border-radius: 50%;
+  background: #1e3a8a;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 750;
+}
+
 .tb-left { display: flex; align-items: baseline; gap: 10px; }
 .tb-path { font-size: 11px; color: var(--text-tertiary); font-weight: 590; }
 .tb-title { font-size: 14px; font-weight: 650; color: var(--text); letter-spacing: -0.01em; }
@@ -304,5 +374,9 @@ const handleUpgrade = async () => {
   background: #1E3A8A; color: #fff;
   transform: translateY(-2px);
   box-shadow: 0 8px 24px rgba(30,58,138,0.25);
+}
+
+@media (max-width: 620px) {
+  .domain-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 </style>
