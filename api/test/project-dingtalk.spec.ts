@@ -79,10 +79,11 @@ describe('ProjectService 钉钉拉群链路', () => {
     const created = prisma.project.create.mock.calls[0][0].data;
     expect(created.legalBpId).toBe('u-bp');
 
-    // 建群：成员 = creator + BP（去重）
-    const [members, title] = dingtalk.createGroup.mock.calls[0];
+    // 建群：成员 = creator + BP（去重）+ dedupKey（P1-03 建群去重）
+    const [members, title, _owner, dedupKey] = dingtalk.createGroup.mock.calls[0];
     expect(members).toEqual(['U-biz', 'U-bp']);
     expect(title).toContain('工单#');
+    expect(dedupKey).toBe('legalos-p-1');
     expect(prisma.project.update).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ dingtalkChatId: 'c1' }),
     }));
@@ -233,5 +234,39 @@ describe('ProjectService 钉钉拉群链路', () => {
 
     await new Promise((r) => setTimeout(r, 10));
     expect(dingtalk.addMember).toHaveBeenCalledWith('c1', 'U-bp');
+  });
+
+  it('幂等：同一 idempotencyKey 已存在工单 → 直接返回，不重复创建/建群（P1-03）', async () => {
+    risk.assess.mockResolvedValue({ risk: 'P1', route: 'legalbp', domain: null });
+    prisma.project.findUnique.mockResolvedValue(
+      mockProject({ id: 'p-existing', idempotencyKey: 'key-1' }),
+    );
+
+    const result = await service.create(
+      { kind: 'consult', title: '测试工单', input: '这是一个足够长的测试问题', idempotencyKey: 'key-1' },
+      'u-biz',
+    );
+
+    expect(prisma.project.create).not.toHaveBeenCalled();
+    expect(dingtalk.createGroup).not.toHaveBeenCalled();
+    expect(result.id).toBe('p-existing');
+  });
+
+  it('幂等：并发撞唯一约束(P2002) → 返回已存在工单，不建群（P1-03 兜底）', async () => {
+    risk.assess.mockResolvedValue({ risk: 'P1', route: 'legalbp', domain: null });
+    prisma.project.create.mockRejectedValueOnce(
+      Object.assign(new Error('Unique constraint failed'), { code: 'P2002' }),
+    );
+    prisma.project.findUnique.mockResolvedValue(
+      mockProject({ id: 'p-existing', idempotencyKey: 'key-1' }),
+    );
+
+    const result = await service.create(
+      { kind: 'consult', title: '测试工单', input: '这是一个足够长的测试问题', idempotencyKey: 'key-1' },
+      'u-biz',
+    );
+
+    expect(result.id).toBe('p-existing');
+    expect(dingtalk.createGroup).not.toHaveBeenCalled();
   });
 });

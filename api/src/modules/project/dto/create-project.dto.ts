@@ -39,6 +39,12 @@ export class CreateProjectDto {
   @IsOptional()
   @IsString()
   crmReference?: string;
+
+  // 幂等键（P1-03）：同一键只创建一个工单，防客户端/CRM 重试重复建单/建群
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey?: string;
 }
 
 export class CreateProjectMessageDto {

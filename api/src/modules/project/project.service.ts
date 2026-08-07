@@ -41,6 +41,15 @@ export class ProjectService {
 
   /** 创建工单 — 含风险判定 + 领域匹配 BP + 路由 + 钉钉拉群（2026-08-05 真实链路） */
   async create(dto: CreateProjectDto, currentUserId: string) {
+    // 0. 幂等（P1-03）：同一 idempotencyKey 只创建一个工单，防客户端/CRM 重试重复建单/建群
+    if (dto.idempotencyKey) {
+      const existing = await this.prisma.project.findUnique({
+        where: { idempotencyKey: dto.idempotencyKey },
+        include: { creator: { select: userSelect }, owner: { select: userSelect } },
+      });
+      if (existing) return this.formatProject(existing);
+    }
+
     // 1. 风险判定 + 领域标签（工程评审决策 #11：双标签，风险部分失败默认 P1）
     const { risk, route, domain } = await this.riskService.assess(dto.input);
 
@@ -82,26 +91,39 @@ export class ProjectService {
       legalBpId = await this.matchLegalBp(effectiveDomain);
     }
 
-    // 2. 创建工单
-    const project = await this.prisma.project.create({
-      data: {
-        kind: dto.kind,
-        title: dto.title,
-        status: '分析中',
-        risk,
-        route,
-        creatorId: currentUserId,
-        ownerId: currentUserId, // 初始 owner = creator
-        legalBpId, // 2026-08-05：意图识别匹配的 BP（创建即指派 → 拉群）
-        skillId,
-        skillName,
-        requesterName: dto.requesterName ?? null,
-        requesterDepartment: dto.requesterDepartment ?? null,
-        crmReference: dto.crmReference ?? null,
-        extra: skillPrompt ? { skillPrompt } : Prisma.JsonNull,
-      },
-      include: { creator: { select: userSelect }, owner: { select: userSelect } },
-    });
+    // 2. 创建工单（幂等键唯一约束兜底：并发重试撞键 → P2002 → 返回已存在工单）
+    let project;
+    try {
+      project = await this.prisma.project.create({
+        data: {
+          kind: dto.kind,
+          title: dto.title,
+          status: '分析中',
+          risk,
+          route,
+          creatorId: currentUserId,
+          ownerId: currentUserId, // 初始 owner = creator
+          legalBpId, // 2026-08-05：意图识别匹配的 BP（创建即指派 → 拉群）
+          skillId,
+          skillName,
+          requesterName: dto.requesterName ?? null,
+          requesterDepartment: dto.requesterDepartment ?? null,
+          crmReference: dto.crmReference ?? null,
+          idempotencyKey: dto.idempotencyKey ?? null,
+          extra: skillPrompt ? { skillPrompt } : Prisma.JsonNull,
+        },
+        include: { creator: { select: userSelect }, owner: { select: userSelect } },
+      });
+    } catch (e: any) {
+      if (dto.idempotencyKey && e?.code === 'P2002') {
+        const existing = await this.prisma.project.findUnique({
+          where: { idempotencyKey: dto.idempotencyKey },
+          include: { creator: { select: userSelect }, owner: { select: userSelect } },
+        });
+        if (existing) return this.formatProject(existing);
+      }
+      throw e;
+    }
 
     // 3. 存入用户第一条消息
     await this.prisma.projectMessage.create({
@@ -135,8 +157,13 @@ export class ProjectService {
     }
 
     // /review 2026-08-05 脱敏：extra（技能 prompt 快照）不随响应返回
+    return this.formatProject(project);
+  }
+
+  /** 工单响应脱敏：extra（技能 prompt 快照）不返回；route/risk 冗余展开（P1-03 幂等返回复用） */
+  private formatProject(project: any) {
     const { extra: _extra, ...safeProject } = project;
-    return { ...safeProject, route, risk };
+    return { ...safeProject, route: project.route, risk: project.risk };
   }
 
   /** 工单列表 — include 预加载 User */
@@ -643,10 +670,12 @@ ${userQuery}`;
       }
 
       // 3. 建群 + 落库（群名：工单#<id前6位> <标题>，适配器内截断 ≤20 字，工程评审决策 #5）
+      // dedupKey = legalos-{projectId}：建群去重，同一工单重试只建一个群（P1-03）
       const group = await this.dingtalk.createGroup(
         memberIds,
         `工单#${projectId.slice(0, 6)} ${title}`,
         creator?.dingtalkUserId || undefined,
+        `legalos-${projectId}`,
       );
       await this.prisma.project.update({
         where: { id: projectId },

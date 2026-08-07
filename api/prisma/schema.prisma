@@ -99,6 +99,8 @@ model DingTalkContact {
 
 model Project {
   id                  String        @id @default(uuid())
+  // 幂等键（P1-03）：客户端/CRM 提供，同一键只创建一个工单，防重试重复建单/建群
+  idempotencyKey      String?       @unique @map("idempotency_key")
   kind                ProjectKind
   title               String        @db.VarChar(256)
   status              ProjectStatus @default(分析中)

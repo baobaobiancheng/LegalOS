@@ -217,13 +217,14 @@ describe('DingTalkAdapterImpl', () => {
       return { json: async () => ({ errcode: 0, access_token: 'T', expires_in: 7200 }) };
     });
     const adapter = new DingTalkAdapterImpl();
-    const group = await adapter.createGroup(['U-1', 'U-2'], '工单群', 'U-1');
+    const group = await adapter.createGroup(['U-1', 'U-2'], '工单群', 'U-1', 'dedup-1');
     expect(captured.url).toContain('/v1.0/im/sceneGroup/create');
     expect(captured.body).toMatchObject({
       template_id: 'tmpl-1',
       owner_user_id: 'U-1',
       user_ids: ['U-1', 'U-2'],
       title: '工单群',
+      uuid: 'dedup-1', // 建群去重业务ID（P1-03）
     });
     expect(captured.headers['x-acs-dingtalk-access-token']).toBeTruthy();
     expect(group.chatId).toBe('cid-1');

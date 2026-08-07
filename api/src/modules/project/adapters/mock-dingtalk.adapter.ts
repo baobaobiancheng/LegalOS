@@ -9,9 +9,9 @@ import { DingTalkAdapter, DingTalkGroup, ContactInfo } from './adapter.interface
 export class MockDingTalkAdapter implements DingTalkAdapter {
   private readonly logger = new Logger(MockDingTalkAdapter.name);
 
-  async createGroup(members: string[], projectTitle: string, ownerUserId?: string): Promise<DingTalkGroup> {
+  async createGroup(members: string[], projectTitle: string, ownerUserId?: string, dedupKey?: string): Promise<DingTalkGroup> {
     const chatId = `DING-MOCK-${Date.now()}`;
-    this.logger.log(`[DingTalk Mock] 拉群成功 — ${chatId}，标题："${projectTitle}"，群主：${ownerUserId || members[0]}，成员：${members.join(', ')}`);
+    this.logger.log(`[DingTalk Mock] 拉群成功 — ${chatId}，标题："${projectTitle}"，群主：${ownerUserId || members[0]}，成员：${members.join(', ')}${dedupKey ? `，去重key：${dedupKey}` : ''}`);
     return { chatId, title: projectTitle, members };
   }
 

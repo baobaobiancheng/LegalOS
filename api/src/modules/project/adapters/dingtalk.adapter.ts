@@ -261,6 +261,7 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
     members: string[],
     projectTitle: string,
     ownerUserId?: string,
+    dedupKey?: string,
   ): Promise<DingTalkGroup> {
     const templateId = process.env.DINGTALK_SCENE_TEMPLATE_ID;
     if (!templateId) {
@@ -273,6 +274,7 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
       template_id: templateId,
       owner_user_id: owner,
       user_ids: members,
+      ...(dedupKey ? { uuid: dedupKey } : {}), // 建群去重业务ID：同一工单重试只建一个群（P1-03）
     });
     const chatId =
       res.open_conversation_id || res.openConversationId || res.chat_id || res.chatid;
