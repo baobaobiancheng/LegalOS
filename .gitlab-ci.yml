@@ -107,5 +107,7 @@ security:audit:
   before_script:
     - npm --prefix api ci
   script:
-    - cd api && npm audit --audit-level=high || true
-    - cd ../web && npm audit --audit-level=high || true
+    # P1-12 门禁：任一 high/critical 依赖漏洞使 Pipeline 失败（不静默跳过）。
+    # 若内部 npm 镜像不支持 audit，会在此失败并需接入公司依赖扫描，而不是吞掉。
+    - cd api && npm audit --audit-level=high
+    - cd ../web && npm audit --audit-level=high
