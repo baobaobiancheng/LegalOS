@@ -13,6 +13,7 @@ import { OutboxRepository } from './infrastructure/outbox.repository';
 import { OutboxWorker } from './infrastructure/outbox.worker';
 import { ProjectQueryService } from './queries/project-query.service';
 import { ProjectStateMachine } from './domain/project-state-machine';
+import { ClaimProjectUseCase } from './application/claim-project.use-case';
 
 @Module({
   imports: [PrismaModule, DingTalkAdapterModule],
@@ -26,6 +27,7 @@ import { ProjectStateMachine } from './domain/project-state-machine';
     OutboxWorker,
     ProjectQueryService,
     ProjectStateMachine,
+    ClaimProjectUseCase,
     { provide: CRM_ADAPTER, useClass: MockCrmAdapter },
   ],
   exports: [ProjectService],

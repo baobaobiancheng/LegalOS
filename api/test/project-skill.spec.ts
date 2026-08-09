@@ -83,6 +83,7 @@ describe('ProjectService.create 技能解析', () => {
       new ProjectAccessPolicy() as any,
       { findAll: vi.fn(), findOne: vi.fn() } as any,
       new ProjectStateMachine() as any,
+      { execute: vi.fn() } as any,
     );
     prisma.project.create.mockResolvedValue(mockProject());
   });

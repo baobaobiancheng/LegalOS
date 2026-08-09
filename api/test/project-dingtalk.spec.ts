@@ -77,6 +77,7 @@ describe('ProjectService 钉钉拉群链路', () => {
       new ProjectAccessPolicy() as any,
       { findAll: vi.fn(), findOne: vi.fn() } as any,
       new ProjectStateMachine() as any,
+      { execute: vi.fn() } as any,
     );
 
     prisma.project.create.mockResolvedValue(mockProject());

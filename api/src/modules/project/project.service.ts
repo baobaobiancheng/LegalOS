@@ -25,6 +25,7 @@ import { ProjectAction, ProjectActor } from './domain/project-access.types';
 import { CreateProjectUseCase, dingtalkGroupOutboxDedupKey } from './application/create-project.use-case';
 import { ProjectListParams, ProjectQueryService } from './queries/project-query.service';
 import { ProjectStateMachine } from './domain/project-state-machine';
+import { ClaimProjectUseCase } from './application/claim-project.use-case';
 
 // 用户选择器，避免暴露密码哈希
 const userSelect = { id: true, username: true, displayName: true, role: true };
@@ -43,6 +44,7 @@ export class ProjectService {
     private readonly accessPolicy: ProjectAccessPolicy,
     private readonly query: ProjectQueryService,
     private readonly stateMachine: ProjectStateMachine,
+    private readonly claimProject: ClaimProjectUseCase,
   ) {}
 
   // ═══════════════════════════════════════════
@@ -230,32 +232,9 @@ export class ProjectService {
   }
 
   /** 认领未分配工单（P1-01 5.3.9）：原子条件更新，count=0 时重读判断是被认领还是不存在 */
-  async claim(id: string, actor: ProjectActor) {
-    const project = await this.prisma.project.findUnique({ where: { id } });
-    if (!project) throw new NotFoundException('工单不存在');
-    this.accessPolicy.assertCan(actor, ProjectAction.Claim, project);
-
-    const res = await this.prisma.project.updateMany({
-      where: { id, legalBpId: null },
-      data: { legalBpId: actor.id, ownerId: actor.id },
-    });
-    if (res.count === 0) {
-      // 已被他人认领 / 已指派
-      const fresh = await this.prisma.project.findUnique({ where: { id }, select: { legalBpId: true } });
-      if (!fresh) throw new NotFoundException('工单不存在');
-      throw new ConflictException('该工单已被认领或已指派');
-    }
-
-    await this.addEvent(id, this.formatTime() + ' · 工单已认领');
-    const updated = await this.prisma.project.findUnique({
-      where: { id },
-      include: {
-        creator: { select: userSelect },
-        owner: { select: userSelect },
-        legalBp: { select: userSelect },
-      },
-    });
-    return updated;
+  /** 认领 — 委派 ClaimProjectUseCase（P2-01） */
+  claim(id: string, actor: ProjectActor) {
+    return this.claimProject.execute(id, actor);
   }
 
   /** 取消工单 — 原子条件更新 + 对象级授权（business 仅创建者且未完成；legal_bp 禁止） */
