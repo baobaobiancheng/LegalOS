@@ -39,6 +39,9 @@ export class CodexService {
 
     this.logger.log(`Codex CLI 路径：${this.codexBin}`);
     this.logger.log(`Codex 工作区根目录：${this.baseWorkspace}`);
+    this.logger.log(
+      `Codex 安全模式：硬化=${this.hardened ? '开启' : '关闭'}，AI执行=${this.aiEnabled() ? '允许' : '禁用'}`,
+    );
   }
 
   /** 在常见位置查找 codex 可执行文件 */
