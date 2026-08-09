@@ -38,17 +38,9 @@ function getFadedLogo(): Promise<Uint8Array> {
   return fadedLogoPromise
 }
 
-/**
- * 合同导出样式（与后端 ContractTemplate.style JSON 对齐）。
- * 每模板独立：字体（中文 eastAsia + 西文 ascii）/字号/行距/页边距/标题加粗。
- * 缺省（不传）时用通用默认样式（微软雅黑 10.5pt 1.5 行距），向后兼容。
- */
-export type ContractDocStyle = {
-  pageMargin?: { top: number; right: number; bottom: number; left: number }
-  body?: { fontEastAsia: string; fontAscii: string; sizePt: number; lineSpacing?: number }
-  partyInfo?: { fontEastAsia: string; fontAscii: string; sizePt: number; bold?: boolean }
-  heading?: { fontEastAsia: string; fontAscii: string; sizePt: number; bold?: boolean }
-}
+// P2-04：类型已移到轻量文件,此处 import 供本文件使用 + re-export 兼容旧调用方
+import type { ContractDocStyle } from '../types/contract-export'
+export type { ContractDocStyle } from '../types/contract-export'
 
 /** 渲染上下文：从 style 计算出的具体参数（半磅字号 / 1/240 行距） */
 interface StyleCtx {

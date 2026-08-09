@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { markdownToDocxBlob, type ContractDocStyle } from '../utils/markdown-to-docx'
+import type { ContractDocStyle } from '../types/contract-export'
 
 const props = defineProps<{
   content: string
@@ -11,27 +11,32 @@ const props = defineProps<{
 
 const open = ref(false)
 const converting = ref(false)
+const docxError = ref('')
 
 const toggle = () => { open.value = !open.value }
 
-// ── .md 下载 ──
+// ── .md 下载（轻量同步,不触发 DOCX 依赖） ──
 const downloadMD = () => {
   const blob = new Blob([props.content], { type: 'text/markdown;charset=utf-8' })
   triggerDownload(blob, `${props.filename || '法律咨询答复'}.md`)
   open.value = false
 }
 
-// ── .docx 下载（真正的 docx 格式） ──
+// ── .docx 下载（P2-04：点击后才动态加载 docx/marked,首屏不下载该 chunk） ──
 const downloadDOCX = async () => {
-  if (converting.value) return
+  if (converting.value) return // 双击保护
   converting.value = true
+  docxError.value = ''
   try {
+    const { markdownToDocxBlob } = await import('../utils/markdown-to-docx')
     const blob = await markdownToDocxBlob(props.content, props.filename || '法律咨询答复', props.docxStyle)
     triggerDownload(blob, `${props.filename || '法律咨询答复'}.docx`)
   } catch (e) {
+    docxError.value = 'Word 文档生成失败,请重试'
     console.error('DOCX generation failed:', e)
+  } finally {
+    converting.value = false
   }
-  converting.value = false
   open.value = false
 }
 
@@ -76,15 +81,25 @@ const triggerDownload = (blob: Blob, filename: string) => {
       <button @click.stop="downloadMD">
         📝 Markdown (.md)
       </button>
-      <button @click.stop="downloadDOCX">
-        📄 Word (.docx)
+      <button
+        :disabled="converting"
+        @click.stop="downloadDOCX"
+      >
+        {{ converting ? '转换中…' : '📄 Word (.docx)' }}
       </button>
+      <p
+        v-if="docxError"
+        class="dl-error"
+      >
+        {{ docxError }}
+      </p>
     </div>
   </div>
 </template>
 
 <style scoped>
 .download-wrap { position: relative; display: inline-block; margin-top: 8px; }
+.dl-error { color: #c62828; font-size: 12px; margin: 4px 0 0; }
 .dl-trigger {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 5px 14px; border: 1px solid rgba(0,0,0,0.08); border-radius: 14px;
