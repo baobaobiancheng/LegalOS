@@ -234,7 +234,8 @@ export class SkillService {
     }
     const action: SkillReviewAction = dto.approved ? 'approve' : 'reject';
     const toState: SkillVisibility = dto.approved ? 'public' : 'private';
-    const eventId = `${id}:${action}:${randomUUID()}`;
+    // eventId 长度限制 VARCHAR(64)：uuid(36)+action(~6)+分隔符，避免超长
+    const eventId = `${action}:${randomUUID()}`;
 
     await this.prisma.$transaction(async (tx) => {
       const updated = await tx.skill.updateMany({

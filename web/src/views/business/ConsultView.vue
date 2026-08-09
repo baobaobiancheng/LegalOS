@@ -160,78 +160,182 @@ const handleUpgrade = async () => {
 </script>
 
 <template>
-  <BusinessSidebarLayout active-key="consult" content-class="chat-content">
+  <BusinessSidebarLayout
+    active-key="consult"
+    content-class="chat-content"
+  >
     <template #topbar>
       <div class="tb-left">
         <small class="tb-path">Business OS</small>
         <strong class="tb-title">法律咨询</strong>
       </div>
       <!-- 2026-08-05：无信息量的"在线"徽章已删除；仅保留真实状态 -->
-      <span v-if="expectingAI" class="tb-badge thinking">AI 思考中…</span>
-      <span v-else-if="upgraded" class="tb-badge escalated">已升级人工</span>
+      <span
+        v-if="expectingAI"
+        class="tb-badge thinking"
+      >AI 思考中…</span>
+      <span
+        v-else-if="upgraded"
+        class="tb-badge escalated"
+      >已升级人工</span>
     </template>
-        <div v-if="messages.length === 0 && !expectingAI" class="welcome-hero">
-          <div class="welcome-icon">
-            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>
-          </div>
-          <h2 class="text-h2">业务法律咨询</h2>
-          <p class="text-body" style="max-width:420px">用自然语言描述您的法律问题<br/>常规问题 AI 将在 1 分钟内答复<br/>高风险问题将自动升级法务 BP</p>
+    <div
+      v-if="messages.length === 0 && !expectingAI"
+      class="welcome-hero"
+    >
+      <div class="welcome-icon">
+        <svg
+          width="34"
+          height="34"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#1E3A8A"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        ><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z" /><path d="M9 12l2 2 4-4" /></svg>
+      </div>
+      <h2 class="text-h2">
+        业务法律咨询
+      </h2>
+      <p
+        class="text-body"
+        style="max-width:420px"
+      >
+        用自然语言描述您的法律问题<br>常规问题 AI 将在 1 分钟内答复<br>高风险问题将自动升级法务 BP
+      </p>
 
-          <!-- 咨询领域选择（2026-08-04 技能库模块）：对话方向感，点选即锁定 -->
-          <div class="domain-group">
-            <span class="domain-label">选择咨询领域</span>
-            <div class="domain-cards">
-              <button class="domain-card" :class="{ active: !selectedSkill.id }" @click="pickSkill({ name: GENERAL_SKILL.name })">
-                <span class="dc-ico">法</span>
-                <span class="dc-name">{{ GENERAL_SKILL.name }}</span>
-                <span v-if="!selectedSkill.id" class="dc-check">✓</span>
-              </button>
-              <button v-for="s in usableSkills" :key="s.id" class="domain-card" :class="{ active: selectedSkill.id === s.id }" @click="pickSkill({ id: s.id, name: s.name })">
-                <span class="dc-ico">{{ groupIcon(s.group) }}</span>
-                <span class="dc-name">{{ s.name }}</span>
-                <span v-if="selectedSkill.id === s.id" class="dc-check">✓</span>
+      <!-- 咨询领域选择（2026-08-04 技能库模块）：对话方向感，点选即锁定 -->
+      <div class="domain-group">
+        <span class="domain-label">选择咨询领域</span>
+        <div class="domain-cards">
+          <button
+            class="domain-card"
+            :class="{ active: !selectedSkill.id }"
+            @click="pickSkill({ name: GENERAL_SKILL.name })"
+          >
+            <span class="dc-ico">法</span>
+            <span class="dc-name">{{ GENERAL_SKILL.name }}</span>
+            <span
+              v-if="!selectedSkill.id"
+              class="dc-check"
+            >✓</span>
+          </button>
+          <button
+            v-for="s in usableSkills"
+            :key="s.id"
+            class="domain-card"
+            :class="{ active: selectedSkill.id === s.id }"
+            @click="pickSkill({ id: s.id, name: s.name })"
+          >
+            <span class="dc-ico">{{ groupIcon(s.group) }}</span>
+            <span class="dc-name">{{ s.name }}</span>
+            <span
+              v-if="selectedSkill.id === s.id"
+              class="dc-check"
+            >✓</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="suggest-grid">
+        <button
+          v-for="q in suggestedQuestions"
+          :key="q"
+          class="suggest-chip"
+          @click="sendSuggested(q)"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          ><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" /></svg>
+          {{ q }}
+        </button>
+      </div>
+    </div>
+
+    <div
+      ref="msgContainer"
+      class="msg-scroll"
+    >
+      <div class="msg-thread">
+        <template
+          v-for="(m, i) in messages"
+          :key="i"
+        >
+          <div
+            v-if="m._event"
+            class="msg-event"
+          >
+            {{ m.text }}
+          </div>
+          <div
+            v-else
+            :class="['msg-row', m.role === 'user' ? 'out' : 'in']"
+          >
+            <div :class="['msg-avatar', m.role === 'user' ? 'user' : 'ai']">
+              {{ m.role === 'user' ? (auth.user?.displayName?.[0] || 'U') : 'AI' }}
+            </div>
+            <div class="msg-body">
+              <div class="msg-bubble">
+                <MarkdownContent
+                  v-if="m.role === 'assistant'"
+                  :text="m.text"
+                  :streaming="m.id === 'streaming'"
+                  :done="!expectingAI"
+                />
+                <template v-else>
+                  {{ m.text }}
+                </template>
+              </div>
+              <div
+                v-if="m._files?.length"
+                class="file-tags"
+              >
+                <span
+                  v-for="f in m._files"
+                  :key="f.id"
+                  class="file-tag"
+                >
+                  <span class="ft-icon">📎</span><span class="ft-name">{{ f.name }}</span><span class="ft-size">{{ f.size }}</span>
+                </span>
+              </div>
+              <div
+                v-if="m.role === 'assistant'"
+                class="ai-disclaimer"
+              >
+                AI 生成 · 仅供参考
+              </div>
+              <DownloadMenu
+                v-if="m.role === 'assistant' && m.text"
+                :content="m.text"
+                :filename="'法律咨询答复'"
+              />
+              <button
+                v-if="m.role === 'assistant' && projectId && projectRoute === 'llm' && !upgraded && i === messages.length - 1"
+                class="escalate-btn"
+                :disabled="upgrading"
+                @click="handleUpgrade"
+              >
+                {{ upgrading ? '升级中…' : '↑ 升级人工处理' }}
               </button>
             </div>
           </div>
+        </template>
+      </div>
+    </div>
 
-          <div class="suggest-grid">
-            <button v-for="q in suggestedQuestions" :key="q" class="suggest-chip" @click="sendSuggested(q)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-              {{ q }}
-            </button>
-          </div>
-        </div>
-
-        <div ref="msgContainer" class="msg-scroll">
-          <div class="msg-thread">
-            <template v-for="(m, i) in messages" :key="i">
-              <div v-if="m._event" class="msg-event">{{ m.text }}</div>
-              <div v-else :class="['msg-row', m.role === 'user' ? 'out' : 'in']">
-                <div :class="['msg-avatar', m.role === 'user' ? 'user' : 'ai']">
-                  {{ m.role === 'user' ? (auth.user?.displayName?.[0] || 'U') : 'AI' }}
-                </div>
-                <div class="msg-body">
-                  <div class="msg-bubble">
-                    <MarkdownContent v-if="m.role === 'assistant'" :text="m.text" :streaming="m.id === 'streaming'" :done="!expectingAI" />
-                    <template v-else>{{ m.text }}</template>
-                  </div>
-                  <div v-if="m._files?.length" class="file-tags">
-                    <span v-for="f in m._files" :key="f.id" class="file-tag">
-                      <span class="ft-icon">📎</span><span class="ft-name">{{ f.name }}</span><span class="ft-size">{{ f.size }}</span>
-                    </span>
-                  </div>
-                  <div v-if="m.role === 'assistant'" class="ai-disclaimer">AI 生成 · 仅供参考</div>
-                  <DownloadMenu v-if="m.role === 'assistant' && m.text" :content="m.text" :filename="'法律咨询答复'" />
-                  <button v-if="m.role === 'assistant' && projectId && projectRoute === 'llm' && !upgraded && i === messages.length - 1"
-                    class="escalate-btn" @click="handleUpgrade" :disabled="upgrading"
-                  >{{ upgrading ? '升级中…' : '↑ 升级人工处理' }}</button>
-                </div>
-              </div>
-            </template>
-          </div>
-        </div>
-
-        <ChatInputBar v-if="!upgraded" :disabled="sending" @send="handleSend" />
+    <ChatInputBar
+      v-if="!upgraded"
+      :disabled="sending"
+      @send="handleSend"
+    />
   </BusinessSidebarLayout>
 </template>
 

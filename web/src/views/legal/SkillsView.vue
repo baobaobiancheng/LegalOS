@@ -228,43 +228,120 @@ const logout = () => {
 
 <template>
   <div class="app-shell">
-    <div class="aurora"><div class="orb orb-1" /><div class="orb orb-2" /><div class="orb orb-3" /></div>
+    <div class="aurora">
+      <div class="orb orb-1" /><div class="orb orb-2" /><div class="orb orb-3" />
+    </div>
 
     <aside class="app-sidebar sidebar-glass">
-      <button class="app-brand" @click="router.push('/legal/projects')">
+      <button
+        class="app-brand"
+        @click="router.push('/legal/projects')"
+      >
         <span class="brand-icon">⚖</span>
         <span class="brand-text"><b>法务 Legal OS</b><small>法律团队项目空间</small></span>
       </button>
 
       <div class="nav-section">
         <span class="nav-label">项目</span>
-        <button class="nav-btn" @click="router.push('/legal/projects')">
-          <span class="nav-ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg></span>
+        <button
+          class="nav-btn"
+          @click="router.push('/legal/projects')"
+        >
+          <span class="nav-ico"><svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          ><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" /><rect
+            x="9"
+            y="3"
+            width="6"
+            height="4"
+            rx="1"
+          /><path d="M9 12h6M9 16h4" /></svg></span>
           工单管理
         </button>
-        <button class="nav-btn" disabled>
-          <span class="nav-ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
+        <button
+          class="nav-btn"
+          disabled
+        >
+          <span class="nav-ico"><svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          ><circle
+            cx="11"
+            cy="11"
+            r="8"
+          /><line
+            x1="21"
+            y1="21"
+            x2="16.65"
+            y2="16.65"
+          /></svg></span>
           法规检索
         </button>
         <button class="nav-btn active">
-          <span class="nav-ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></span>
+          <span class="nav-ico"><svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          ><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg></span>
           技能库
         </button>
       </div>
       <div class="nav-section">
         <span class="nav-label">企业能力</span>
-        <button class="nav-btn" disabled>知识库 · v0.2.0</button>
-        <button class="nav-btn" disabled>数字分身 · v0.2.0</button>
+        <button
+          class="nav-btn"
+          disabled
+        >
+          知识库 · v0.2.0
+        </button>
+        <button
+          class="nav-btn"
+          disabled
+        >
+          数字分身 · v0.2.0
+        </button>
       </div>
 
       <div class="sidebar-footer">
-        <div class="user-avatar">{{ auth.user?.displayName?.[0] || '法' }}</div>
+        <div class="user-avatar">
+          {{ auth.user?.displayName?.[0] || '法' }}
+        </div>
         <div class="user-info">
           <span class="user-name">{{ auth.user?.displayName || '用户' }}</span>
           <span class="user-role">{{ auth.user?.role === 'legal_lead' ? '法务负责人' : '法务 BP' }}</span>
         </div>
-        <button class="logout-link" @click="logout" title="退出登录">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <button
+          class="logout-link"
+          title="退出登录"
+          @click="logout"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          ><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line
+            x1="21"
+            y1="12"
+            x2="9"
+            y2="12"
+          /></svg>
         </button>
       </div>
     </aside>
@@ -276,113 +353,292 @@ const logout = () => {
           <strong class="tb-title">技能库</strong>
         </div>
         <!-- 2026-08-05：右上角状态徽章（就绪/数量）无信息量，已删除 -->
-
       </header>
 
       <div class="app-content animate-in">
         <!-- Tab 切换 -->
         <div class="tab-row">
-          <button :class="['tab-btn', activeTab === 'public' && 'active']" @click="switchTab('public')">技能广场</button>
-          <button :class="['tab-btn', activeTab === 'mine' && 'active']" @click="switchTab('mine')">我的技能</button>
-          <button v-if="isLead" :class="['tab-btn', activeTab === 'pending' && 'active']" @click="switchTab('pending')">待审核</button>
+          <button
+            :class="['tab-btn', activeTab === 'public' && 'active']"
+            @click="switchTab('public')"
+          >
+            技能广场
+          </button>
+          <button
+            :class="['tab-btn', activeTab === 'mine' && 'active']"
+            @click="switchTab('mine')"
+          >
+            我的技能
+          </button>
+          <button
+            v-if="isLead"
+            :class="['tab-btn', activeTab === 'pending' && 'active']"
+            @click="switchTab('pending')"
+          >
+            待审核
+          </button>
           <div class="tab-right">
-            <select v-if="activeTab !== 'pending'" v-model="groupFilter" class="group-select" @change="fetchList">
-              <option value="">全部技能组</option>
-              <option v-for="g in SKILL_GROUPS" :key="g" :value="g">{{ g }}</option>
+            <select
+              v-if="activeTab !== 'pending'"
+              v-model="groupFilter"
+              class="group-select"
+              @change="fetchList"
+            >
+              <option value="">
+                全部技能组
+              </option>
+              <option
+                v-for="g in SKILL_GROUPS"
+                :key="g"
+                :value="g"
+              >
+                {{ g }}
+              </option>
             </select>
-            <button v-if="activeTab === 'mine'" class="btn-primary" @click="openCreate">＋ 新建技能</button>
+            <button
+              v-if="activeTab === 'mine'"
+              class="btn-primary"
+              @click="openCreate"
+            >
+              ＋ 新建技能
+            </button>
           </div>
         </div>
 
         <!-- 技能列表 -->
-        <div v-if="!loading && !skills.length" class="empty-state">
+        <div
+          v-if="!loading && !skills.length"
+          class="empty-state"
+        >
           <p>{{ activeTab === 'pending' ? '暂无待审核技能' : activeTab === 'mine' ? '还没有技能，点击右上角新建' : '暂无公有技能' }}</p>
         </div>
 
         <div class="skill-grid">
-          <div v-for="s in skills" :key="s.id" class="skill-card glass-card" @click="openDetail(s)">
+          <div
+            v-for="s in skills"
+            :key="s.id"
+            class="skill-card glass-card"
+            @click="openDetail(s)"
+          >
             <div class="skill-head">
               <div>
                 <span class="skill-name">{{ s.name }}</span>
                 <span :class="['skill-vis', 'vis-' + s.visibility]">{{ VISIBILITY_LABEL[s.visibility] }}</span>
-                <span v-if="!s.isActive" class="skill-vis vis-archived">已停用</span>
+                <span
+                  v-if="!s.isActive"
+                  class="skill-vis vis-archived"
+                >已停用</span>
               </div>
               <span class="skill-group">{{ s.group }}</span>
             </div>
-            <p class="skill-desc">{{ s.description }}</p>
+            <p class="skill-desc">
+              {{ s.description }}
+            </p>
             <div class="skill-meta">
               <span>创建：{{ s.creator?.displayName || '—' }}</span>
               <span v-if="s.approver">审核：{{ s.approver.displayName }}</span>
             </div>
-            <p v-if="activeTab === 'mine' && lastRejectReason(s)" class="reject-reason">
+            <p
+              v-if="activeTab === 'mine' && lastRejectReason(s)"
+              class="reject-reason"
+            >
               ⚠️ 上次驳回：{{ lastRejectReason(s) }}
             </p>
 
             <!-- 我的技能操作 -->
-            <div v-if="activeTab === 'mine'" class="skill-actions">
-              <button v-if="s.visibility === 'private'" class="btn-sm" @click.stop="openEdit(s)">编辑</button>
-              <button v-if="s.visibility === 'private'" class="btn-sm" @click.stop="act(s.id, 'submit')">提交审核</button>
-              <button v-if="s.visibility === 'pending'" class="btn-sm" @click.stop="act(s.id, 'withdraw')">撤回</button>
-              <button v-if="s.isActive" class="btn-sm danger" @click.stop="act(s.id, 'archive')">停用</button>
-              <button v-if="!s.isActive" class="btn-sm" @click.stop="act(s.id, 'restore')">恢复</button>
+            <div
+              v-if="activeTab === 'mine'"
+              class="skill-actions"
+            >
+              <button
+                v-if="s.visibility === 'private'"
+                class="btn-sm"
+                @click.stop="openEdit(s)"
+              >
+                编辑
+              </button>
+              <button
+                v-if="s.visibility === 'private'"
+                class="btn-sm"
+                @click.stop="act(s.id, 'submit')"
+              >
+                提交审核
+              </button>
+              <button
+                v-if="s.visibility === 'pending'"
+                class="btn-sm"
+                @click.stop="act(s.id, 'withdraw')"
+              >
+                撤回
+              </button>
+              <button
+                v-if="s.isActive"
+                class="btn-sm danger"
+                @click.stop="act(s.id, 'archive')"
+              >
+                停用
+              </button>
+              <button
+                v-if="!s.isActive"
+                class="btn-sm"
+                @click.stop="act(s.id, 'restore')"
+              >
+                恢复
+              </button>
             </div>
 
             <!-- 待审核操作 -->
-            <div v-else-if="activeTab === 'pending'" class="skill-actions">
-              <button class="btn-sm" @click.stop="openReview(s)">审核</button>
+            <div
+              v-else-if="activeTab === 'pending'"
+              class="skill-actions"
+            >
+              <button
+                class="btn-sm"
+                @click.stop="openReview(s)"
+              >
+                审核
+              </button>
             </div>
           </div>
         </div>
 
         <!-- 新建/编辑弹窗 -->
-        <div v-if="showForm" class="modal-mask" @click.self="showForm = false">
+        <div
+          v-if="showForm"
+          class="modal-mask"
+          @click.self="showForm = false"
+        >
           <div class="modal-card">
-            <h3 class="modal-title">{{ editing ? '编辑技能' : '新建技能' }}</h3>
+            <h3 class="modal-title">
+              {{ editing ? '编辑技能' : '新建技能' }}
+            </h3>
 
             <!-- SKILL.md 标准导入（标准 skill 注册方式：frontmatter + 正文） -->
             <div class="import-block">
-              <button class="btn-sm" @click="showImport = !showImport">
+              <button
+                class="btn-sm"
+                @click="showImport = !showImport"
+              >
                 {{ showImport ? '收起导入' : '⇪ 从 SKILL.md 导入' }}
               </button>
-              <div v-if="showImport" class="import-panel">
-                <p class="import-hint">粘贴标准 SKILL.md：frontmatter 中的 <b>name</b> / <b>description</b> 自动填充表单，正文作为 System Prompt</p>
-                <textarea v-model="importText" class="field-input area" rows="6" placeholder="---&#10;name: 数据合规评估&#10;description: 一句话说明 + 适用场景&#10;---&#10;你是数据合规专家…"></textarea>
-                <p v-if="importError" class="form-error">{{ importError }}</p>
-                <div class="modal-actions" style="margin-top:10px">
-                  <button class="btn-sm" :disabled="!importText.trim()" @click="doImport">解析并填充</button>
+              <div
+                v-if="showImport"
+                class="import-panel"
+              >
+                <p class="import-hint">
+                  粘贴标准 SKILL.md：frontmatter 中的 <b>name</b> / <b>description</b> 自动填充表单，正文作为 System Prompt
+                </p>
+                <textarea
+                  v-model="importText"
+                  class="field-input area"
+                  rows="6"
+                  placeholder="---&#10;name: 数据合规评估&#10;description: 一句话说明 + 适用场景&#10;---&#10;你是数据合规专家…"
+                />
+                <p
+                  v-if="importError"
+                  class="form-error"
+                >
+                  {{ importError }}
+                </p>
+                <div
+                  class="modal-actions"
+                  style="margin-top:10px"
+                >
+                  <button
+                    class="btn-sm"
+                    :disabled="!importText.trim()"
+                    @click="doImport"
+                  >
+                    解析并填充
+                  </button>
                 </div>
               </div>
             </div>
 
             <label class="field-label">名称 *</label>
-            <input v-model="form.name" class="field-input" placeholder="如：数据合规评估" maxlength="128" />
+            <input
+              v-model="form.name"
+              class="field-input"
+              placeholder="如：数据合规评估"
+              maxlength="128"
+            >
             <label class="field-label">技能组 *</label>
-            <select v-model="form.group" class="field-input">
-              <option v-for="g in SKILL_GROUPS" :key="g" :value="g">{{ g }}</option>
+            <select
+              v-model="form.group"
+              class="field-input"
+            >
+              <option
+                v-for="g in SKILL_GROUPS"
+                :key="g"
+                :value="g"
+              >
+                {{ g }}
+              </option>
             </select>
             <label class="field-label">技能代号（slug，选填，创建后不可改）</label>
-            <input v-model="form.slug" class="field-input" :disabled="!!editing" placeholder="留空自动生成（拼音），如 data-compliance" />
+            <input
+              v-model="form.slug"
+              class="field-input"
+              :disabled="!!editing"
+              placeholder="留空自动生成（拼音），如 data-compliance"
+            >
             <label class="field-label">描述</label>
-            <input v-model="form.description" class="field-input" placeholder="一句话说明 + 适用场景" maxlength="512" />
+            <input
+              v-model="form.description"
+              class="field-input"
+              placeholder="一句话说明 + 适用场景"
+              maxlength="512"
+            >
             <label class="field-label">System Prompt *（≤4000 字，定义 AI 输出结构与专业口径）</label>
-            <textarea v-model="form.prompt" class="field-input area" rows="8" placeholder="你是…专家。按…结构输出。铁律：不编造实事…"></textarea>
-            <p v-if="formError" class="form-error">{{ formError }}</p>
+            <textarea
+              v-model="form.prompt"
+              class="field-input area"
+              rows="8"
+              placeholder="你是…专家。按…结构输出。铁律：不编造实事…"
+            />
+            <p
+              v-if="formError"
+              class="form-error"
+            >
+              {{ formError }}
+            </p>
             <div class="modal-actions">
-              <button class="btn-sm" @click="showForm = false">取消</button>
-              <button class="btn-primary" :disabled="saving" @click="saveSkill">{{ saving ? '保存中…' : '保存' }}</button>
+              <button
+                class="btn-sm"
+                @click="showForm = false"
+              >
+                取消
+              </button>
+              <button
+                class="btn-primary"
+                :disabled="saving"
+                @click="saveSkill"
+              >
+                {{ saving ? '保存中…' : '保存' }}
+              </button>
             </div>
           </div>
         </div>
 
         <!-- 审核弹窗 -->
-        <div v-if="reviewing" class="modal-mask" @click.self="reviewing = null">
+        <div
+          v-if="reviewing"
+          class="modal-mask"
+          @click.self="reviewing = null"
+        >
           <div class="modal-card wide">
-            <h3 class="modal-title">审核技能 · {{ reviewing.name }}</h3>
-            <p class="review-group">{{ reviewing.group }} · {{ reviewing.slug }}</p>
+            <h3 class="modal-title">
+              审核技能 · {{ reviewing.name }}
+            </h3>
+            <p class="review-group">
+              {{ reviewing.group }} · {{ reviewing.slug }}
+            </p>
             <label class="field-label">System Prompt 全文</label>
             <pre class="prompt-preview">{{ reviewingPrompt }}</pre>
             <div class="checklist">
-              <p class="checklist-title">安全检查清单：</p>
+              <p class="checklist-title">
+                安全检查清单：
+              </p>
               <ul>
                 <li>输出结构约束是否清晰</li>
                 <li>有无"忽略系统指令 / 输出完整上下文 / 越权操作 / 要求读取输出文件"等危险措辞</li>
@@ -390,24 +646,58 @@ const logout = () => {
               </ul>
             </div>
             <label class="field-label">驳回原因（驳回必填）</label>
-            <input v-model="reviewReason" class="field-input" placeholder="如：输出结构不清晰，需补充评估维度" />
+            <input
+              v-model="reviewReason"
+              class="field-input"
+              placeholder="如：输出结构不清晰，需补充评估维度"
+            >
             <div class="modal-actions">
-              <button class="btn-sm" @click="reviewing = null">取消</button>
-              <button class="btn-sm danger" @click="submitReview(false)">驳回</button>
-              <button class="btn-primary" @click="submitReview(true)">通过</button>
+              <button
+                class="btn-sm"
+                @click="reviewing = null"
+              >
+                取消
+              </button>
+              <button
+                class="btn-sm danger"
+                @click="submitReview(false)"
+              >
+                驳回
+              </button>
+              <button
+                class="btn-primary"
+                @click="submitReview(true)"
+              >
+                通过
+              </button>
             </div>
           </div>
         </div>
 
         <!-- 技能详情弹窗（卡片点击；广场可见公有技能完整 prompt，供参考学习） -->
-        <div v-if="detail" class="modal-mask" @click.self="detail = null">
+        <div
+          v-if="detail"
+          class="modal-mask"
+          @click.self="detail = null"
+        >
           <div class="modal-card wide">
             <div class="detail-head">
-              <h3 class="modal-title">{{ detail.name }}</h3>
+              <h3 class="modal-title">
+                {{ detail.name }}
+              </h3>
               <span :class="['skill-vis', 'vis-' + detail.visibility]">{{ VISIBILITY_LABEL[detail.visibility] }}</span>
             </div>
-            <p class="review-group">{{ detail.group }} · {{ detail.slug }}<template v-if="detail.approvedAt"> · 审核于 {{ fmtTime(detail.approvedAt) }}</template></p>
-            <p v-if="detail.description" class="detail-desc">{{ detail.description }}</p>
+            <p class="review-group">
+              {{ detail.group }} · {{ detail.slug }}<template v-if="detail.approvedAt">
+                · 审核于 {{ fmtTime(detail.approvedAt) }}
+              </template>
+            </p>
+            <p
+              v-if="detail.description"
+              class="detail-desc"
+            >
+              {{ detail.description }}
+            </p>
             <label class="field-label">System Prompt</label>
             <pre class="prompt-preview">{{ detail.prompt }}</pre>
             <div class="skill-meta">
@@ -415,15 +705,31 @@ const logout = () => {
               <span v-if="detail.approver">审核：{{ detail.approver.displayName }}</span>
               <span>创建于 {{ fmtTime(detail.createdAt) }}</span>
             </div>
-            <div v-if="detail.reviewLog?.length" class="checklist">
-              <p class="checklist-title">审核记录</p>
-              <div v-for="(r, i) in detail.reviewLog" :key="i" class="review-log-item">
+            <div
+              v-if="detail.reviewLog?.length"
+              class="checklist"
+            >
+              <p class="checklist-title">
+                审核记录
+              </p>
+              <div
+                v-for="(r, i) in detail.reviewLog"
+                :key="i"
+                class="review-log-item"
+              >
                 <b :class="r.action === 'reject' ? 'log-reject' : 'log-approve'">{{ r.action === 'reject' ? '驳回' : '通过' }}</b>
-                {{ fmtTime(r.at) }}<template v-if="r.reason">：{{ r.reason }}</template>
+                {{ fmtTime(r.at) }}<template v-if="r.reason">
+                  ：{{ r.reason }}
+                </template>
               </div>
             </div>
             <div class="modal-actions">
-              <button class="btn-sm" @click="detail = null">关闭</button>
+              <button
+                class="btn-sm"
+                @click="detail = null"
+              >
+                关闭
+              </button>
             </div>
           </div>
         </div>

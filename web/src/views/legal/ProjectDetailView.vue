@@ -180,36 +180,106 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
 
 <template>
   <div class="app-shell">
-    <div class="aurora"><div class="orb orb-1" /><div class="orb orb-2" /><div class="orb orb-3" /></div>
+    <div class="aurora">
+      <div class="orb orb-1" /><div class="orb orb-2" /><div class="orb orb-3" />
+    </div>
 
     <aside class="app-sidebar sidebar-glass">
-      <button class="app-brand" @click="router.push('/legal/projects')">
+      <button
+        class="app-brand"
+        @click="router.push('/legal/projects')"
+      >
         <span class="brand-icon">⚖</span>
         <span class="brand-text"><b>法务 Legal OS</b><small>法律团队项目空间</small></span>
       </button>
       <div class="nav-section">
         <span class="nav-label">项目</span>
-        <button class="nav-btn active" @click="goBack">
-          <span class="nav-ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg></span>
+        <button
+          class="nav-btn active"
+          @click="goBack"
+        >
+          <span class="nav-ico"><svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          ><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" /><rect
+            x="9"
+            y="3"
+            width="6"
+            height="4"
+            rx="1"
+          /><path d="M9 12h6M9 16h4" /></svg></span>
           工单管理
         </button>
-        <button class="nav-btn" disabled>
-          <span class="nav-ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
+        <button
+          class="nav-btn"
+          disabled
+        >
+          <span class="nav-ico"><svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          ><circle
+            cx="11"
+            cy="11"
+            r="8"
+          /><line
+            x1="21"
+            y1="21"
+            x2="16.65"
+            y2="16.65"
+          /></svg></span>
           法规检索
         </button>
-        <button class="nav-btn" disabled>
-          <span class="nav-ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></span>
+        <button
+          class="nav-btn"
+          disabled
+        >
+          <span class="nav-ico"><svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          ><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg></span>
           技能库
         </button>
       </div>
       <div class="sidebar-footer">
-        <div class="user-avatar">{{ auth.user?.displayName?.[0] || '法' }}</div>
+        <div class="user-avatar">
+          {{ auth.user?.displayName?.[0] || '法' }}
+        </div>
         <div class="user-info">
           <span class="user-name">{{ auth.user?.displayName || '用户' }}</span>
           <span class="user-role">{{ auth.user?.role === 'legal_lead' ? '法务负责人' : '法务 BP' }}</span>
         </div>
-        <button class="logout-link" @click="handleLogout" title="退出登录">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <button
+          class="logout-link"
+          title="退出登录"
+          @click="handleLogout"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          ><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line
+            x1="21"
+            y1="12"
+            x2="9"
+            y2="12"
+          /></svg>
         </button>
       </div>
     </aside>
@@ -217,41 +287,83 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
     <div class="app-main">
       <header class="app-topbar topbar-glass">
         <div class="tb-left">
-          <button class="back-link" @click="goBack">← 工单管理</button>
+          <button
+            class="back-link"
+            @click="goBack"
+          >
+            ← 工单管理
+          </button>
           <template v-if="project">
             <span class="sep">/</span>
             <strong class="tb-title">{{ project.title }}</strong>
-            <span v-if="project.skillName" class="skill-chip">{{ project.skillName }}</span>
+            <span
+              v-if="project.skillName"
+              class="skill-chip"
+            >{{ project.skillName }}</span>
             <span :class="['risk-chip', 'risk-' + project.risk + '-bg']">{{ project.risk }}</span>
             <span :class="['status-chip', 'status-' + project.status]">{{ project.status }}</span>
           </template>
         </div>
-        <span v-if="loading" class="tb-muted">加载中…</span>
+        <span
+          v-if="loading"
+          class="tb-muted"
+        >加载中…</span>
       </header>
 
-      <div class="app-content chat-content animate-in" v-if="!loading">
-        <div id="msg-container" class="msg-scroll">
+      <div
+        v-if="!loading"
+        class="app-content chat-content animate-in"
+      >
+        <div
+          id="msg-container"
+          class="msg-scroll"
+        >
           <div class="msg-thread">
-            <template v-for="m in messages" :key="m.id">
+            <template
+              v-for="m in messages"
+              :key="m.id"
+            >
               <!-- event -->
-              <div v-if="(m as any)._event" class="msg-event">{{ (m as EventDto).text }}</div>
+              <div
+                v-if="(m as any)._event"
+                class="msg-event"
+              >
+                {{ (m as EventDto).text }}
+              </div>
               <!-- message -->
               <div
                 v-else
                 :class="['msg-row', (m as MessageDto).role === 'user' ? 'out' : 'in', (m as MessageDto).role === 'legal' ? 'legal' : '']"
               >
-                <div :class="['msg-avatar', (m as MessageDto).role]">{{ avatarLabel((m as MessageDto).role) }}</div>
+                <div :class="['msg-avatar', (m as MessageDto).role]">
+                  {{ avatarLabel((m as MessageDto).role) }}
+                </div>
                 <div class="msg-body">
                   <div class="msg-meta">
                     <span class="msg-author">{{ authorLabel((m as MessageDto).role) }}</span>
                     <span class="msg-time">{{ timeFmt((m as MessageDto).createdAt) }}</span>
                   </div>
                   <div class="msg-bubble">
-                <MarkdownContent v-if="(m as MessageDto).role === 'assistant' || (m as MessageDto).role === 'legal'" :text="(m as MessageDto).text" />
-                <template v-else>{{ (m as MessageDto).text }}</template>
-              </div>
-                  <div v-if="(m as MessageDto).role === 'assistant' || (m as MessageDto).role === 'legal'" class="ai-disclaimer">AI 生成 · 仅供参考</div>
-                  <DownloadMenu v-if="((m as MessageDto).role === 'assistant' || (m as MessageDto).role === 'legal') && (m as MessageDto).text" :content="(m as MessageDto).text" :filename="'法律咨询答复'" :docx-style="templateStyle" />
+                    <MarkdownContent
+                      v-if="(m as MessageDto).role === 'assistant' || (m as MessageDto).role === 'legal'"
+                      :text="(m as MessageDto).text"
+                    />
+                    <template v-else>
+                      {{ (m as MessageDto).text }}
+                    </template>
+                  </div>
+                  <div
+                    v-if="(m as MessageDto).role === 'assistant' || (m as MessageDto).role === 'legal'"
+                    class="ai-disclaimer"
+                  >
+                    AI 生成 · 仅供参考
+                  </div>
+                  <DownloadMenu
+                    v-if="((m as MessageDto).role === 'assistant' || (m as MessageDto).role === 'legal') && (m as MessageDto).text"
+                    :content="(m as MessageDto).text"
+                    :filename="'法律咨询答复'"
+                    :docx-style="templateStyle"
+                  />
                 </div>
               </div>
             </template>
@@ -259,16 +371,38 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
         </div>
 
         <!-- 合同附件 -->
-        <div v-if="project && project.kind === 'contract'" class="attach-panel">
+        <div
+          v-if="project && project.kind === 'contract'"
+          class="attach-panel"
+        >
           <div class="attach-head">
             <span class="attach-title">📎 合同附件</span>
-            <button v-if="canUploadFinal" class="attach-upload-btn" @click="triggerFinalUpload" :disabled="uploadingFinal">
+            <button
+              v-if="canUploadFinal"
+              class="attach-upload-btn"
+              :disabled="uploadingFinal"
+              @click="triggerFinalUpload"
+            >
               {{ uploadingFinal ? '上传中…' : '上传定稿' }}
             </button>
-            <input ref="finalInput" type="file" class="attach-file-input" accept=".docx,.doc,.pdf,.md,.txt" @change="handleFinalUpload" />
+            <input
+              ref="finalInput"
+              type="file"
+              class="attach-file-input"
+              accept=".docx,.doc,.pdf,.md,.txt"
+              @change="handleFinalUpload"
+            >
           </div>
-          <div v-if="contractFiles.length" class="attach-list">
-            <button v-for="f in contractFiles" :key="f.id" class="attach-item" @click="downloadFile(f)">
+          <div
+            v-if="contractFiles.length"
+            class="attach-list"
+          >
+            <button
+              v-for="f in contractFiles"
+              :key="f.id"
+              class="attach-item"
+              @click="downloadFile(f)"
+            >
               <span class="att-icon">📄</span>
               <span class="att-name">{{ f.originalName }}</span>
               <span :class="['att-kind', 'att-kind-' + f.kind]">{{ f.kind === 'final' ? '定稿' : '修订版' }}</span>
@@ -276,28 +410,66 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
               <span class="att-uploader">{{ f.uploader?.displayName || '' }}</span>
             </button>
           </div>
-          <div v-else class="attach-empty">暂无合同附件</div>
+          <div
+            v-else
+            class="attach-empty"
+          >
+            暂无合同附件
+          </div>
         </div>
 
-        <div class="chat-input-bar" v-if="project && project.status !== '已取消'">
+        <div
+          v-if="project && project.status !== '已取消'"
+          class="chat-input-bar"
+        >
           <textarea
-            v-model="input" :placeholder="canReply() ? '输入回传意见…' : '输入消息…'"
-            rows="1" @keydown.enter.exact.prevent="canReply() ? reply() : sendMessage()"
+            v-model="input"
+            :placeholder="canReply() ? '输入回传意见…' : '输入消息…'"
+            rows="1"
+            @keydown.enter.exact.prevent="canReply() ? reply() : sendMessage()"
           />
           <button
-            v-if="canReply()" class="reply-btn" @click="reply" :disabled="!input.trim() || sending"
-          >回传</button>
+            v-if="canReply()"
+            class="reply-btn"
+            :disabled="!input.trim() || sending"
+            @click="reply"
+          >
+            回传
+          </button>
           <button
-            v-else class="chat-send-btn" @click="sendMessage" :disabled="!input.trim() || sending"
-          >↑</button>
+            v-else
+            class="chat-send-btn"
+            :disabled="!input.trim() || sending"
+            @click="sendMessage"
+          >
+            ↑
+          </button>
         </div>
       </div>
 
-      <div v-else class="welcome-hero">
+      <div
+        v-else
+        class="welcome-hero"
+      >
         <div class="welcome-icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#86868b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+          <svg
+            width="32"
+            height="32"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="#86868b"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          ><circle
+            cx="12"
+            cy="12"
+            r="9"
+          /><path d="M12 7v5l3 3" /></svg>
         </div>
-        <h2 class="text-h2">加载中…</h2>
+        <h2 class="text-h2">
+          加载中…
+        </h2>
       </div>
     </div>
   </div>

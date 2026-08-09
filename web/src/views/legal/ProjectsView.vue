@@ -1,9 +1,14 @@
 <template>
   <div class="app-shell">
-    <div class="aurora"><div class="orb orb-1" /><div class="orb orb-2" /><div class="orb orb-3" /></div>
+    <div class="aurora">
+      <div class="orb orb-1" /><div class="orb orb-2" /><div class="orb orb-3" />
+    </div>
 
     <aside class="app-sidebar sidebar-glass">
-      <button class="app-brand" @click="router.push('/legal/projects')">
+      <button
+        class="app-brand"
+        @click="router.push('/legal/projects')"
+      >
         <span class="brand-icon">⚖</span>
         <span class="brand-text"><b>法务 Legal OS</b><small>法律团队项目空间</small></span>
       </button>
@@ -11,32 +16,104 @@
       <div class="nav-section">
         <span class="nav-label">项目</span>
         <button class="nav-btn active">
-          <span class="nav-ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg></span>
+          <span class="nav-ico"><svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          ><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" /><rect
+            x="9"
+            y="3"
+            width="6"
+            height="4"
+            rx="1"
+          /><path d="M9 12h6M9 16h4" /></svg></span>
           工单管理
         </button>
-        <button class="nav-btn" disabled>
-          <span class="nav-ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
+        <button
+          class="nav-btn"
+          disabled
+        >
+          <span class="nav-ico"><svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          ><circle
+            cx="11"
+            cy="11"
+            r="8"
+          /><line
+            x1="21"
+            y1="21"
+            x2="16.65"
+            y2="16.65"
+          /></svg></span>
           法规检索
         </button>
-        <button class="nav-btn" @click="router.push('/legal/skills')">
-          <span class="nav-ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></span>
+        <button
+          class="nav-btn"
+          @click="router.push('/legal/skills')"
+        >
+          <span class="nav-ico"><svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          ><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg></span>
           技能库
         </button>
       </div>
       <div class="nav-section">
         <span class="nav-label">企业能力</span>
-        <button class="nav-btn" disabled>知识库 · v0.2.0</button>
-        <button class="nav-btn" disabled>数字分身 · v0.2.0</button>
+        <button
+          class="nav-btn"
+          disabled
+        >
+          知识库 · v0.2.0
+        </button>
+        <button
+          class="nav-btn"
+          disabled
+        >
+          数字分身 · v0.2.0
+        </button>
       </div>
 
       <div class="sidebar-footer">
-        <div class="user-avatar">{{ auth.user?.displayName?.[0] || '法' }}</div>
+        <div class="user-avatar">
+          {{ auth.user?.displayName?.[0] || '法' }}
+        </div>
         <div class="user-info">
           <span class="user-name">{{ auth.user?.displayName || '用户' }}</span>
           <span class="user-role">{{ auth.user?.role === 'legal_lead' ? '法务负责人' : '法务 BP' }}</span>
         </div>
-        <button class="logout-link" @click="handleLogout" title="退出登录">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <button
+          class="logout-link"
+          title="退出登录"
+          @click="handleLogout"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          ><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line
+            x1="21"
+            y1="12"
+            x2="9"
+            y2="12"
+          /></svg>
         </button>
       </div>
     </aside>
@@ -48,14 +125,20 @@
           <strong class="tb-title">工单管理</strong>
         </div>
         <!-- 2026-08-05：右上角状态徽章（就绪/数量）无信息量，已删除 -->
-
       </header>
 
       <div class="app-content animate-in">
         <!-- 统计概览 -->
         <div class="stats-row">
-          <div class="stat-card glass-card" v-for="s in stats" :key="s.label">
-            <span class="stat-value" :style="{ color: s.color }">{{ s.count }}</span>
+          <div
+            v-for="s in stats"
+            :key="s.label"
+            class="stat-card glass-card"
+          >
+            <span
+              class="stat-value"
+              :style="{ color: s.color }"
+            >{{ s.count }}</span>
             <span class="stat-label">{{ s.label }}</span>
           </div>
         </div>
@@ -74,29 +157,75 @@
 
         <!-- Loading Skeleton -->
         <template v-if="loading">
-          <div v-for="i in 3" :key="'sk-'+i" class="project-card glass-card" style="cursor:default; transform:none">
+          <div
+            v-for="i in 3"
+            :key="'sk-'+i"
+            class="project-card glass-card"
+            style="cursor:default; transform:none"
+          >
             <div class="card-main">
-              <div class="skeleton" style="width:48px;height:24px;border-radius:20px" />
-              <div class="skeleton" style="width:200px;height:18px;margin-left:14px" />
+              <div
+                class="skeleton"
+                style="width:48px;height:24px;border-radius:20px"
+              />
+              <div
+                class="skeleton"
+                style="width:200px;height:18px;margin-left:14px"
+              />
             </div>
             <div class="card-meta-row">
-              <div class="skeleton" style="width:32px;height:22px;border-radius:11px" />
-              <div class="skeleton" style="width:80px;height:14px;margin-left:12px" />
+              <div
+                class="skeleton"
+                style="width:32px;height:22px;border-radius:11px"
+              />
+              <div
+                class="skeleton"
+                style="width:80px;height:14px;margin-left:12px"
+              />
             </div>
           </div>
         </template>
 
         <!-- Empty -->
-        <div v-else-if="!groups[activeTab]?.length" class="welcome-hero">
+        <div
+          v-else-if="!groups[activeTab]?.length"
+          class="welcome-hero"
+        >
           <div class="welcome-icon">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#86868b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+            <svg
+              width="32"
+              height="32"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#86868b"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            ><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line
+              x1="12"
+              y1="18"
+              x2="12"
+              y2="12"
+            /><line
+              x1="9"
+              y1="15"
+              x2="15"
+              y2="15"
+            /></svg>
           </div>
-          <h2 class="text-h2">暂无工单</h2>
-          <p class="text-body">{{ activeTab }}分区为空，新工单将自动出现在这里</p>
+          <h2 class="text-h2">
+            暂无工单
+          </h2>
+          <p class="text-body">
+            {{ activeTab }}分区为空，新工单将自动出现在这里
+          </p>
         </div>
 
         <!-- Project List -->
-        <div v-else class="card-stack">
+        <div
+          v-else
+          class="card-stack"
+        >
           <article
             v-for="(p, idx) in groups[activeTab]"
             :key="p.id"
@@ -106,11 +235,17 @@
           >
             <div class="card-main">
               <span :class="['kind-badge', 'kind-' + p.kind]">
-                <span class="kind-icon" v-html="kindIcon(p.kind)" />
+                <span
+                  class="kind-icon"
+                  v-html="kindIcon(p.kind)"
+                />
                 {{ kindLabel(p.kind) }}
               </span>
               <span class="card-title">{{ p.title }}</span>
-              <span v-if="p.isFailed" class="failed-dot">异常</span>
+              <span
+                v-if="p.isFailed"
+                class="failed-dot"
+              >异常</span>
             </div>
             <div class="card-meta-row">
               <span :class="['risk-chip', 'risk-' + p.risk + '-bg']">{{ p.risk }}</span>

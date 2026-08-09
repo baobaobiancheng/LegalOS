@@ -174,158 +174,323 @@ const submitReview = async () => {
 </script>
 
 <template>
-  <BusinessSidebarLayout active-key="contract" content-class="contract-content">
+  <BusinessSidebarLayout
+    active-key="contract"
+    content-class="contract-content"
+  >
     <template #topbar>
       <div class="tb-left">
         <small class="tb-path">Business OS</small>
         <strong class="tb-title">合同助手</strong>
       </div>
       <!-- 2026-08-05：无信息量的"在线"徽章已删除；仅保留真实流程状态 -->
-      <span class="tb-badge draft" v-if="draftComplete && !submittedReview">草稿已生成</span>
-      <span class="tb-badge submitted" v-else-if="submittedReview">已提交审阅</span>
+      <span
+        v-if="draftComplete && !submittedReview"
+        class="tb-badge draft"
+      >草稿已生成</span>
+      <span
+        v-else-if="submittedReview"
+        class="tb-badge submitted"
+      >已提交审阅</span>
     </template>
-        <!-- 步骤指示 -->
-        <div class="step-bar">
-          <template v-for="(s, i) in steps" :key="s">
-            <div :class="['step-item', { active: step === i + 1, done: step > i + 1 }]">
-              <span class="step-dot">{{ step > i + 1 ? '✓' : i + 1 }}</span>
-              <span class="step-text">{{ s }}</span>
+    <!-- 步骤指示 -->
+    <div class="step-bar">
+      <template
+        v-for="(s, i) in steps"
+        :key="s"
+      >
+        <div :class="['step-item', { active: step === i + 1, done: step > i + 1 }]">
+          <span class="step-dot">{{ step > i + 1 ? '✓' : i + 1 }}</span>
+          <span class="step-text">{{ s }}</span>
+        </div>
+        <div
+          v-if="i < steps.length - 1"
+          class="step-line"
+          :class="{ on: step > i + 1 }"
+        />
+      </template>
+    </div>
+
+    <!-- 步骤1：选模板 -->
+    <section
+      v-if="step === 1"
+      class="step-panel"
+    >
+      <div class="panel-head">
+        <h2 class="text-h2">
+          选择合同模板
+        </h2>
+        <p
+          class="text-body"
+          style="margin-top:6px"
+        >
+          选择所需合同类型，我们将为您生成专业草稿
+        </p>
+      </div>
+      <div
+        v-if="loadingTemplates"
+        class="template-grid"
+      >
+        <div
+          v-for="i in 3"
+          :key="'sk-' + i"
+          class="template-card glass-card skeleton"
+          style="height:170px;border:none;cursor:default"
+        />
+      </div>
+      <template v-else>
+        <div class="template-grid">
+          <article
+            v-for="t in templates"
+            :key="t.slug"
+            :class="['template-card', 'glass-card', { selected: selected?.slug === t.slug }]"
+            @click="pickTemplate(t)"
+          >
+            <div class="tpl-icon">
+              📋
             </div>
-            <div v-if="i < steps.length - 1" class="step-line" :class="{ on: step > i + 1 }"></div>
-          </template>
+            <div class="tpl-name">
+              {{ t.name }}
+            </div>
+            <div class="tpl-cat">
+              {{ t.category }}
+            </div>
+            <p class="tpl-desc">
+              {{ t.description }}
+            </p>
+          </article>
+        </div>
+        <div
+          v-if="templates.length === 0"
+          class="template-empty"
+        >
+          暂无可用模板
+        </div>
+      </template>
+      <div class="btn-row">
+        <button
+          class="btn-primary"
+          :disabled="!selected"
+          @click="nextToForm"
+        >
+          下一步：填写要素
+        </button>
+      </div>
+    </section>
+
+    <!-- 步骤2：填要素 -->
+    <section
+      v-else-if="step === 2"
+      class="step-panel"
+    >
+      <div class="panel-head">
+        <h2 class="text-h2">
+          填写合同要素
+        </h2>
+        <p
+          class="text-body"
+          style="margin-top:6px"
+        >
+          尽量补充关键要素，缺省项将由 AI 智能补全
+        </p>
+      </div>
+      <div class="form-card glass-card">
+        <div class="form-selected">
+          <span class="fs-label">已选模板</span>
+          <span class="fs-value">{{ selected?.name }}</span>
+        </div>
+        <div class="form-grid">
+          <div
+            v-for="f in basicFields"
+            :key="f.key"
+            class="form-field"
+            :class="{ 'span-full': f.type === 'textarea' }"
+          >
+            <label>{{ f.label }} <span
+              v-if="f.required"
+              class="req"
+            >*</span></label>
+            <input
+              v-if="f.type === 'text'"
+              v-model="elements[f.key]"
+              class="input-apple"
+              :placeholder="f.placeholder || ''"
+            >
+            <textarea
+              v-else
+              v-model="elements[f.key]"
+              class="clauses-input"
+              rows="4"
+              :placeholder="f.placeholder || '补充特别关注的条款'"
+            />
+          </div>
         </div>
 
-        <!-- 步骤1：选模板 -->
-        <section v-if="step === 1" class="step-panel">
-          <div class="panel-head">
-            <h2 class="text-h2">选择合同模板</h2>
-            <p class="text-body" style="margin-top:6px">选择所需合同类型，我们将为您生成专业草稿</p>
-          </div>
-          <div v-if="loadingTemplates" class="template-grid">
-            <div v-for="i in 3" :key="'sk-' + i" class="template-card glass-card skeleton" style="height:170px;border:none;cursor:default"></div>
-          </div>
-          <template v-else>
-            <div class="template-grid">
-              <article
-                v-for="t in templates" :key="t.slug"
-                :class="['template-card', 'glass-card', { selected: selected?.slug === t.slug }]"
-                @click="pickTemplate(t)"
+        <!-- 详细信息（选填，可折叠：填了进合同，不填 AI 标注【待补充】绝不编造） -->
+        <div
+          v-if="detailFields.length"
+          class="form-details"
+        >
+          <button
+            type="button"
+            class="details-toggle"
+            @click="showDetails = !showDetails"
+          >
+            <span>{{ showDetails ? '收起' : '展开' }}详细信息（选填）</span>
+            <span
+              class="dt-arrow"
+              :class="{ open: showDetails }"
+            >▾</span>
+          </button>
+          <div
+            v-if="showDetails"
+            class="form-grid details-grid"
+          >
+            <div
+              v-for="f in detailFields"
+              :key="f.key"
+              class="form-field"
+              :class="{ 'span-full': f.type === 'textarea' }"
+            >
+              <label>{{ f.label }} <span
+                v-if="f.required"
+                class="req"
+              >*</span></label>
+              <input
+                v-if="f.type === 'text'"
+                v-model="elements[f.key]"
+                class="input-apple"
+                :placeholder="f.placeholder || ''"
               >
-                <div class="tpl-icon">📋</div>
-                <div class="tpl-name">{{ t.name }}</div>
-                <div class="tpl-cat">{{ t.category }}</div>
-                <p class="tpl-desc">{{ t.description }}</p>
-              </article>
+              <textarea
+                v-else
+                v-model="elements[f.key]"
+                class="clauses-input"
+                rows="4"
+                :placeholder="f.placeholder || '补充特别关注的条款'"
+              />
             </div>
-            <div v-if="templates.length === 0" class="template-empty">暂无可用模板</div>
-          </template>
-          <div class="btn-row">
-            <button class="btn-primary" :disabled="!selected" @click="nextToForm">下一步：填写要素</button>
           </div>
-        </section>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button
+          class="btn-secondary"
+          @click="backToTemplates"
+        >
+          上一步
+        </button>
+        <button
+          class="btn-primary"
+          :disabled="generating"
+          @click="generateDraft"
+        >
+          {{ generating ? '生成中…' : '生成合同草稿' }}
+        </button>
+      </div>
+    </section>
 
-        <!-- 步骤2：填要素 -->
-        <section v-else-if="step === 2" class="step-panel">
-          <div class="panel-head">
-            <h2 class="text-h2">填写合同要素</h2>
-            <p class="text-body" style="margin-top:6px">尽量补充关键要素，缺省项将由 AI 智能补全</p>
-          </div>
-          <div class="form-card glass-card">
-            <div class="form-selected">
-              <span class="fs-label">已选模板</span>
-              <span class="fs-value">{{ selected?.name }}</span>
-            </div>
-            <div class="form-grid">
-              <div
-                v-for="f in basicFields" :key="f.key"
-                class="form-field" :class="{ 'span-full': f.type === 'textarea' }"
-              >
-                <label>{{ f.label }} <span v-if="f.required" class="req">*</span></label>
-                <input
-                  v-if="f.type === 'text'" class="input-apple"
-                  v-model="elements[f.key]" :placeholder="f.placeholder || ''"
-                />
-                <textarea
-                  v-else class="clauses-input" v-model="elements[f.key]" rows="4"
-                  :placeholder="f.placeholder || '补充特别关注的条款'"
-                ></textarea>
-              </div>
-            </div>
+    <!-- 步骤3：草稿 + 操作 -->
+    <section
+      v-else
+      class="step-panel"
+    >
+      <div
+        v-if="projectStatus"
+        class="status-row"
+      >
+        <span :class="['status-chip', 'status-' + projectStatus]">{{ projectStatus }}</span>
+        <span
+          v-if="submittedReview"
+          class="status-hint"
+        >法务 BP 处理中</span>
+      </div>
 
-            <!-- 详细信息（选填，可折叠：填了进合同，不填 AI 标注【待补充】绝不编造） -->
-            <div v-if="detailFields.length" class="form-details">
-              <button type="button" class="details-toggle" @click="showDetails = !showDetails">
-                <span>{{ showDetails ? '收起' : '展开' }}详细信息（选填）</span>
-                <span class="dt-arrow" :class="{ open: showDetails }">▾</span>
-              </button>
-              <div v-if="showDetails" class="form-grid details-grid">
-                <div
-                  v-for="f in detailFields" :key="f.key"
-                  class="form-field" :class="{ 'span-full': f.type === 'textarea' }"
-                >
-                  <label>{{ f.label }} <span v-if="f.required" class="req">*</span></label>
-                  <input
-                    v-if="f.type === 'text'" class="input-apple"
-                    v-model="elements[f.key]" :placeholder="f.placeholder || ''"
-                  />
-                  <textarea
-                    v-else class="clauses-input" v-model="elements[f.key]" rows="4"
-                    :placeholder="f.placeholder || '补充特别关注的条款'"
-                  ></textarea>
-                </div>
-              </div>
-            </div>
+      <div class="draft-card glass-card">
+        <div class="draft-head">
+          <span class="draft-title">📄 合同草稿</span>
+          <button
+            class="edit-link"
+            :disabled="generating"
+            @click="step = 2"
+          >
+            编辑要素
+          </button>
+        </div>
+        <div class="draft-body">
+          <MarkdownContent
+            v-if="draftText"
+            :text="draftText"
+            :streaming="generating"
+            :done="draftComplete"
+          />
+          <div
+            v-else
+            class="draft-empty"
+          >
+            {{ generating ? '正在生成合同草稿…' : '草稿为空，请返回上一步重新生成' }}
           </div>
-          <div class="btn-row">
-            <button class="btn-secondary" @click="backToTemplates">上一步</button>
-            <button class="btn-primary" :disabled="generating" @click="generateDraft">
-              {{ generating ? '生成中…' : '生成合同草稿' }}
-            </button>
-          </div>
-        </section>
+        </div>
+        <div
+          v-if="pendingCount > 0"
+          class="pending-hint"
+        >
+          ⚠️ 本稿有 <b>{{ pendingCount }}</b> 处【待补充】事项——AI 不会自行填写用户未提供的实事，需双方确认后补全
+        </div>
+        <div
+          v-if="draftComplete"
+          class="draft-actions"
+        >
+          <DownloadMenu
+            :content="draftText"
+            :filename="'合同草稿'"
+            :docx-style="selected?.style"
+          />
+          <button
+            class="btn-secondary"
+            :disabled="uploading || !projectId"
+            @click="triggerUpload"
+          >
+            {{ uploading ? '上传中…' : '上传修订版' }}
+          </button>
+          <input
+            ref="fileInput"
+            type="file"
+            class="hidden-input"
+            accept=".docx,.pdf,.md,.txt"
+            @change="handleUpload"
+          >
+          <button
+            class="btn-primary review-btn"
+            :disabled="submittingReview || submittedReview || !projectId"
+            @click="submitReview"
+          >
+            {{ submittedReview ? '已提交法务审阅' : submittingReview ? '提交中…' : '发起法务审阅' }}
+          </button>
+        </div>
+      </div>
 
-        <!-- 步骤3：草稿 + 操作 -->
-        <section v-else class="step-panel">
-          <div v-if="projectStatus" class="status-row">
-            <span :class="['status-chip', 'status-' + projectStatus]">{{ projectStatus }}</span>
-            <span v-if="submittedReview" class="status-hint">法务 BP 处理中</span>
-          </div>
+      <div
+        v-if="submittedReview"
+        class="legalbp-banner"
+      >
+        <span>👩‍⚖️ 法务 BP 处理中</span>
+        <span class="legalbp-sub">审阅完成后将回传修订意见，您可在「我的记录」中查看进度</span>
+      </div>
 
-          <div class="draft-card glass-card">
-            <div class="draft-head">
-              <span class="draft-title">📄 合同草稿</span>
-              <button class="edit-link" :disabled="generating" @click="step = 2">编辑要素</button>
-            </div>
-            <div class="draft-body">
-              <MarkdownContent v-if="draftText" :text="draftText" :streaming="generating" :done="draftComplete" />
-              <div v-else class="draft-empty">
-                {{ generating ? '正在生成合同草稿…' : '草稿为空，请返回上一步重新生成' }}
-              </div>
-            </div>
-            <div v-if="pendingCount > 0" class="pending-hint">
-              ⚠️ 本稿有 <b>{{ pendingCount }}</b> 处【待补充】事项——AI 不会自行填写用户未提供的实事，需双方确认后补全
-            </div>
-            <div v-if="draftComplete" class="draft-actions">
-              <DownloadMenu :content="draftText" :filename="'合同草稿'" :docx-style="selected?.style" />
-              <button class="btn-secondary" @click="triggerUpload" :disabled="uploading || !projectId">
-                {{ uploading ? '上传中…' : '上传修订版' }}
-              </button>
-              <input ref="fileInput" type="file" class="hidden-input" accept=".docx,.pdf,.md,.txt" @change="handleUpload" />
-              <button class="btn-primary review-btn" :disabled="submittingReview || submittedReview || !projectId" @click="submitReview">
-                {{ submittedReview ? '已提交法务审阅' : submittingReview ? '提交中…' : '发起法务审阅' }}
-              </button>
-            </div>
-          </div>
-
-          <div v-if="submittedReview" class="legalbp-banner">
-            <span>👩‍⚖️ 法务 BP 处理中</span>
-            <span class="legalbp-sub">审阅完成后将回传修订意见，您可在「我的记录」中查看进度</span>
-          </div>
-
-          <div v-if="events.length" class="event-list">
-            <div v-for="(ev, i) in events" :key="i" class="msg-event">{{ ev.text }}</div>
-          </div>
-        </section>
+      <div
+        v-if="events.length"
+        class="event-list"
+      >
+        <div
+          v-for="(ev, i) in events"
+          :key="i"
+          class="msg-event"
+        >
+          {{ ev.text }}
+        </div>
+      </div>
+    </section>
   </BusinessSidebarLayout>
 </template>
 

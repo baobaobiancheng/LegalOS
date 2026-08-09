@@ -1,11 +1,25 @@
 <template>
   <div class="error-scene">
-    <div class="aurora"><div class="orb orb-1" /><div class="orb orb-2" /></div>
+    <div class="aurora">
+      <div class="orb orb-1" /><div class="orb orb-2" />
+    </div>
     <div class="error-card glass-card animate-in">
-      <div class="error-icon">🔒</div>
-      <h1 class="text-h1">403</h1>
-      <p class="text-body">当前角色无权访问该资源</p>
-      <button class="btn-primary" @click="router.replace(home)" style="margin-top:20px">返回首页</button>
+      <div class="error-icon">
+        🔒
+      </div>
+      <h1 class="text-h1">
+        403
+      </h1>
+      <p class="text-body">
+        当前角色无权访问该资源
+      </p>
+      <button
+        class="btn-primary"
+        style="margin-top:20px"
+        @click="router.replace(home)"
+      >
+        返回首页
+      </button>
     </div>
   </div>
 </template>

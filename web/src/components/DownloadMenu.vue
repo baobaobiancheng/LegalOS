@@ -48,13 +48,37 @@ const triggerDownload = (blob: Blob, filename: string) => {
 
 <template>
   <div class="download-wrap">
-    <button class="dl-trigger" @click.stop="toggle" title="下载答复">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    <button
+      class="dl-trigger"
+      title="下载答复"
+      @click.stop="toggle"
+    >
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+      ><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line
+        x1="12"
+        y1="15"
+        x2="12"
+        y2="3"
+      /></svg>
       下载
     </button>
-    <div v-if="open" class="dl-dropdown">
-      <button @click.stop="downloadMD">📝 Markdown (.md)</button>
-      <button @click.stop="downloadDOCX">📄 Word (.docx)</button>
+    <div
+      v-if="open"
+      class="dl-dropdown"
+    >
+      <button @click.stop="downloadMD">
+        📝 Markdown (.md)
+      </button>
+      <button @click.stop="downloadDOCX">
+        📄 Word (.docx)
+      </button>
     </div>
   </div>
 </template>

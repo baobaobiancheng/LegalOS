@@ -6,90 +6,224 @@
         <strong class="tb-title">我的记录</strong>
       </div>
       <div class="tb-right">
-        <span v-if="!loading" class="tb-count">{{ filterLabel }} · {{ items.length }} 条</span>
-        <button class="new-btn" @click="router.push('/business/consult')">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span
+          v-if="!loading"
+          class="tb-count"
+        >{{ filterLabel }} · {{ items.length }} 条</span>
+        <button
+          class="new-btn"
+          @click="router.push('/business/consult')"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          ><line
+            x1="12"
+            y1="5"
+            x2="12"
+            y2="19"
+          /><line
+            x1="5"
+            y1="12"
+            x2="19"
+            y2="12"
+          /></svg>
           新咨询
         </button>
       </div>
     </template>
-        <!-- 统计概览 = 筛选入口 -->
-        <div class="stats-row">
-          <div v-for="s in stats" :key="s.label"
-            :class="['stat-card', 'glass-card', { active: filter === s.filter }]"
-            @click="filter = s.filter">
-            <div class="stat-icon" :style="{ background: s.bg, color: s.color }">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path v-if="s.icon === 'all'" d="M22 12h-6l-2 3h-4l-2-3H2"/><path v-if="s.icon === 'all'" d="M5.5 5.1L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z"/>
-                <circle v-if="s.icon === 'process'" cx="12" cy="12" r="9"/><path v-if="s.icon === 'process'" d="M12 8v4l3 3"/>
-                <path v-if="s.icon === 'done'" d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline v-if="s.icon === 'done'" points="22 4 12 14.01 9 11.01"/>
-                <circle v-if="s.icon === 'cancel'" cx="12" cy="12" r="9"/><line v-if="s.icon === 'cancel'" x1="15" y1="9" x2="9" y2="15"/><line v-if="s.icon === 'cancel'" x1="9" y1="9" x2="15" y2="15"/>
-              </svg>
-            </div>
-            <div class="stat-body">
-              <span class="stat-value" :style="{ color: s.color }">{{ s.count }}</span>
-              <span class="stat-label">{{ s.label }}</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Loading -->
-        <template v-if="loading">
-          <div v-for="i in 3" :key="'sk-'+i" class="record-card glass-card" style="cursor:default;transform:none">
-            <div class="rc-icon skeleton" style="width:42px;height:42px;border-radius:12px" />
-            <div class="rc-main" style="flex:1">
-              <div class="skeleton" style="width:60%;height:16px;margin-bottom:10px" />
-              <div class="skeleton" style="width:30%;height:12px" />
-            </div>
-          </div>
-        </template>
-
-        <!-- Empty -->
-        <div v-else-if="items.length === 0" class="welcome-hero">
-          <div class="welcome-icon">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#86868b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z"/></svg>
-          </div>
-          <h2 class="text-h2">{{ filter === '' ? '暂无记录' : '该分类暂无记录' }}</h2>
-          <p class="text-body">您的法律咨询和合同协作记录将显示在这里</p>
-          <button class="btn-primary" style="margin-top:20px" @click="router.push('/business/consult')">发起咨询</button>
-        </div>
-
-        <!-- List -->
-        <div v-else class="card-stack">
-          <article
-            v-for="(r, idx) in items" :key="r.id"
-            :class="['record-card', 'glass-card', 'risk-' + r.risk]"
-            :style="{ animationDelay: idx * 0.04 + 's' }"
-            @click="router.push('/business/records/' + r.id)"
+    <!-- 统计概览 = 筛选入口 -->
+    <div class="stats-row">
+      <div
+        v-for="s in stats"
+        :key="s.label"
+        :class="['stat-card', 'glass-card', { active: filter === s.filter }]"
+        @click="filter = s.filter"
+      >
+        <div
+          class="stat-icon"
+          :style="{ background: s.bg, color: s.color }"
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
           >
-            <div class="rc-icon" :class="'kind-' + r.kind" v-html="kindIcon(r.kind)" />
-            <div class="rc-main">
-              <div class="rc-title-row">
-                <span class="rc-title">{{ r.title }}</span>
-                <span :class="['status-chip', 'status-' + r.status]">{{ r.status }}</span>
-              </div>
-              <div class="rc-sub-row">
-                <span class="rc-kind">{{ kindLabel(r.kind) }}</span>
-                <span :class="['risk-chip', 'risk-' + r.risk + '-bg']">{{ r.risk }}</span>
-                <span class="rc-time">{{ fmtTime(r.createdAt) }}</span>
-              </div>
-            </div>
-            <svg class="rc-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#c7c7cc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
-          </article>
+            <path
+              v-if="s.icon === 'all'"
+              d="M22 12h-6l-2 3h-4l-2-3H2"
+            /><path
+              v-if="s.icon === 'all'"
+              d="M5.5 5.1L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z"
+            />
+            <circle
+              v-if="s.icon === 'process'"
+              cx="12"
+              cy="12"
+              r="9"
+            /><path
+              v-if="s.icon === 'process'"
+              d="M12 8v4l3 3"
+            />
+            <path
+              v-if="s.icon === 'done'"
+              d="M22 11.08V12a10 10 0 1 1-5.93-9.14"
+            /><polyline
+              v-if="s.icon === 'done'"
+              points="22 4 12 14.01 9 11.01"
+            />
+            <circle
+              v-if="s.icon === 'cancel'"
+              cx="12"
+              cy="12"
+              r="9"
+            /><line
+              v-if="s.icon === 'cancel'"
+              x1="15"
+              y1="9"
+              x2="9"
+              y2="15"
+            /><line
+              v-if="s.icon === 'cancel'"
+              x1="9"
+              y1="9"
+              x2="15"
+              y2="15"
+            />
+          </svg>
         </div>
+        <div class="stat-body">
+          <span
+            class="stat-value"
+            :style="{ color: s.color }"
+          >{{ s.count }}</span>
+          <span class="stat-label">{{ s.label }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading -->
+    <template v-if="loading">
+      <div
+        v-for="i in 3"
+        :key="'sk-'+i"
+        class="record-card glass-card"
+        style="cursor:default;transform:none"
+      >
+        <div
+          class="rc-icon skeleton"
+          style="width:42px;height:42px;border-radius:12px"
+        />
+        <div
+          class="rc-main"
+          style="flex:1"
+        >
+          <div
+            class="skeleton"
+            style="width:60%;height:16px;margin-bottom:10px"
+          />
+          <div
+            class="skeleton"
+            style="width:30%;height:12px"
+          />
+        </div>
+      </div>
+    </template>
+
+    <!-- Empty -->
+    <div
+      v-else-if="items.length === 0"
+      class="welcome-hero"
+    >
+      <div class="welcome-icon">
+        <svg
+          width="32"
+          height="32"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#86868b"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        ><path d="M22 12h-6l-2 3h-4l-2-3H2" /><path d="M5.5 5.1L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z" /></svg>
+      </div>
+      <h2 class="text-h2">
+        {{ filter === '' ? '暂无记录' : '该分类暂无记录' }}
+      </h2>
+      <p class="text-body">
+        您的法律咨询和合同协作记录将显示在这里
+      </p>
+      <button
+        class="btn-primary"
+        style="margin-top:20px"
+        @click="router.push('/business/consult')"
+      >
+        发起咨询
+      </button>
+    </div>
+
+    <!-- List -->
+    <div
+      v-else
+      class="card-stack"
+    >
+      <article
+        v-for="(r, idx) in items"
+        :key="r.id"
+        :class="['record-card', 'glass-card', 'risk-' + r.risk]"
+        :style="{ animationDelay: idx * 0.04 + 's' }"
+        @click="router.push('/business/records/' + r.id)"
+      >
+        <div
+          class="rc-icon"
+          :class="'kind-' + r.kind"
+          v-html="kindIcon(r.kind)"
+        />
+        <div class="rc-main">
+          <div class="rc-title-row">
+            <span class="rc-title">{{ r.title }}</span>
+            <span :class="['status-chip', 'status-' + r.status]">{{ r.status }}</span>
+          </div>
+          <div class="rc-sub-row">
+            <span class="rc-kind">{{ kindLabel(r.kind) }}</span>
+            <span :class="['risk-chip', 'risk-' + r.risk + '-bg']">{{ r.risk }}</span>
+            <span class="rc-time">{{ fmtTime(r.createdAt) }}</span>
+          </div>
+        </div>
+        <svg
+          class="rc-arrow"
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#c7c7cc"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        ><path d="M9 18l6-6-6-6" /></svg>
+      </article>
+    </div>
   </BusinessSidebarLayout>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAuthStore } from '../../stores/auth'
 import { request } from '../../api/client'
 import BusinessSidebarLayout from '../../components/BusinessSidebarLayout.vue'
 import type { ProjectListItem } from '../../types'
 
 const router = useRouter()
-const auth = useAuthStore()
 const loading = ref(true)
 const allItems = ref<ProjectListItem[]>([])
 const filter = ref('')  // ''全部 | process处理中 | 已回传 | 已取消
@@ -144,7 +278,6 @@ const fmtTime = (t: string) => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-async function handleLogout() { await auth.logout(); await router.replace('/login') }
 </script>
 
 <script lang="ts">export default { name: 'RecordsView' }</script>

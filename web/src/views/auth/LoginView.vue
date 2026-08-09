@@ -11,26 +11,68 @@
       <div class="brand-panel">
         <div class="brand-top">
           <div class="brand-mark">
-            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/></svg>
+            <svg
+              width="30"
+              height="30"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#fff"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            ><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z" /></svg>
           </div>
           <span class="brand-name">Legal Workbench</span>
         </div>
 
         <div class="brand-body">
-          <h1>企业法务<br/>智能协同工作台</h1>
-          <p class="brand-sub">统一入口 · 三端协作 · AI 原生驱动</p>
+          <h1>企业法务<br>智能协同工作台</h1>
+          <p class="brand-sub">
+            统一入口 · 三端协作 · AI 原生驱动
+          </p>
 
           <div class="brand-features">
             <div class="bf-item">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="rgba(255,255,255,0.9)"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              ><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" /></svg>
               <div><strong>AI 即时答复</strong><small>常规咨询 1 分钟内返回</small></div>
             </div>
             <div class="bf-item">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="rgba(255,255,255,0.9)"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              ><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="M9 12l2 2 4-4" /></svg>
               <div><strong>风险智能分级</strong><small>P0/P1/P2 自动路由</small></div>
             </div>
             <div class="bf-item">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="rgba(255,255,255,0.9)"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              ><circle
+                cx="12"
+                cy="8"
+                r="4"
+              /><path d="M4 21c0-4 4-6 8-6s8 2 8 6" /></svg>
               <div><strong>专家全程兜底</strong><small>高风险事项升级人工</small></div>
             </div>
           </div>
@@ -49,30 +91,81 @@
             <p>登录您的法务工作空间</p>
           </div>
 
-          <form @submit.prevent="handleLogin" class="login-form">
+          <form
+            class="login-form"
+            @submit.prevent="handleLogin"
+          >
             <div class="field">
               <label>用户名</label>
-              <input v-model="form.username" class="input-apple" placeholder="请输入用户名" maxlength="64" autocomplete="username" />
+              <input
+                v-model="form.username"
+                class="input-apple"
+                placeholder="请输入用户名"
+                maxlength="64"
+                autocomplete="username"
+              >
             </div>
             <div class="field">
               <label>密码</label>
-              <input v-model="form.password" class="input-apple" type="password" placeholder="请输入密码" maxlength="128" autocomplete="current-password" />
+              <input
+                v-model="form.password"
+                class="input-apple"
+                type="password"
+                placeholder="请输入密码"
+                maxlength="128"
+                autocomplete="current-password"
+              >
             </div>
 
             <transition name="fade">
-              <div v-if="errorMsg" class="error-banner" role="alert">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <div
+                v-if="errorMsg"
+                class="error-banner"
+                role="alert"
+              >
+                <svg
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                ><circle
+                  cx="12"
+                  cy="12"
+                  r="9"
+                /><line
+                  x1="12"
+                  y1="8"
+                  x2="12"
+                  y2="12"
+                /><line
+                  x1="12"
+                  y1="16"
+                  x2="12.01"
+                  y2="16"
+                /></svg>
                 <span>{{ errorMsg }}</span>
               </div>
             </transition>
 
-            <button type="submit" class="btn-primary login-btn" :disabled="loading">
-              <span v-if="loading" class="spinner" />
+            <button
+              type="submit"
+              class="btn-primary login-btn"
+              :disabled="loading"
+            >
+              <span
+                v-if="loading"
+                class="spinner"
+              />
               {{ loading ? '验证中…' : '登录' }}
             </button>
           </form>
 
-          <p class="footer-note">种子账号：admin / legal_bp / business</p>
+          <p class="footer-note">
+            种子账号：admin / legal_bp / business
+          </p>
         </div>
       </div>
     </div>

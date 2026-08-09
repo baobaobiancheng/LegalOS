@@ -115,48 +115,115 @@ const timeFmt = (ts: string) => { const d = new Date(ts); return `${String(d.get
 </script>
 
 <template>
-  <BusinessSidebarLayout active-key="records" content-class="chat-content">
+  <BusinessSidebarLayout
+    active-key="records"
+    content-class="chat-content"
+  >
     <template #topbar>
       <div class="tb-left">
-        <button class="back-link" @click="goBack">← 我的记录</button>
+        <button
+          class="back-link"
+          @click="goBack"
+        >
+          ← 我的记录
+        </button>
         <template v-if="project">
           <span class="sep">/</span>
           <strong class="tb-title">{{ project.title }}</strong>
-          <span v-if="project.skillName" class="skill-chip">{{ project.skillName }}</span>
+          <span
+            v-if="project.skillName"
+            class="skill-chip"
+          >{{ project.skillName }}</span>
           <span :class="['status-chip', 'status-' + project.status]">{{ project.status }}</span>
         </template>
       </div>
-      <span v-if="loading" class="tb-muted">加载中…</span>
+      <span
+        v-if="loading"
+        class="tb-muted"
+      >加载中…</span>
     </template>
     <template v-if="!loading">
-        <div id="msg-container" class="msg-scroll">
-          <div class="msg-thread">
-            <template v-for="m in messages" :key="m.id">
-              <div v-if="(m as any)._event" class="msg-event">{{ (m as EventDto).text }}</div>
-              <div v-else :class="['msg-row', (m as MessageDto).role === 'user' ? 'out' : 'in']">
-                <div :class="['msg-avatar', (m as MessageDto).role]">{{ avatarLabel((m as MessageDto).role) }}</div>
-                <div class="msg-body">
-                  <div class="msg-bubble">
-                    <MarkdownContent v-if="(m as MessageDto).role === 'assistant'" :text="(m as MessageDto).text" />
-                    <template v-else>{{ (m as MessageDto).text }}</template>
-                  </div>
-                  <span class="msg-time">{{ timeFmt((m as MessageDto).createdAt) }}</span>
-                  <div v-if="(m as MessageDto).role === 'assistant'" class="ai-disclaimer">AI 生成 · 仅供参考</div>
-                  <DownloadMenu v-if="(m as MessageDto).role === 'assistant' && (m as MessageDto).text" :content="(m as MessageDto).text" :filename="'法律咨询答复'" :docx-style="templateStyle" />
-                </div>
+      <div
+        id="msg-container"
+        class="msg-scroll"
+      >
+        <div class="msg-thread">
+          <template
+            v-for="m in messages"
+            :key="m.id"
+          >
+            <div
+              v-if="(m as any)._event"
+              class="msg-event"
+            >
+              {{ (m as EventDto).text }}
+            </div>
+            <div
+              v-else
+              :class="['msg-row', (m as MessageDto).role === 'user' ? 'out' : 'in']"
+            >
+              <div :class="['msg-avatar', (m as MessageDto).role]">
+                {{ avatarLabel((m as MessageDto).role) }}
               </div>
-            </template>
-          </div>
+              <div class="msg-body">
+                <div class="msg-bubble">
+                  <MarkdownContent
+                    v-if="(m as MessageDto).role === 'assistant'"
+                    :text="(m as MessageDto).text"
+                  />
+                  <template v-else>
+                    {{ (m as MessageDto).text }}
+                  </template>
+                </div>
+                <span class="msg-time">{{ timeFmt((m as MessageDto).createdAt) }}</span>
+                <div
+                  v-if="(m as MessageDto).role === 'assistant'"
+                  class="ai-disclaimer"
+                >
+                  AI 生成 · 仅供参考
+                </div>
+                <DownloadMenu
+                  v-if="(m as MessageDto).role === 'assistant' && (m as MessageDto).text"
+                  :content="(m as MessageDto).text"
+                  :filename="'法律咨询答复'"
+                  :docx-style="templateStyle"
+                />
+              </div>
+            </div>
+          </template>
         </div>
-
-        <ChatInputBar v-if="project && project.status !== '已取消' && project.route === 'llm'"
-          :disabled="sending" placeholder="继续追问，可上传文件…" @send="handleSend" />
-    </template>
-    <div v-else class="welcome-hero">
-      <div class="welcome-icon">
-        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#86868b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
       </div>
-      <h2 class="text-h2">加载中…</h2>
+
+      <ChatInputBar
+        v-if="project && project.status !== '已取消' && project.route === 'llm'"
+        :disabled="sending"
+        placeholder="继续追问，可上传文件…"
+        @send="handleSend"
+      />
+    </template>
+    <div
+      v-else
+      class="welcome-hero"
+    >
+      <div class="welcome-icon">
+        <svg
+          width="32"
+          height="32"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#86868b"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        ><circle
+          cx="12"
+          cy="12"
+          r="9"
+        /><path d="M12 7v5l3 3" /></svg>
+      </div>
+      <h2 class="text-h2">
+        加载中…
+      </h2>
     </div>
   </BusinessSidebarLayout>
 </template>

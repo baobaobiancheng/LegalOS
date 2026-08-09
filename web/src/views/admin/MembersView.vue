@@ -1,35 +1,105 @@
 <template>
   <div class="app-shell">
-    <div class="aurora"><div class="orb orb-1" /><div class="orb orb-2" /><div class="orb orb-3" /></div>
+    <div class="aurora">
+      <div class="orb orb-1" /><div class="orb orb-2" /><div class="orb orb-3" />
+    </div>
 
     <aside class="app-sidebar sidebar-glass">
-      <button class="app-brand" @click="router.push('/admin/dashboard')">
+      <button
+        class="app-brand"
+        @click="router.push('/admin/dashboard')"
+      >
         <span class="brand-icon">⚙</span>
         <span class="brand-text"><b>管理端</b><small>系统管理</small></span>
       </button>
 
       <div class="nav-section">
         <span class="nav-label">管理工具</span>
-        <button class="nav-btn" @click="router.push('/admin/dashboard')">
-          <span class="nav-ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg></span>
+        <button
+          class="nav-btn"
+          @click="router.push('/admin/dashboard')"
+        >
+          <span class="nav-ico"><svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          ><line
+            x1="12"
+            y1="20"
+            x2="12"
+            y2="10"
+          /><line
+            x1="18"
+            y1="20"
+            x2="18"
+            y2="4"
+          /><line
+            x1="6"
+            y1="20"
+            x2="6"
+            y2="16"
+          /></svg></span>
           数据看板
         </button>
         <button class="nav-btn active">
-          <span class="nav-ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+          <span class="nav-ico"><svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          ><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle
+            cx="9"
+            cy="7"
+            r="4"
+          /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg></span>
           成员管理
         </button>
-        <button class="nav-btn" disabled>定时任务</button>
-        <button class="nav-btn" disabled>审计日志</button>
+        <button
+          class="nav-btn"
+          disabled
+        >
+          定时任务
+        </button>
+        <button
+          class="nav-btn"
+          disabled
+        >
+          审计日志
+        </button>
       </div>
 
       <div class="sidebar-footer">
-        <div class="user-avatar">{{ auth.user?.displayName?.[0] || '管' }}</div>
+        <div class="user-avatar">
+          {{ auth.user?.displayName?.[0] || '管' }}
+        </div>
         <div class="user-info">
           <span class="user-name">{{ auth.user?.displayName || '用户' }}</span>
           <span class="user-role">系统管理员</span>
         </div>
-        <button class="logout-link" @click="handleLogout" title="退出登录">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <button
+          class="logout-link"
+          title="退出登录"
+          @click="handleLogout"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          ><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line
+            x1="21"
+            y1="12"
+            x2="9"
+            y2="12"
+          /></svg>
         </button>
       </div>
     </aside>
@@ -40,7 +110,11 @@
           <small class="tb-path">管理端</small>
           <strong class="tb-title">成员管理</strong>
         </div>
-        <button class="btn-primary sync-btn" :disabled="syncing" @click="doSync">
+        <button
+          class="btn-primary sync-btn"
+          :disabled="syncing"
+          @click="doSync"
+        >
           {{ syncing ? '同步中…' : '⇪ 一键同步钉钉通讯录' }}
         </button>
       </header>
@@ -65,31 +139,61 @@
             <span class="stat-label">已绑定用户</span>
           </div>
         </div>
-        <p v-if="syncResult?.ambiguous?.length" class="warn-line">
+        <p
+          v-if="syncResult?.ambiguous?.length"
+          class="warn-line"
+        >
           ⚠️ 重名未自动绑定（请在下方手动绑定）：{{ syncResult.ambiguous.join('、') }}
         </p>
 
         <!-- 系统用户绑定表 -->
         <div class="panel glass-card">
           <div class="panel-head">
-            <h3 class="panel-title">系统用户 × 钉钉绑定</h3>
-            <input v-model="userKeyword" class="search-input" placeholder="搜索姓名 / 角色" />
+            <h3 class="panel-title">
+              系统用户 × 钉钉绑定
+            </h3>
+            <input
+              v-model="userKeyword"
+              class="search-input"
+              placeholder="搜索姓名 / 角色"
+            >
           </div>
           <table class="member-table">
             <thead>
               <tr><th>姓名</th><th>角色</th><th>钉钉绑定</th><th>操作</th></tr>
             </thead>
             <tbody>
-              <tr v-for="u in filteredUsers" :key="u.id">
+              <tr
+                v-for="u in filteredUsers"
+                :key="u.id"
+              >
                 <td>{{ u.displayName }}</td>
                 <td><span class="role-chip">{{ roleLabel(u.role) }}</span></td>
                 <td>
-                  <span v-if="u.dingtalkUserId" class="bound-ok">✓ {{ u.dingtalkUserId }}</span>
-                  <span v-else class="bound-no">未绑定</span>
+                  <span
+                    v-if="u.dingtalkUserId"
+                    class="bound-ok"
+                  >✓ {{ u.dingtalkUserId }}</span>
+                  <span
+                    v-else
+                    class="bound-no"
+                  >未绑定</span>
                 </td>
                 <td>
-                  <button v-if="!u.dingtalkUserId" class="btn-sm" @click="openBind(u)">绑定</button>
-                  <button v-else class="btn-sm danger" @click="unbind(u)">解绑</button>
+                  <button
+                    v-if="!u.dingtalkUserId"
+                    class="btn-sm"
+                    @click="openBind(u)"
+                  >
+                    绑定
+                  </button>
+                  <button
+                    v-else
+                    class="btn-sm danger"
+                    @click="unbind(u)"
+                  >
+                    解绑
+                  </button>
                 </td>
               </tr>
             </tbody>
@@ -99,23 +203,40 @@
         <!-- BP 领域映射 -->
         <div class="panel glass-card">
           <div class="panel-head">
-            <h3 class="panel-title">法务 BP 工作范围（领域 → 拉群匹配）</h3>
+            <h3 class="panel-title">
+              法务 BP 工作范围（领域 → 拉群匹配）
+            </h3>
             <span class="panel-hint">意图识别/技能领域 → 匹配此处勾选的 BP → 指派并拉群</span>
           </div>
           <table class="member-table">
             <thead>
-              <tr><th>法务 BP</th><th>钉钉</th><th v-for="d in bpDomains" :key="d" class="domain-col">{{ d }}</th></tr>
+              <tr>
+                <th>法务 BP</th><th>钉钉</th><th
+                  v-for="d in bpDomains"
+                  :key="d"
+                  class="domain-col"
+                >
+                  {{ d }}
+                </th>
+              </tr>
             </thead>
             <tbody>
-              <tr v-for="u in bpUsers" :key="u.id">
+              <tr
+                v-for="u in bpUsers"
+                :key="u.id"
+              >
                 <td>{{ u.displayName }}</td>
                 <td><span :class="u.bound ? 'bound-ok' : 'bound-no'">{{ u.bound ? '已绑定' : '未绑定' }}</span></td>
-                <td v-for="d in bpDomains" :key="d" class="domain-col">
+                <td
+                  v-for="d in bpDomains"
+                  :key="d"
+                  class="domain-col"
+                >
                   <input
                     type="checkbox"
                     :checked="u.domains.includes(d)"
                     @change="toggleDomain(u, d, ($event.target as HTMLInputElement).checked)"
-                  />
+                  >
                 </td>
               </tr>
             </tbody>
@@ -123,24 +244,47 @@
         </div>
 
         <!-- 手动绑定弹窗 -->
-        <div v-if="bindTarget" class="modal-mask" @click.self="bindTarget = null">
+        <div
+          v-if="bindTarget"
+          class="modal-mask"
+          @click.self="bindTarget = null"
+        >
           <div class="modal-card">
-            <h3 class="modal-title">绑定钉钉成员 · {{ bindTarget.displayName }}</h3>
+            <h3 class="modal-title">
+              绑定钉钉成员 · {{ bindTarget.displayName }}
+            </h3>
             <label class="field-label">搜索钉钉通讯录</label>
-            <input v-model="contactKeyword" class="field-input" placeholder="输入姓名或手机号" @input="searchContacts" />
+            <input
+              v-model="contactKeyword"
+              class="field-input"
+              placeholder="输入姓名或手机号"
+              @input="searchContacts"
+            >
             <div class="contact-list">
               <button
-                v-for="c in contacts" :key="c.userId"
-                class="contact-item" @click="doBind(c)"
+                v-for="c in contacts"
+                :key="c.userId"
+                class="contact-item"
+                @click="doBind(c)"
               >
                 <span class="contact-name">{{ c.name }}</span>
                 <span class="contact-mobile">{{ c.mobile || '—' }}</span>
                 <span class="contact-id">{{ c.userId }}</span>
               </button>
-              <p v-if="!contacts.length && contactKeyword" class="empty-hint">未找到匹配成员（可先点右上角同步通讯录）</p>
+              <p
+                v-if="!contacts.length && contactKeyword"
+                class="empty-hint"
+              >
+                未找到匹配成员（可先点右上角同步通讯录）
+              </p>
             </div>
             <div class="modal-actions">
-              <button class="btn-sm" @click="bindTarget = null">取消</button>
+              <button
+                class="btn-sm"
+                @click="bindTarget = null"
+              >
+                取消
+              </button>
             </div>
           </div>
         </div>
