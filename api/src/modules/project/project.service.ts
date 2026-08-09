@@ -18,11 +18,12 @@ import {
 import { CreateProjectDto, CreateProjectMessageDto, ReplyProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { ChildProcess } from 'child_process';
-import { Prisma, ProjectKind, ProjectStatus } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { injectSkillSection } from '../../common/utils/skill-prompt';
 import { ProjectAccessPolicy } from './domain/project-access.policy';
 import { ProjectAction, ProjectActor } from './domain/project-access.types';
 import { CreateProjectUseCase, dingtalkGroupOutboxDedupKey } from './application/create-project.use-case';
+import { ProjectListParams, ProjectQueryService } from './queries/project-query.service';
 
 // 用户选择器，避免暴露密码哈希
 const userSelect = { id: true, username: true, displayName: true, role: true };
@@ -39,6 +40,7 @@ export class ProjectService {
     @Inject(DINGTALK_ADAPTER) private readonly dingtalk: DingTalkAdapter,
     private readonly createProjectUseCase: CreateProjectUseCase,
     private readonly accessPolicy: ProjectAccessPolicy,
+    private readonly query: ProjectQueryService,
   ) {}
 
   // ═══════════════════════════════════════════
@@ -151,82 +153,13 @@ export class ProjectService {
    * 工单列表 — 由服务端根据 actor 生成查询范围（P1-01 5.3.4），
    * 禁止客户端提交任意 creatorId/ownerId/legalBpId 绕过范围。
    */
-  async findAll(
-    actor: ProjectActor,
-    params: {
-      status?: ProjectStatus;
-      kind?: ProjectKind;
-      mine?: boolean;
-      page?: number;
-      size?: number;
-    },
-  ) {
-    const { status, kind, mine, page = 1, size = 20 } = params;
-    const where: Prisma.ProjectWhereInput = mine
-      ? { creatorId: actor.id }
-      : (this.accessPolicy.listScope(actor) as Prisma.ProjectWhereInput);
-
-    if (status) where.status = status;
-    if (kind) where.kind = kind;
-
-    const [items, total] = await Promise.all([
-      this.prisma.project.findMany({
-        where,
-        include: {
-          creator: { select: userSelect },
-          owner: { select: userSelect },
-          legalBp: { select: userSelect },
-        },
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * size,
-        take: size,
-      }),
-      this.prisma.project.count({ where }),
-    ]);
-
-    // 脱敏：extra（技能 prompt 快照）不随列表响应返回
-    const safeItems = items.map(({ extra: _extra, ...rest }) => rest);
-
-    // 按状态分组
-    const groups: Record<string, typeof safeItems> = {
-      待处理: [],
-      合同协作: [],
-      已回传: [],
-      数字分身处理: [],
-    };
-    for (const p of safeItems) {
-      if (p.kind === 'contract') groups['合同协作'].push(p);
-      else if (p.route === 'llm') groups['数字分身处理'].push(p);
-      else if (p.status === '已回传' || p.status === '已取消') groups['已回传'].push(p);
-      else groups['待处理'].push(p);
-    }
-
-    return { items: safeItems, groups, total, page, size };
+  async findAll(actor: ProjectActor, params: ProjectListParams) {
+    return this.query.findAll(actor, params);
   }
 
-  /** 工单详情 — 含消息和事件；对象级授权（P1-01） */
+  /** 工单详情 — 委派 ProjectQueryService（P2-01） */
   async findOne(id: string, actor: ProjectActor) {
-    const project = await this.prisma.project.findUnique({
-      where: { id },
-      include: {
-        creator: { select: userSelect },
-        owner: { select: userSelect },
-        legalBp: { select: userSelect },
-        messages: { orderBy: { createdAt: 'asc' }, take: 200 },
-        events: { orderBy: { createdAt: 'asc' }, take: 100 },
-        files: {
-          include: { uploader: { select: { displayName: true } } },
-          orderBy: { createdAt: 'desc' },
-        },
-      },
-    });
-
-    if (!project) throw new NotFoundException('工单不存在');
-    this.accessPolicy.assertCan(actor, ProjectAction.Read, project);
-
-    // 脱敏：extra（技能 prompt 快照）不随详情响应返回
-    const { extra: _extra, ...safeProject } = project;
-    return safeProject;
+    return this.query.findOne(id, actor);
   }
 
   /** 更新工单（状态/风险/结果）— 法务 BP 仅可改已指派给自己工单的状态/风险/结果字段 */

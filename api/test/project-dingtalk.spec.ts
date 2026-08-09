@@ -74,6 +74,7 @@ describe('ProjectService 钉钉拉群链路', () => {
       dingtalk as any,
       new CreateProjectUseCase(prisma) as any,
       new ProjectAccessPolicy() as any,
+      { findAll: vi.fn(), findOne: vi.fn() } as any,
     );
 
     prisma.project.create.mockResolvedValue(mockProject());

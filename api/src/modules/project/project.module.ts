@@ -11,6 +11,7 @@ import { ProjectAccessPolicy } from './domain/project-access.policy';
 import { CreateProjectUseCase } from './application/create-project.use-case';
 import { OutboxRepository } from './infrastructure/outbox.repository';
 import { OutboxWorker } from './infrastructure/outbox.worker';
+import { ProjectQueryService } from './queries/project-query.service';
 
 @Module({
   imports: [PrismaModule, DingTalkAdapterModule],
@@ -22,6 +23,7 @@ import { OutboxWorker } from './infrastructure/outbox.worker';
     CreateProjectUseCase,
     OutboxRepository,
     OutboxWorker,
+    ProjectQueryService,
     { provide: CRM_ADAPTER, useClass: MockCrmAdapter },
   ],
   exports: [ProjectService],

@@ -78,7 +78,7 @@ describe('ProjectService.create 技能解析', () => {
       risk as any,
       crm as any,
       dingtalk as any,
-      new CreateProjectUseCase(prisma) as any,
+      new CreateProjectUseCase(prisma, { findAll: vi.fn(), findOne: vi.fn() } as any) as any,
       new ProjectAccessPolicy() as any,
     );
     prisma.project.create.mockResolvedValue(mockProject());
