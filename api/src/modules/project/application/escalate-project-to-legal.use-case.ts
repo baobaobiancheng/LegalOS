@@ -62,17 +62,22 @@ export class EscalateProjectToLegalUseCase {
       for (const text of cmd.eventTexts ?? []) {
         await tx.projectEvent.create({ data: { projectId: cmd.projectId, text } });
       }
-      // Outbox 建群（Worker 建群成功后发真实通知；无需假群 ID）
-      await tx.outboxEvent.create({
-        data: {
-          eventType: OUTBOX_EVENT_DINGTALK_GROUP_CREATE,
-          aggregateType: 'project',
-          aggregateId: cmd.projectId,
-          dedupKey: dingtalkGroupOutboxDedupKey(cmd.projectId),
-          payload: { projectId: cmd.projectId },
-          projectId: cmd.projectId,
-        },
-      }).catch(() => undefined); // dedupKey 已存在（重复升级）→ 忽略
+      // Outbox 建群（Worker 建群成功后发真实通知；无需假群 ID）。
+      // 幂等冲突(P2002,dedupKey 已存在)忽略;其他错误抛出让整个事务回滚,避免"升级成功但没建群任务"假成功
+      try {
+        await tx.outboxEvent.create({
+          data: {
+            eventType: OUTBOX_EVENT_DINGTALK_GROUP_CREATE,
+            aggregateType: 'project',
+            aggregateId: cmd.projectId,
+            dedupKey: dingtalkGroupOutboxDedupKey(cmd.projectId),
+            payload: { projectId: cmd.projectId },
+            projectId: cmd.projectId,
+          },
+        });
+      } catch (e: any) {
+        if (e?.code !== 'P2002') throw e;
+      }
       return tx.project.findUnique({ where: { id: cmd.projectId } });
     });
 
