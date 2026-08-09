@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ProjectService } from '../src/modules/project/project.service';
+import { ProjectStateMachine } from '../src/modules/project/domain/project-state-machine';
 import { CreateProjectUseCase } from '../src/modules/project/application/create-project.use-case';
 import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
 
@@ -75,6 +76,7 @@ describe('ProjectService 钉钉拉群链路', () => {
       new CreateProjectUseCase(prisma) as any,
       new ProjectAccessPolicy() as any,
       { findAll: vi.fn(), findOne: vi.fn() } as any,
+      new ProjectStateMachine() as any,
     );
 
     prisma.project.create.mockResolvedValue(mockProject());

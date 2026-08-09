@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ProjectService } from '../src/modules/project/project.service';
+import { ProjectStateMachine } from '../src/modules/project/domain/project-state-machine';
 import { CreateProjectUseCase } from '../src/modules/project/application/create-project.use-case';
 import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
 
@@ -78,8 +79,10 @@ describe('ProjectService.create 技能解析', () => {
       risk as any,
       crm as any,
       dingtalk as any,
-      new CreateProjectUseCase(prisma, { findAll: vi.fn(), findOne: vi.fn() } as any) as any,
+      new CreateProjectUseCase(prisma) as any,
       new ProjectAccessPolicy() as any,
+      { findAll: vi.fn(), findOne: vi.fn() } as any,
+      new ProjectStateMachine() as any,
     );
     prisma.project.create.mockResolvedValue(mockProject());
   });

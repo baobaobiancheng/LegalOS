@@ -24,6 +24,7 @@ import { ProjectAccessPolicy } from './domain/project-access.policy';
 import { ProjectAction, ProjectActor } from './domain/project-access.types';
 import { CreateProjectUseCase, dingtalkGroupOutboxDedupKey } from './application/create-project.use-case';
 import { ProjectListParams, ProjectQueryService } from './queries/project-query.service';
+import { ProjectStateMachine } from './domain/project-state-machine';
 
 // 用户选择器，避免暴露密码哈希
 const userSelect = { id: true, username: true, displayName: true, role: true };
@@ -41,6 +42,7 @@ export class ProjectService {
     private readonly createProjectUseCase: CreateProjectUseCase,
     private readonly accessPolicy: ProjectAccessPolicy,
     private readonly query: ProjectQueryService,
+    private readonly stateMachine: ProjectStateMachine,
   ) {}
 
   // ═══════════════════════════════════════════
@@ -184,6 +186,11 @@ export class ProjectService {
       if (!bp || (bp.role !== 'legal_bp' && bp.role !== 'legal_lead')) {
         throw new ForbiddenException('目标用户不是法务 BP');
       }
+    }
+
+    // P2-01 状态机：非法状态迁移(PATCH 直接赋值)返回 409,不静默覆盖
+    if (dto.status && dto.status !== project.status && !this.stateMachine.canTransition(project.status, dto.status)) {
+      throw new ConflictException(`非法状态迁移: ${project.status} → ${dto.status}`);
     }
 
     const updated = await this.prisma.project.update({
