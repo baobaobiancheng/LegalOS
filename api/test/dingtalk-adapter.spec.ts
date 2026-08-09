@@ -108,7 +108,7 @@ describe('DingTalkAdapterImpl', () => {
   });
 
   it('syncContacts：过滤机器人/离职/停用/测试账号，保留在岗真人', async () => {
-    mockFetch(async (url: string, init?: any) => {
+    mockFetch(async (url: string, _init?: any) => {
       if (url.includes('/department/listsub')) {
         return { json: async () => ({ errcode: 0, result: [] }) };
       }

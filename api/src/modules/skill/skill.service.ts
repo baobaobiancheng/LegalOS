@@ -140,7 +140,7 @@ export class SkillService {
     // 我的技能保留 reviewLog（驳回原因直接展示，无需逐条 detail）；其余 scope 剥离
     return items
       .filter((s) => this.canView(s, userId, role))
-      .map(({ prompt, reviewLog, ...rest }) =>
+      .map(({ prompt: _prompt, reviewLog, ...rest }) =>
         scope === 'mine' ? { ...rest, reviewLog } : rest,
       );
   }

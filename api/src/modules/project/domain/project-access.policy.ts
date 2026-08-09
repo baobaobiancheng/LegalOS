@@ -1,5 +1,4 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
-import { ProjectStatus } from '@prisma/client';
 import { ProjectAction, ProjectActor, ProjectLike } from './project-access.types';
 
 /**
@@ -51,7 +50,7 @@ export class ProjectAccessPolicy {
     return project.legalBpId === actor.id || project.ownerId === actor.id;
   }
 
-  private canLead(actor: ProjectActor, action: ProjectAction, project: ProjectLike): boolean {
+  private canLead(_actor: ProjectActor, _action: ProjectAction, _project: ProjectLike): boolean {
     return true;
   }
 

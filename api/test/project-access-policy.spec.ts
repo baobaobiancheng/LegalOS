@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
 import { ProjectAction, ProjectActor, ProjectLike } from '../src/modules/project/domain/project-access.types';
 

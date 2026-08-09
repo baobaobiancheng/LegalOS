@@ -18,7 +18,7 @@ import {
 import { CreateProjectDto, CreateProjectMessageDto, ReplyProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { ChildProcess } from 'child_process';
-import { Prisma, ProjectKind, ProjectStatus, RiskLevel } from '@prisma/client';
+import { Prisma, ProjectKind, ProjectStatus } from '@prisma/client';
 import { injectSkillSection } from '../../common/utils/skill-prompt';
 import { ProjectAccessPolicy } from './domain/project-access.policy';
 import { ProjectAction, ProjectActor } from './domain/project-access.types';

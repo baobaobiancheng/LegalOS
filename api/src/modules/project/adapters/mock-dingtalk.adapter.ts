@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { DingTalkAdapter, DingTalkGroup, ContactInfo, ContactSyncResult } from './adapter.interfaces';
+import { DingTalkAdapter, DingTalkGroup, ContactSyncResult } from './adapter.interfaces';
 
 /**
  * 钉钉 Mock 适配器（无凭证本地开发 / fallback）。

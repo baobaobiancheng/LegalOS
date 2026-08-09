@@ -12,8 +12,10 @@ import { existsSync } from 'fs';
  */
 
 const { spawnMock } = vi.hoisted(() => {
+  /* eslint-disable @typescript-eslint/no-require-imports -- vi.hoisted 工厂不能引用顶层 import,须用 require */
   const { EventEmitter } = require('events');
   const { PassThrough } = require('stream');
+  /* eslint-enable @typescript-eslint/no-require-imports */
   const spawnMock = vi.fn(() => {
     const child = new EventEmitter();
     (child as any).stdout = new PassThrough();
@@ -95,7 +97,7 @@ describe('CodexService 硬化模式', () => {
     const svc = makeService(
       makeConfig({ CODEX_HARDENED: 'true', AI_EXECUTION_ENABLED: 'true' }),
     );
-    const stream = await svc.executeStream('你好');
+    await svc.executeStream('你好');
     const args = spawnMock.mock.calls[0][1] as string[];
     expect(args).toEqual([
       '--strict-config',
@@ -119,7 +121,7 @@ describe('CodexService 硬化模式', () => {
     const svc = makeService(
       makeConfig({ CODEX_HARDENED: 'true', AI_EXECUTION_ENABLED: 'true' }),
     );
-    const stream = await svc.executeStream('你好');
+    await svc.executeStream('你好');
     const env = spawnMock.mock.calls[0][2].env as NodeJS.ProcessEnv;
     expect(env.CODEX_API_KEY).toBe('gateway-token');
     expect(env.DATABASE_URL).toBeUndefined();
@@ -133,7 +135,7 @@ describe('CodexService 硬化模式', () => {
     const svc = makeService(
       makeConfig({ CODEX_HARDENED: 'true', AI_EXECUTION_ENABLED: 'true' }),
     );
-    const stream = await svc.executeStream('你好');
+    await svc.executeStream('你好');
     const [, , opts] = spawnMock.mock.calls[0];
     const env = opts.env as NodeJS.ProcessEnv;
     const cwd = opts.cwd as string;
@@ -148,8 +150,8 @@ describe('CodexService 硬化模式', () => {
 describe('CodexService 本地模式（默认）', () => {
   it('不传严格参数，CODEX_HOME 读真实 ~/.codex（本地 auth.json/config.toml）', async () => {
     const svc = makeService(makeConfig({ AI_EXECUTION_ENABLED: 'true' }));
-    const stream = await svc.executeStream('你好');
-    const [bin, args, opts] = spawnMock.mock.calls[0];
+    await svc.executeStream('你好');
+    const [, args, opts] = spawnMock.mock.calls[0];
     expect(args).toEqual(['exec', '--skip-git-repo-check', '-']);
     expect((opts.env as NodeJS.ProcessEnv).CODEX_HOME).toBe('/home/fakeuser/.codex');
     (spawnMock.mock.results[0].value as any).emit('close', 0);
