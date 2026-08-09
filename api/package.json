@@ -10,7 +10,11 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "ts-node prisma/seed.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint": "eslint \"{src,test}/**/*.ts\" --max-warnings=0",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:unit": "vitest run --exclude \"test/**/*.integration.spec.ts\"",
+    "test:integration": "vitest run \"test/**/*.integration.spec.ts\""
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
@@ -49,6 +53,8 @@
     "prisma": "^6.1.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.2",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "eslint": "^9.0.0",
+    "typescript-eslint": "^8.0.0"
   }
 }

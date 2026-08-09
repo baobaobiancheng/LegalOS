@@ -29,6 +29,7 @@ import { Prisma, ContractDocumentType } from '@prisma/client';
 import { ProjectAccessPolicy } from '../project/domain/project-access.policy';
 import { ProjectAction, ProjectActor } from '../project/domain/project-access.types';
 import { CreateProjectUseCase } from '../project/application/create-project.use-case';
+import { EscalateProjectToLegalUseCase } from '../project/application/escalate-project-to-legal.use-case';
 
 /**
  * 合同协作服务。
@@ -57,6 +58,7 @@ export class ContractService {
     @Inject(DINGTALK_ADAPTER) private readonly dingtalk: DingTalkAdapter,
     private readonly createProjectUseCase: CreateProjectUseCase,
     private readonly accessPolicy: ProjectAccessPolicy,
+    private readonly escalateToLegal: EscalateProjectToLegalUseCase,
   ) {
     this.storageDir = process.env.CONTRACT_STORAGE_DIR
       || join(process.cwd(), 'storage', 'contracts');
@@ -180,21 +182,17 @@ export class ContractService {
     if (!project) throw new NotFoundException('工单不存在');
     this.accessPolicy.assertCan(actor, ProjectAction.SubmitReview, project);
 
-    const updated = await this.prisma.project.updateMany({
-      where: { id: projectId, route: 'llm' },
-      data: { route: 'legalbp', status: '待复核' },
+    // P1-10：统一法务升级用例（事务内条件更新 + 事件 + Outbox 建群）。
+    // 不再向 `project.dingtalkChatId || 'contract-review'` 假群 ID 发通知；
+    // 真实通知由 Outbox Worker 建群成功后发送。
+    const { upgraded } = await this.escalateToLegal.execute({
+      projectId,
+      route: 'legalbp',
+      status: '待复核',
+      eventTexts: [this.formatTime() + ' · 已发起法务审阅，已提交法务处理，通知排队中'],
     });
-    if (updated.count === 0) throw new ConflictException('该工单已进入法务流程');
+    if (!upgraded) throw new ConflictException('该工单已进入法务流程');
 
-    await this.addEvent(projectId, this.formatTime() + ' · 已发起法务审阅，通知法务BP');
-    try {
-      await this.dingtalk.sendNotification(
-        project.dingtalkChatId || 'contract-review',
-        `合同协作工单待审阅：${project.title}`,
-      );
-    } catch (e) {
-      this.logger.warn(`钉钉通知失败（Mock）：${e}`);
-    }
     return { projectId, status: '待复核' };
   }
 

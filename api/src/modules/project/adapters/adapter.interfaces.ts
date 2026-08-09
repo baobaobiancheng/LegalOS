@@ -20,6 +20,26 @@ export interface ContactInfo {
   mobile?: string;
 }
 
+/** 通讯录同步结构化结果（P1-07）：complete=false 时不允许失效对账/自动绑定 */
+export interface ContactSyncResult {
+  contacts: ContactInfo[];
+  complete: boolean;
+  departmentCount: number;
+  pageCount: number;
+  warnings: string[];
+}
+
+/** 同步不完整（P1-07）：深度/分页达到上限、空结果 → 抛此错误，批次标记 failed，旧快照不受影响 */
+export class DingTalkSyncIncompleteError extends Error {
+  constructor(
+    message: string,
+    readonly detail?: { departmentCount: number; pageCount: number; truncatedDepth: boolean; truncatedPage: boolean },
+  ) {
+    super(message);
+    this.name = 'DingTalkSyncIncompleteError';
+  }
+}
+
 export interface CrmAdapter {
   getContext(customerId: string, params?: Record<string, string>): Promise<CrmContext>;
   writeBack(projectId: string, result: string): Promise<void>;
@@ -32,8 +52,8 @@ export interface DingTalkAdapter {
   addMember(chatId: string, userId: string): Promise<void>;
   /** 发群消息（机器人） */
   sendNotification(chatId: string, message: string): Promise<void>;
-  /** 通讯录同步：部门树遍历 + 分页 + userid 去重 */
-  syncContacts(): Promise<ContactInfo[]>;
+  /** 通讯录同步：部门树遍历 + 分页 + userid 去重；不完整（深度/分页/空）抛 DingTalkSyncIncompleteError */
+  syncContacts(): Promise<ContactSyncResult>;
 }
 
 export const CRM_ADAPTER = 'CRM_ADAPTER';

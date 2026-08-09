@@ -1,11 +1,21 @@
-import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  NotFoundException,
+  ConflictException,
+} from '@nestjs/common';
 import { Inject } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   DINGTALK_ADAPTER,
   DingTalkAdapter,
+  ContactInfo,
 } from '../project/adapters/adapter.interfaces';
 import { isBpDomain, BP_DOMAINS } from './dto/members.dto';
+
+/** P1-08：通讯录 staging 批大小（createMany 每批条数） */
+const SYNC_BATCH_SIZE = 300;
 
 /**
  * 管理端成员管理（2026-08-05 钉钉拉群模块）：
@@ -23,62 +33,158 @@ export class MembersService {
     @Inject(DINGTALK_ADAPTER) private readonly dingtalk: DingTalkAdapter,
   ) {}
 
-  /** 一键同步：拉全量 → 快照 upsert → 姓名自动匹配绑定（重名 → 落手动，工程评审决策 #CR4） */
+  /**
+   * 一键同步（P1-07/08）：拉全量（结构化结果，不完整抛 DingTalkSyncIncompleteError）→
+   * 批次 staging → 短事务 merge → 软失效对账 → 双向姓名唯一自动绑定 → 批次 complete。
+   * 任何不完整/异常：批次标记 failed，不动上一成功快照与绑定。
+   */
   async syncContacts() {
-    const contacts = await this.dingtalk.syncContacts();
+    const batch = await this.prisma.dingTalkSyncBatch.create({ data: {} });
+    try {
+      const result = await this.dingtalk.syncContacts();
+      const contacts = result.contacts;
 
-    // 1. 快照落库（upsert by 钉钉 userid）
-    for (const c of contacts) {
-      await this.prisma.dingTalkContact.upsert({
-        where: { userId: c.userId },
-        update: { name: c.name, mobile: c.mobile },
-        create: { userId: c.userId, name: c.name, mobile: c.mobile },
+      // 1. staging（批次 createMany，不逐条 await）
+      for (let i = 0; i < contacts.length; i += SYNC_BATCH_SIZE) {
+        const chunk = contacts.slice(i, i + SYNC_BATCH_SIZE);
+        await this.prisma.dingTalkContactStaging.createMany({
+          data: chunk.map((c) => ({
+            batchId: batch.id,
+            userId: c.userId,
+            name: c.name,
+            mobile: c.mobile ?? null,
+          })),
+        });
+      }
+
+      // 2. merge 到正式表（分块并发 upsert，短事务内；不再逐条串行）
+      await this.mergeContacts(contacts);
+
+      // 3. 软失效：本批未出现的旧联系人 isActive=false（不再硬删除）
+      const freshIds = contacts.map((c) => c.userId);
+      if (freshIds.length) {
+        await this.prisma.dingTalkContact.updateMany({
+          where: { isActive: true, userId: { notIn: freshIds } },
+          data: { isActive: false, lastSeenBatchId: batch.id },
+        });
+        await this.prisma.dingTalkContact.updateMany({
+          where: { userId: { in: freshIds } },
+          data: { isActive: true, lastSeenBatchId: batch.id, lastSeenAt: new Date() },
+        });
+      }
+
+      // 4. 自动绑定（系统/联系人双向姓名唯一 + 双方未绑定）
+      const { autoBound, ambiguous } = await this.autoBind(contacts);
+
+      // 5. 批次 complete
+      await this.prisma.dingTalkSyncBatch.update({
+        where: { id: batch.id },
+        data: {
+          status: 'complete',
+          contactCount: contacts.length,
+          departmentCount: result.departmentCount,
+          completedAt: new Date(),
+        },
       });
-    }
 
-    // 1b. 清理快照中已不存在的成员（对比现网：离职/删除/被过滤的机器人账号
-    //     不再出现在手动绑定搜索源——2026-08-06 修复首次同步残留的机器人行）
-    const freshIds = contacts.map((c) => c.userId);
-    if (freshIds.length) {
-      await this.prisma.dingTalkContact.deleteMany({
-        where: { userId: { notIn: freshIds } },
-      });
+      this.logger.log(`通讯录同步完成：${contacts.length} 人，自动绑定 ${autoBound} 人`);
+      return {
+        total: contacts.length,
+        autoBound,
+        ambiguous,
+        complete: true,
+        batchId: batch.id,
+        contacts: contacts.slice(0, 500), // 前端表格展示上限
+      };
+    } catch (e: any) {
+      // 不完整/失败：批次 failed，不动旧快照
+      await this.prisma.dingTalkSyncBatch
+        .update({
+          where: { id: batch.id },
+          data: {
+            status: 'failed',
+            errorMessage: String(e?.message ?? e).slice(0, 500),
+            completedAt: new Date(),
+          },
+        })
+        .catch(() => undefined);
+      this.logger.error(`通讯录同步失败（批次 ${batch.id}）：${e?.message ?? e}`);
+      return { complete: false, batchId: batch.id, error: String(e?.message ?? e).slice(0, 200) };
     }
+  }
 
-    // 2. 按姓名自动匹配：未绑定用户 × 通讯录（重名 → 跳过，落手动绑定）
+  /** merge：upsert 每个联系人（分块并发，短事务），避免 O(n) 串行往返 */
+  private async mergeContacts(contacts: ContactInfo[]): Promise<void> {
+    for (let i = 0; i < contacts.length; i += SYNC_BATCH_SIZE) {
+      const chunk = contacts.slice(i, i + SYNC_BATCH_SIZE);
+      await this.prisma.$transaction(
+        chunk.map((c) =>
+          this.prisma.dingTalkContact.upsert({
+            where: { userId: c.userId },
+            update: { name: c.name, mobile: c.mobile ?? null, isActive: true },
+            create: { userId: c.userId, name: c.name, mobile: c.mobile ?? null, isActive: true },
+          }),
+        ),
+      );
+    }
+  }
+
+  /**
+   * 自动绑定（P1-07）：同时满足
+   * - 系统该姓名恰好 1 个未绑定用户；
+   * - 本次完整快照该姓名恰好 1 个联系人；
+   * - 该联系人未被其他系统用户绑定。
+   * 系统重名或联系人重名 → ambiguous，不自动绑定。
+   */
+  private async autoBind(contacts: ContactInfo[]): Promise<{ autoBound: number; ambiguous: string[] }> {
     const unbound = await this.prisma.user.findMany({
       where: { dingtalkUserId: null },
       select: { id: true, displayName: true },
     });
-    const nameToUsers = new Map<string, typeof unbound>();
+    const nameToUsers = new Map<string, { id: string; displayName: string }[]>();
     for (const u of unbound) {
       const list = nameToUsers.get(u.displayName) || [];
       list.push(u);
       nameToUsers.set(u.displayName, list);
     }
 
+    const snapshotByName = new Map<string, ContactInfo[]>();
+    for (const c of contacts) {
+      const list = snapshotByName.get(c.name) || [];
+      list.push(c);
+      snapshotByName.set(c.name, list);
+    }
+
+    // 已被其他用户绑定的联系人 id（User.dingtalkUserId 唯一 → 查询占用）
+    const contactIds = contacts.map((c) => c.userId);
+    const bound = await this.prisma.user.findMany({
+      where: { dingtalkUserId: { in: contactIds } },
+      select: { dingtalkUserId: true },
+    });
+    const boundContactIds = new Set(bound.map((b) => b.dingtalkUserId as string));
+
     let autoBound = 0;
     const ambiguous: string[] = [];
-    for (const c of contacts) {
-      const candidates = nameToUsers.get(c.name);
-      if (!candidates || candidates.length !== 1) {
-        if (candidates && candidates.length > 1) ambiguous.push(c.name); // 重名不自动绑定
+    for (const [name, users] of nameToUsers) {
+      if (users.length > 1) {
+        ambiguous.push(name); // 系统重名不自动绑定（任务书 6.5）
         continue;
       }
+      if (users.length === 0) continue;
+      const snapshot = snapshotByName.get(name);
+      if (!snapshot || snapshot.length !== 1) {
+        if (snapshot && snapshot.length > 1) ambiguous.push(name); // 联系人重名
+        continue;
+      }
+      const contact = snapshot[0];
+      if (boundContactIds.has(contact.userId)) continue; // 已被他人绑定
       await this.prisma.user.update({
-        where: { id: candidates[0].id },
-        data: { dingtalkUserId: c.userId, dingtalkPhone: c.mobile },
+        where: { id: users[0].id },
+        data: { dingtalkUserId: contact.userId, dingtalkPhone: contact.mobile ?? null },
       });
       autoBound++;
     }
-
-    this.logger.log(`通讯录同步完成：${contacts.length} 人，自动绑定 ${autoBound} 人`);
-    return {
-      total: contacts.length,
-      autoBound,
-      ambiguous,
-      contacts: contacts.slice(0, 500), // 前端表格展示上限
-    };
+    return { autoBound, ambiguous };
   }
 
   /** 系统用户列表（含钉钉绑定状态，管理端绑定表） */
@@ -106,21 +212,37 @@ export class MembersService {
     });
   }
 
-  /** 手动绑定：系统用户 ↔ 钉钉成员 */
+  /** 手动绑定（P1-07 1:1）：联系人须存在且 active；联系人未被其他用户绑定；唯一冲突返回 409，不覆盖原绑定 */
   async bind(userId: string, dingtalkUserId: string) {
     const contact = await this.prisma.dingTalkContact.findUnique({
       where: { userId: dingtalkUserId },
     });
-    if (!contact) throw new BadRequestException('钉钉通讯录中不存在该成员，请先同步');
+    if (!contact || !contact.isActive) {
+      throw new BadRequestException('钉钉通讯录中不存在该成员或已失效，请先同步');
+    }
 
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('系统用户不存在');
 
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data: { dingtalkUserId, dingtalkPhone: contact.mobile },
+    // 该联系人是否已被其他系统用户绑定（User.dingtalkUserId 唯一）
+    const occupied = await this.prisma.user.findFirst({
+      where: { dingtalkUserId, id: { not: userId } },
+      select: { id: true },
     });
-    return { id: updated.id, displayName: updated.displayName, dingtalkUserId: updated.dingtalkUserId };
+    if (occupied) throw new ConflictException('该钉钉成员已绑定其他系统用户');
+
+    try {
+      const updated = await this.prisma.user.update({
+        where: { id: userId },
+        data: { dingtalkUserId, dingtalkPhone: contact.mobile },
+      });
+      return { id: updated.id, displayName: updated.displayName, dingtalkUserId: updated.dingtalkUserId };
+    } catch (e: any) {
+      if (e?.code === 'P2002') {
+        throw new ConflictException('该钉钉成员已被其他系统用户绑定（唯一约束）');
+      }
+      throw e;
+    }
   }
 
   /** 解绑 */

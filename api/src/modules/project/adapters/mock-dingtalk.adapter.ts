@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { DingTalkAdapter, DingTalkGroup, ContactInfo } from './adapter.interfaces';
+import { DingTalkAdapter, DingTalkGroup, ContactInfo, ContactSyncResult } from './adapter.interfaces';
 
 /**
  * 钉钉 Mock 适配器（无凭证本地开发 / fallback）。
@@ -23,8 +23,8 @@ export class MockDingTalkAdapter implements DingTalkAdapter {
     this.logger.log(`[DingTalk Mock] 通知已发送 — ${chatId}：${message}`);
   }
 
-  async syncContacts(): Promise<ContactInfo[]> {
+  async syncContacts(): Promise<ContactSyncResult> {
     this.logger.log('[DingTalk Mock] 通讯录同步（返回空快照）');
-    return [];
+    return { contacts: [], complete: true, departmentCount: 0, pageCount: 0, warnings: [] };
   }
 }

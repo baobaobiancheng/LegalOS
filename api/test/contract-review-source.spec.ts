@@ -63,6 +63,7 @@ describe('ContractService.reviewContract 源文档', () => {
       dingtalk as any,
       new CreateProjectUseCase(prisma) as any,
       new ProjectAccessPolicy() as any,
+      { execute: vi.fn() } as any,
     );
     prisma.project.findUnique.mockResolvedValue(PROJECT);
     prisma.contractReviewRun.create.mockResolvedValue({ id: 'run-1' });

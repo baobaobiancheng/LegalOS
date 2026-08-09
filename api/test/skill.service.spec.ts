@@ -49,6 +49,9 @@ describe('SkillService', () => {
         update: vi.fn(),
         updateMany: vi.fn(),
       },
+      skillReviewLog: { create: vi.fn().mockResolvedValue({ id: 'log-1' }), upsert: vi.fn() },
+      // P1-09：交互式事务，用 prisma 自身充当 tx
+      $transaction: vi.fn((cb: (tx: any) => Promise<any>) => cb(prisma)),
     };
     service = new SkillService(prisma);
   });

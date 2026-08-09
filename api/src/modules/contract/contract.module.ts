@@ -7,6 +7,7 @@ import { MockDingTalkAdapter } from '../project/adapters/mock-dingtalk.adapter';
 import { DINGTALK_ADAPTER } from '../project/adapters/adapter.interfaces';
 import { ProjectAccessPolicy } from '../project/domain/project-access.policy';
 import { CreateProjectUseCase } from '../project/application/create-project.use-case';
+import { EscalateProjectToLegalUseCase } from '../project/application/escalate-project-to-legal.use-case';
 
 @Module({
   imports: [PrismaModule],
@@ -16,6 +17,7 @@ import { CreateProjectUseCase } from '../project/application/create-project.use-
     ContractTemplateService,
     ProjectAccessPolicy,
     CreateProjectUseCase,
+    EscalateProjectToLegalUseCase,
     { provide: DINGTALK_ADAPTER, useClass: MockDingTalkAdapter },
   ],
 })

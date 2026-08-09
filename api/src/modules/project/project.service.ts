@@ -47,8 +47,8 @@ export class ProjectService {
 
   /** 创建工单 — 事务化（项目/首消息/事件/Outbox 同事务，P1-03），钉钉建群交由 Outbox Worker */
   async create(dto: CreateProjectDto, currentUserId: string) {
-    // 1. 风险判定 + 领域标签（事务前：外部 LLM 调用）
-    const { risk, route, domain } = await this.riskService.assess(dto.input);
+    // 1. 风险判定 + 领域标签（事务前：外部 LLM 调用；P1-11 带回规则下限证据）
+    const { risk, route, domain, evidence } = await this.riskService.assess(dto.input);
 
     // 1.5 技能服务端解析（仅解析 active 的公有技能或创建者自己的私有技能）
     let skillId: string | null = null;
@@ -105,6 +105,21 @@ export class ProjectService {
       risk,
       route,
       legalBpId,
+      // P1-11：分类证据随事务写入 RiskAssessmentLog（审计可追溯）
+      ...(evidence
+        ? {
+            riskLog: {
+              finalRisk: risk,
+              route,
+              domain,
+              ruleFloor: evidence.ruleFloor,
+              matchedRuleIds: evidence.matchedRuleIds,
+              modelRisk: evidence.modelRisk,
+              modelReason: evidence.modelReason,
+              classifierVersion: evidence.classifierVersion,
+            },
+          }
+        : {}),
       skillId,
       skillName,
       requesterName: dto.requesterName ?? null,

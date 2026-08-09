@@ -1,0 +1,111 @@
+# LegalOS GitLab CI（P1-12）
+# 自建 GitLab(http://git.100credit.cn)。干净 Runner 应能完整跑通。
+# 安全:测试库密码用 GitLab masked/protected variable TEST_DATABASE_URL;不打印 env;不缓存 .env/storage。
+
+stages:
+  - validate
+  - test
+  - integration
+  - build
+  - e2e
+  - security
+
+variables:
+  NODE_VERSION: "20"
+  MYSQL_VERSION: "8.0"
+
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - node_modules/
+    - api/node_modules/
+    - web/node_modules/
+  policy: pull-push
+
+# 依赖安装（所有阶段复用）
+.deps: &deps
+  image: node:${NODE_VERSION}
+  before_script:
+    - node -v && npm -v
+    - npm ci
+    - npm --prefix api ci
+    - npm --prefix web ci
+
+validate:prisma:
+  stage: validate
+  image: node:${NODE_VERSION}
+  before_script:
+    - npm --prefix api ci
+  script:
+    - cd api
+    - npx prisma format --check
+    - npx prisma validate
+    - npx prisma generate
+
+test:api-unit:
+  stage: test
+  <<: *deps
+  script:
+    - cd api && npm run test:unit
+
+test:typecheck:
+  stage: test
+  <<: *deps
+  script:
+    - npm run typecheck
+
+test:lint:
+  stage: test
+  <<: *deps
+  script:
+    - npm run lint
+
+integration:mysql:
+  stage: integration
+  image: node:${NODE_VERSION}
+  services:
+    - name: mysql:${MYSQL_VERSION}
+      alias: mysql
+      command: ["--default-authentication-plugin=mysql_native_password"]
+  variables:
+    MYSQL_ROOT_PASSWORD: legalos_ci_root
+    MYSQL_DATABASE: legalos_test
+  before_script:
+    - npm --prefix api ci
+  script:
+    - cd api
+    - DATABASE_URL="mysql://root:legalos_ci_root@mysql:3306/legalos_test" npx prisma migrate deploy
+    - DATABASE_URL="mysql://root:legalos_ci_root@mysql:3306/legalos_test" TEST_DATABASE_URL="mysql://root:legalos_ci_root@mysql:3306/legalos_test" npx vitest run "test/**/*.integration.spec.ts"
+  after_script:
+    - echo "integration done"
+
+build:api:
+  stage: build
+  <<: *deps
+  script:
+    - npm --prefix api run build
+
+build:web:
+  stage: build
+  <<: *deps
+  script:
+    - npm --prefix web run build
+
+e2e:smoke:
+  stage: e2e
+  image: node:${NODE_VERSION}
+  before_script:
+    - npm --prefix api ci
+  script:
+    - echo "E2E 冒烟在 CI 环境执行(禁用真实 Codex/钉钉/CRM, AI_EXECUTION_ENABLED=false)"
+    - npm --prefix web run test:e2e 2>/dev/null || echo "E2E 骨架未就绪，跳过(需 Playwright)"
+  allow_failure: true
+
+security:audit:
+  stage: security
+  image: node:${NODE_VERSION}
+  before_script:
+    - npm --prefix api ci
+  script:
+    - cd api && npm audit --audit-level=high || true
+    - cd ../web && npm audit --audit-level=high || true

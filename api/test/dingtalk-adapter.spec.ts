@@ -101,9 +101,10 @@ describe('DingTalkAdapterImpl', () => {
       return { json: async () => ({ errcode: 0 }) };
     });
     const adapter = new DingTalkAdapterImpl();
-    const contacts = await adapter.syncContacts();
+    const result = await adapter.syncContacts();
     // 根(1) + 11 + 33 三个部门都被遍历到
-    expect(contacts.map((c) => c.userId).sort()).toEqual(['U-1', 'U-11', 'U-33']);
+    expect(result.complete).toBe(true);
+    expect(result.contacts.map((c) => c.userId).sort()).toEqual(['U-1', 'U-11', 'U-33']);
   });
 
   it('syncContacts：过滤机器人/离职/停用/测试账号，保留在岗真人', async () => {
@@ -130,7 +131,7 @@ describe('DingTalkAdapterImpl', () => {
       return { json: async () => ({ errcode: 0 }) };
     });
     const adapter = new DingTalkAdapterImpl();
-    const contacts = await adapter.syncContacts();
+    const contacts = (await adapter.syncContacts()).contacts;
     expect(contacts.map((c) => c.userId)).toEqual(['zhang.fang']);
   });
 
@@ -171,7 +172,7 @@ describe('DingTalkAdapterImpl', () => {
       return { json: async () => ({ errcode: 0 }) };
     });
     const adapter = new DingTalkAdapterImpl();
-    const contacts = await adapter.syncContacts();
+    const contacts = (await adapter.syncContacts()).contacts;
     // 3 个部门（1, 11, 22）× 2 页 = 6 次 user/list 调用，U-1 重复出现仅保留一次
     expect(contacts.map((c) => c.userId).sort()).toEqual(['U-1', 'U-2']);
     expect(calls.length).toBe(6); // 部门 1/11/22 × 分页 2 页

@@ -35,6 +35,17 @@ export interface CreateProjectCommand {
   events?: string[];
   /** 是否在事务内入队"钉钉建群" Outbox 事件（仅 legalbp 路由） */
   enqueueDingtalkGroup?: boolean;
+  /** P1-11：风险分类证据，事务内写入 RiskAssessmentLog（不含完整咨询正文） */
+  riskLog?: {
+    finalRisk: string;
+    route: string;
+    domain?: string | null;
+    ruleFloor?: string | null;
+    matchedRuleIds: string[];
+    modelRisk?: string | null;
+    modelReason?: string | null;
+    classifierVersion: string;
+  } | null;
 }
 
 /** Outbox 建群事件稳定去重键：同一工单重复入队/重试只处理一次 */
@@ -117,6 +128,23 @@ export class CreateProjectUseCase {
               dedupKey: dingtalkGroupOutboxDedupKey(p.id),
               payload: { projectId: p.id },
               projectId: p.id,
+            },
+          });
+        }
+
+        // P1-11：风险分类证据（不含完整咨询正文）
+        if (cmd.riskLog) {
+          await tx.riskAssessmentLog.create({
+            data: {
+              projectId: p.id,
+              finalRisk: cmd.riskLog.finalRisk,
+              route: cmd.riskLog.route,
+              domain: cmd.riskLog.domain ?? null,
+              ruleFloor: cmd.riskLog.ruleFloor ?? null,
+              matchedRuleIds: cmd.riskLog.matchedRuleIds,
+              modelRisk: cmd.riskLog.modelRisk ?? null,
+              modelReason: cmd.riskLog.modelReason ?? null,
+              classifierVersion: cmd.riskLog.classifierVersion,
             },
           });
         }

@@ -7,7 +7,8 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { Role, SkillVisibility, Skill, Prisma } from '@prisma/client';
+import { Role, SkillVisibility, Skill, Prisma, SkillReviewAction } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import { pinyin } from 'pinyin';
 import { CreateSkillDto, UpdateSkillDto, ReviewSkillDto } from './dto/skill.dto';
 import { RESERVED_SLUGS } from '../../common/constants/skill.constants';
@@ -222,29 +223,48 @@ export class SkillService {
     return { id, visibility: 'private' };
   }
 
-  /** 审核：pending → public（approve）/ private（reject，reason 必填）。条件更新 + reviewLog append-only */
+  /**
+   * 审核：pending → public（approve）/ private（reject，reason 必填）。P1-09 事务化：
+   * 条件更新（WHERE visibility=pending，并发防护）+ SkillReviewLog 插入在同一交互式事务，
+   * 任一失败整体回滚；唯一 eventId 兜底防重复日志。
+   */
   async review(id: string, dto: ReviewSkillDto, userId: string) {
     if (!dto.approved && !dto.reason?.trim()) {
       throw new BadRequestException('驳回必须填写原因');
     }
+    const action: SkillReviewAction = dto.approved ? 'approve' : 'reject';
+    const toState: SkillVisibility = dto.approved ? 'public' : 'private';
+    const eventId = `${id}:${action}:${randomUUID()}`;
 
-    // 条件更新：只有 pending 才能被审核（并发防护，工程评审决策 C-3）
-    const updated = await this.prisma.skill.updateMany({
-      where: { id, visibility: 'pending' },
-      data: dto.approved
-        ? { visibility: 'public', approvedBy: userId, approvedAt: new Date() }
-        : { visibility: 'private', approvedBy: null, approvedAt: null },
+    await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.skill.updateMany({
+        where: { id, visibility: 'pending' },
+        data: dto.approved
+          ? { visibility: 'public', approvedBy: userId, approvedAt: new Date() }
+          : { visibility: 'private', approvedBy: null, approvedAt: null },
+      });
+      if (updated.count === 0) {
+        const skill = await tx.skill.findUnique({ where: { id }, select: { visibility: true } });
+        if (!skill) throw new NotFoundException('技能不存在');
+        throw new ConflictException('只有待审核状态的技能可审核');
+      }
+      await tx.skillReviewLog.create({
+        data: {
+          eventId,
+          skillId: id,
+          action,
+          fromState: 'pending',
+          toState,
+          actorId: userId,
+          reason: dto.reason?.trim() ?? null,
+        },
+      });
     });
-    if (updated.count === 0) {
-      const skill = await this.prisma.skill.findUnique({ where: { id } });
-      if (!skill) throw new NotFoundException('技能不存在');
-      throw new ConflictException('只有待审核状态的技能可审核');
-    }
 
-    // append-only 审核记录（不覆盖历史驳回原因）
+    // 兼容：JSON reviewLog 仍追加（前端 detail 展示用），失败不阻断；审计以新表 SkillReviewLog 为准
     await this.appendReviewLog(id, dto.approved ? 'approve' : 'reject', userId, dto.reason);
 
-    return { id, visibility: dto.approved ? 'public' : 'private' };
+    return { id, visibility: toState };
   }
 
   /** 停用（pending 不可停用，须先撤回） */

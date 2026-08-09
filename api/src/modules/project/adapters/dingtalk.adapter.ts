@@ -3,6 +3,8 @@ import {
   DingTalkAdapter,
   DingTalkGroup,
   ContactInfo,
+  ContactSyncResult,
+  DingTalkSyncIncompleteError,
 } from './adapter.interfaces';
 
 const OAPI_HOST = 'https://oapi.dingtalk.com';
@@ -186,13 +188,18 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
     );
   }
 
-  async syncContacts(): Promise<ContactInfo[]> {
+  async syncContacts(): Promise<ContactSyncResult> {
     // 两阶段有界并发（2026-08-06 提速：原串行递归约 94 次请求 ≈45s → 并发 6 ≈10s）：
     //   ① BFS + mapLimit 枚举部门树（listsub，seenDepts 防环 + 深度上限 8）
     //   ② mapLimit 逐部门分页拉用户（user/list，userid 去重 + 过滤机器人/离职）
     // 并发内 seen/contacts 变更均为同步语句（循环内无 await 交错），JS 单线程保证安全。
+    // P1-07：跟踪深度/分页截断，达到上限即判定不完整并抛 DingTalkSyncIncompleteError，
+    // 调用方（MembersService）据此把批次标记 failed，不动旧快照。
     const seen = new Set<string>();
     const contacts: ContactInfo[] = [];
+    let truncatedDepth = false;
+    let truncatedPage = false;
+    let pageCount = 0;
 
     // ① 枚举部门树（BFS，有界并发）
     const visitedDepts = new Set<number>([1]);
@@ -204,7 +211,10 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
         return ((res.result || []) as Array<{ dept_id: number }>).map((d) => d.dept_id);
       });
       for (let b = 0; b < batch.length; b++) {
-        if (batch[b].depth >= 8) continue; // 防失控：部门树深度上限
+        if (batch[b].depth >= 8) {
+          if (subLists[b].length) truncatedDepth = true; // 达到深度上限仍剩子部门 → 不完整
+          continue;
+        }
         for (const deptId of subLists[b]) {
           if (!visitedDepts.has(deptId)) {
             visitedDepts.add(deptId);
@@ -225,6 +235,7 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
           cursor,
           size: 100,
         });
+        pageCount++;
         const list: any[] = res.result?.list || [];
         for (const u of list) {
           if (!u.userid || seen.has(u.userid)) continue; // 跨部门重复按 userid 去重
@@ -234,11 +245,28 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
         }
         if (!res.result?.has_more) break;
         cursor = res.result?.next_cursor ?? 0;
+        if (page === 49) truncatedPage = true; // 达 50 页上限且仍 has_more → 不完整
       }
     });
 
-    this.logger.log(`通讯录同步完成：${contacts.length} 人`);
-    return contacts;
+    if (truncatedDepth || truncatedPage) {
+      throw new DingTalkSyncIncompleteError(
+        `通讯录同步不完整（深度截断=${truncatedDepth}，分页截断=${truncatedPage}），已放弃本次结果`,
+        { departmentCount: visitedDepts.size, pageCount, truncatedDepth, truncatedPage },
+      );
+    }
+    if (contacts.length === 0) {
+      throw new DingTalkSyncIncompleteError('通讯录同步结果为空（组织可能为空或过滤后无人），判定异常');
+    }
+
+    this.logger.log(`通讯录同步完成：${contacts.length} 人（${visitedDepts.size} 部门，${pageCount} 页）`);
+    return {
+      contacts,
+      complete: true,
+      departmentCount: visitedDepts.size,
+      pageCount,
+      warnings: [],
+    };
   }
 
   // ═══════════════════════════════════════════

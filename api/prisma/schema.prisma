@@ -62,6 +62,21 @@ enum ContractReviewStatus {
   cancelled
 }
 
+enum ContactSyncStatus {
+  running
+  complete
+  failed
+}
+
+enum SkillReviewAction {
+  submit
+  withdraw
+  approve
+  reject
+  archive
+  restore
+}
+
 model User {
   id             String    @id @default(uuid())
   username       String    @unique
@@ -73,7 +88,8 @@ model User {
   lockedUntil    DateTime? @map("locked_until")
 
   // 钉钉绑定（2026-08-05 钉钉拉群）：通讯录同步写入，建群直接传 userid
-  dingtalkUserId String? @map("dingtalk_user_id") @db.VarChar(128)
+  // @unique（P1-07）：一个系统用户最多绑一个钉钉联系人，重名不会自动错绑
+  dingtalkUserId String? @unique @map("dingtalk_user_id") @db.VarChar(128)
   dingtalkPhone  String? @map("dingtalk_phone") @db.VarChar(32)
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -107,15 +123,52 @@ model BpDomainMap {
 }
 
 // 钉钉通讯录快照（2026-08-05）：同步结果落库，手动绑定可在快照内搜索
+// P1-07：不再硬删除，完整同步成功后缺失联系人仅软失效（isActive=false），失败批次不动旧快照
 model DingTalkContact {
-  id       String   @id @default(uuid())
-  userId   String   @map("user_id") // 钉钉 userid
-  name     String   @db.VarChar(128)
-  mobile   String?  @db.VarChar(32)
-  syncedAt DateTime @default(now()) @map("synced_at")
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id") // 钉钉 userid
+  name            String   @db.VarChar(128)
+  mobile          String?  @db.VarChar(32)
+  isActive        Boolean  @default(true) @map("is_active")
+  lastSeenBatchId String?  @map("last_seen_batch_id") @db.VarChar(64)
+  lastSeenAt      DateTime @default(now()) @map("last_seen_at")
+  syncedAt        DateTime @default(now()) @map("synced_at")
 
   @@unique([userId])
+  @@index([name])
   @@map("dingtalk_contacts")
+}
+
+// 同步批次（P1-07/P1-08）：记录每次全量同步的完整性状态；仅 complete 批次允许失效对账/自动绑定
+model DingTalkSyncBatch {
+  id              String            @id @default(uuid())
+  status          ContactSyncStatus @default(running)
+  contactCount    Int               @default(0) @map("contact_count")
+  departmentCount Int               @default(0) @map("department_count")
+  truncated       Boolean           @default(false)
+  errorMessage    String?           @map("error_message") @db.Text
+  startedAt       DateTime          @default(now()) @map("started_at")
+  completedAt     DateTime?         @map("completed_at")
+  createdAt       DateTime          @default(now()) @map("created_at")
+
+  staging DingTalkContactStaging[]
+
+  @@index([status, startedAt])
+  @@map("dingtalk_sync_batches")
+}
+
+// 同步 staging（P1-08）：批内数据先 createMany 落 staging，完整校验通过后短事务 merge 到正式表
+model DingTalkContactStaging {
+  id      String            @id @default(uuid())
+  batchId String            @map("batch_id")
+  batch   DingTalkSyncBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  userId  String            @map("user_id") @db.VarChar(128)
+  name    String            @db.VarChar(128)
+  mobile  String?           @db.VarChar(32)
+
+  @@unique([batchId, userId])
+  @@index([batchId, name])
+  @@map("dingtalk_contact_staging")
 }
 
 model Project {
@@ -250,9 +303,47 @@ model Skill {
   creator  User  @relation("CreatedSkills", fields: [creatorId], references: [id], onDelete: Restrict)
   approver User? @relation("ApprovedSkills", fields: [approvedBy], references: [id], onDelete: SetNull)
 
+  reviewLogs SkillReviewLog[]
+
   @@index([visibility])
   @@index([group])
   @@map("skills")
+}
+
+// 技能审核审计日志（P1-09）：规范化、append-only、事务内写入。旧 reviewLog Json 字段保留做兼容迁移。
+model SkillReviewLog {
+  id        String            @id @default(uuid())
+  eventId   String            @unique @map("event_id") @db.VarChar(64)
+  skillId   String            @map("skill_id")
+  skill     Skill             @relation(fields: [skillId], references: [id], onDelete: Restrict)
+  action    SkillReviewAction
+  fromState String            @map("from_state") @db.VarChar(32)
+  toState   String            @map("to_state") @db.VarChar(32)
+  actorId   String            @map("actor_id")
+  reason    String?           @db.Text
+  createdAt DateTime          @default(now()) @map("created_at")
+
+  @@index([skillId, createdAt])
+  @@index([actorId, createdAt])
+  @@map("skill_review_logs")
+}
+
+// 风险分类审计（P1-11）：记录最终风险、规则命中、模型结果与版本，不含完整咨询正文
+model RiskAssessmentLog {
+  id                String   @id @default(uuid())
+  projectId         String   @map("project_id")
+  finalRisk         String   @map("final_risk") @db.VarChar(8)
+  route             String   @db.VarChar(16)
+  domain            String?  @db.VarChar(64)
+  ruleFloor         String?  @map("rule_floor") @db.VarChar(8)
+  matchedRuleIds    Json     @default("[]") @map("matched_rule_ids")
+  modelRisk         String?  @map("model_risk") @db.VarChar(8)
+  modelReason       String?  @map("model_reason") @db.Text
+  classifierVersion String   @map("classifier_version") @db.VarChar(32)
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([projectId, createdAt])
+  @@map("risk_assessment_logs")
 }
 
 // 合同附件（本地磁盘文件，DB 只存元数据）
