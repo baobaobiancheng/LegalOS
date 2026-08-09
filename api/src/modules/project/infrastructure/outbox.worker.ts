@@ -54,6 +54,8 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
   }
 
   private async runLoop(): Promise<void> {
+    // 修复 2026-08-09 P0：原实现 while+递归 setTimeout 双循环,每秒派生新 runLoop → 指数增长 → V8 OOM。
+    // 改为单循环 + 间隔等待(每次 poll 一次,等 pollIntervalMs 再下一轮),无递归、无并发派生。
     while (!this.stopped) {
       try {
         await this.pollOnce();
@@ -61,8 +63,7 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
         this.logger.error(`Outbox 轮询失败：${(e as Error)?.message ?? e}`);
       }
       if (this.stopped) break;
-      this.timer = setTimeout(() => void this.runLoop(), this.pollIntervalMs);
-      this.timer.unref?.();
+      await new Promise((r) => setTimeout(r, this.pollIntervalMs));
     }
   }
 
