@@ -34,6 +34,8 @@ const downloadDOCX = async () => {
   } catch (e) {
     docxError.value = 'Word 文档生成失败,请重试'
     console.error('DOCX generation failed:', e)
+    open.value = true // P2-04 失败保留下拉菜单,用户可看到错误并重试
+    return
   } finally {
     converting.value = false
   }
