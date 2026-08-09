@@ -35,6 +35,8 @@ export type ApiError = {
   code: string
   statusCode: number
   lockedUntil?: string
+  /** P2-03：服务端请求 ID(响应头 X-Request-ID / 错误体 requestId),用于排查与展示 */
+  requestId?: string
 }
 
 // ── 工单类型 ──

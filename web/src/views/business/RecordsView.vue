@@ -140,6 +140,14 @@
       </div>
     </template>
 
+    <!-- P2-03:主数据加载失败 → 错误态(带 requestId + 重试),不伪装为空态 -->
+    <ErrorState
+      v-else-if="remote.status.value === 'error'"
+      :message="remote.error.value?.payload?.error || '加载失败,请重试'"
+      :request-id="remote.requestId.value"
+      :on-retry="remote.load"
+    />
+
     <!-- Empty -->
     <div
       v-else-if="items.length === 0"
@@ -221,13 +229,20 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { request } from '../../api/client'
 import BusinessSidebarLayout from '../../components/BusinessSidebarLayout.vue'
+import ErrorState from '../../components/ErrorState.vue'
+import { useRemoteData } from '../../composables/useRemoteData'
 import type { ProjectListItem } from '../../types'
 import { ALL_PROJECT_STATUSES, isStatusInGroup } from '../../domain/project-status'
 
 const router = useRouter()
-const loading = ref(true)
-const allItems = ref<ProjectListItem[]>([])
 const filter = ref('')  // ''全部 | process处理中 | 已回传 | 已取消
+
+// P2-03：主数据用统一异步状态(loading/error/empty 严格区分),失败不再伪装成"暂无记录"
+const remote = useRemoteData(() =>
+  request<{ items: ProjectListItem[] }>('/projects/mine?page=1&size=100'),
+)
+const loading = computed(() => remote.status.value === 'loading')
+const allItems = computed(() => remote.data.value?.items ?? [])
 
 // 当前筛选后的展示列表（P2-02：分组从唯一配置派生，待处理 已包含在 processing）
 const items = computed(() => {
@@ -262,14 +277,7 @@ const filterLabel = computed(() =>
   ({ '': '全部记录', process: '处理中', 已回传: '已回传', 已取消: '已取消' })[filter.value] || '全部记录'
 )
 
-onMounted(async () => {
-  loading.value = true
-  try {
-    const data = await request<any>('/projects/mine?page=1&size=100')
-    allItems.value = data.items
-  } catch {}
-  loading.value = false
-})
+onMounted(remote.load)
 
 const kindLabel = (k: string) => ({ consult: '咨询', contract: '合同', research: '检索', draft: '文书' })[k] || k
 const kindIcon = (k: string) => ({
