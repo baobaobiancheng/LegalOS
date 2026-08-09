@@ -1,4 +1,4 @@
-# LegalPlatform 部署指南
+# LegalOS 部署指南
 
 > 生成：2026-08-05
 > 适用于服务器全新部署（git clone 后）。
@@ -9,13 +9,13 @@
 |------|----------|
 | Node.js | ≥ 18（含 fetch） |
 | MySQL | ≥ 5.7，建议 8.0（utf8mb4） |
-| Codex CLI | AI 服务底层（`npm install -g @openai/codex` + `codex login`） |
+| Codex CLI | AI 服务底层（`npm install -g @openai/codex` + 受管配置(`/etc/codex/*.toml`) + `CODEX_API_KEY`(网关 token)） |
 
 ## 二、获取代码
 
 ```bash
 git clone http://git.100credit.cn/zhenghe.bao/LegalOS.git
-cd LegalOS/LegalPlatform
+cd LegalOS
 ```
 
 ## 三、配置 .env（关键，全部要重新填）
@@ -51,13 +51,13 @@ cp api/.env.example api/.env
 
 ```bash
 # 从本地开发机复制
-scp -r api/storage/contract-templates user@server:/path/to/LegalPlatform/api/storage/
+scp -r api/storage/contract-templates user@server:/path/to/LegalOS/api/storage/
 ```
 
 ## 五、安装 + 数据库
 
 ```bash
-cd LegalPlatform/api
+cd api
 npm install
 
 # 1. 建库（migrate 只建表不建库）
@@ -78,7 +78,7 @@ npx prisma db seed
 ```bash
 # 验证
 npm run build
-npm test                      # 应 74/74 通过
+npm test                      # 全部单测通过(数量随代码变化,以 vitest 输出为准)
 
 # 后端启动（api/ 目录）
 npm run start:prod
@@ -110,7 +110,7 @@ cd ../web && npm install && npm run build
 |------|------|------|
 | 启动报缺表 | 未跑 `migrate deploy` | `npx prisma migrate deploy` |
 | 登录"服务响应异常" | API 进程未启动 | 检查 `:3000` 监听 + 启动日志 |
-| AI 回复失败 | 服务器无 codex CLI/认证 | `npm i -g @openai/codex` + `codex login` |
+| AI 回复失败 | 服务器无 codex CLI/认证 | `npm i -g @openai/codex` + 配 `CODEX_API_KEY` 与 `/etc/codex` 受管配置 |
 | 合同导出无模板 | storage 未复制 | 见"四、合同模板源文件" |
 | 钉钉同步"部门不在授权范围" | 通讯录权限未批 | 见"八、钉钉集成上线检查清单" |
 | 钉钉建群"群主不在可见性内" | 应用可见范围未含群主 | 同上 |

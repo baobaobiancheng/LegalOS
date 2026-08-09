@@ -5,7 +5,7 @@
 ## 架构
 
 ```
-LegalPlatform/
+LegalOS/
 ├── api/                     # NestJS 后端 (TypeScript)
 │   ├── prisma/              # 数据模型 + 迁移 + 种子
 │   └── src/
@@ -66,16 +66,16 @@ npm run build && npm start
 
 - 前端：http://localhost:5173
 - 后端 API：http://localhost:3000
-- Swagger 文档：http://localhost:3000/api（后续版本）
+- API 文档：当前未启用 Swagger（无固定地址；接口契约以 `api/src/modules/**/dto` 为准）
 
 ## 种子账号
 
 | 用户名 | 密码 | 角色 | 首页 |
 |--------|------|------|------|
-| `admin` | `admin123` | 管理员 | /admin/dashboard |
-| `legal_bp` | `legal123` | 法务 BP | /legal/projects |
-| `legal_lead` | `legal123` | 法务负责人 | /legal/projects |
-| `business` | `biz123` | 业务人员 | /business/consult |
+| `admin` | 见 `api/.env` 的 `SEED_ADMIN_PASSWORD` | 管理员 | /admin/dashboard |
+| `legal_bp` | 见 `api/.env` 的 `SEED_LEGAL_BP_PASSWORD` | 法务 BP | /legal/projects |
+| `legal_lead` | 见 `api/.env` 的 `SEED_LEGAL_LEAD_PASSWORD` | 法务负责人 | /legal/projects |
+| `business` | 见 `api/.env` 的 `SEED_BUSINESS_PASSWORD` | 业务人员 | /business/consult |
 
 ## API 端点
 

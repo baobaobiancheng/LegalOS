@@ -42,6 +42,12 @@ validate:prisma:
     - npx prisma validate
     - npx prisma generate
 
+validate:docs:
+  stage: validate
+  image: node:${NODE_VERSION}
+  script:
+    - node scripts/check-doc-links.mjs   # P2-05 文档链接 + 陈旧内容门禁(失败即 job 失败)
+
 test:api-unit:
   stage: test
   <<: *deps
