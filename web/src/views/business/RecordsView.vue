@@ -222,31 +222,38 @@ import { useRouter } from 'vue-router'
 import { request } from '../../api/client'
 import BusinessSidebarLayout from '../../components/BusinessSidebarLayout.vue'
 import type { ProjectListItem } from '../../types'
+import { ALL_PROJECT_STATUSES, isStatusInGroup } from '../../domain/project-status'
 
 const router = useRouter()
 const loading = ref(true)
 const allItems = ref<ProjectListItem[]>([])
 const filter = ref('')  // ''全部 | process处理中 | 已回传 | 已取消
 
-// 当前筛选后的展示列表
+// 当前筛选后的展示列表（P2-02：分组从唯一配置派生，待处理 已包含在 processing）
 const items = computed(() => {
   if (filter.value === '') return allItems.value
   if (filter.value === 'process') {
-    return allItems.value.filter(i => i.status === '分析中' || i.status === '待复核')
+    return allItems.value.filter(i => isStatusInGroup(i.status, 'processing'))
   }
   return allItems.value.filter(i => i.status === filter.value)
 })
 
-// 状态统计（基于全部数据）
+// 状态统计（基于全部数据；P2-02：五种状态都初始化，待处理 不再缺失）
 const statusCount = computed(() => {
-  const c: Record<string, number> = { 分析中: 0, 待复核: 0, 已回传: 0, 已取消: 0 }
+  const c: Record<string, number> = {}
+  for (const s of ALL_PROJECT_STATUSES) c[s] = 0
   for (const i of allItems.value) c[i.status] = (c[i.status] || 0) + 1
   return c
 })
 
+// 处理中 = processing 分组内状态之和
+const processingCount = computed(() =>
+  ALL_PROJECT_STATUSES.reduce((sum, s) => (isStatusInGroup(s, 'processing') ? sum + (statusCount.value[s] || 0) : sum), 0),
+)
+
 const stats = computed(() => [
   { label: '全部记录', count: allItems.value.length, color: '#1d1d1f', icon: 'all', bg: '#f0f0f0', filter: '' },
-  { label: '处理中', count: (statusCount.value['分析中'] || 0) + (statusCount.value['待复核'] || 0), color: '#0055B3', icon: 'process', bg: '#e8f0fe', filter: 'process' },
+  { label: '处理中', count: processingCount.value, color: '#0055B3', icon: 'process', bg: '#e8f0fe', filter: 'process' },
   { label: '已回传', count: statusCount.value['已回传'] || 0, color: '#0E7A3C', icon: 'done', bg: '#e6f4ea', filter: '已回传' },
   { label: '已取消', count: statusCount.value['已取消'] || 0, color: '#5A5A5E', icon: 'cancel', bg: '#f0f0f0', filter: '已取消' },
 ])
