@@ -131,4 +131,9 @@ export class CreateContractDto {
   @IsOptional()
   @IsString()
   projectId?: string; // 已有合同工单内继续生成
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey?: string; // 幂等键（P1-03）：新建合同工单时复用事务创建能力，防重复建单
 }

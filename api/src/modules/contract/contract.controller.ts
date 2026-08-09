@@ -21,6 +21,7 @@ import { ContractService } from './contract.service';
 import { ContractTemplateService } from './contract-template.service';
 import { CreateContractDto } from './dto/create-contract.dto';
 import { Role } from '@prisma/client';
+import { ProjectActor } from '../project/domain/project-access.types';
 
 /**
  * multer diskStorage：文件直接落盘到 storage/contracts/{projectId}/，不占内存
@@ -52,22 +53,25 @@ export class ContractController {
 
   /** 合同模板列表 */
   @Get('contract-templates')
-  @Roles(Role.business, Role.legal_bp, Role.legal_lead)
+  @Roles(Role.admin, Role.business, Role.legal_bp, Role.legal_lead)
   listTemplates() {
     return this.templateService.list();
   }
 
-  /** 生成合同草稿 — SSE 流式 */
+  /** 生成合同草稿 — SSE 流式；连接断开取消排队/终止任务 */
   @Post('contracts/generate')
-  @Roles(Role.business, Role.legal_bp, Role.legal_lead)
+  @Roles(Role.admin, Role.business, Role.legal_bp, Role.legal_lead)
   async generate(
     @Body() dto: CreateContractDto,
     @CurrentUser('id') userId: string,
+    @CurrentUser('role') role: Role,
     @Res() res: Response,
   ) {
-    const result = await this.contractService.generateDraft(dto, userId);
+    const actor: ProjectActor = { id: userId, role };
+    const abort = new AbortController();
+    const result = await this.contractService.generateDraft(dto, actor, abort.signal);
     if (result.stream) {
-      sendSSE(res, result.stream, { projectId: result.projectId, status: '待复核' });
+      sendSSE(res, result.stream, { projectId: result.projectId, status: '待复核' }, () => abort.abort());
     } else {
       res.json(result);
     }
@@ -75,23 +79,50 @@ export class ContractController {
 
   /** business 发起法务审阅 */
   @Post('contracts/:id/submit-review')
-  @Roles(Role.business)
-  async submitReview(@Param('id') id: string, @CurrentUser('id') userId: string) {
-    return this.contractService.submitReview(id, userId);
+  @Roles(Role.admin, Role.business)
+  async submitReview(
+    @Param('id') id: string,
+    @CurrentUser('id') userId: string,
+    @CurrentUser('role') role: Role,
+  ) {
+    const actor: ProjectActor = { id: userId, role };
+    return this.contractService.submitReview(id, actor);
   }
 
-  /** legal AI 风险审查 — SSE 流式（可选技能 skillId，2026-08-04 技能库） */
+  /**
+   * legal AI 风险审查 — SSE 流式（P1-05）：
+   * 可选技能 skillId + 可选 sourceDocumentId；SSE 完成事件携带 reviewRunId/sourceDocumentId/sourceVersion。
+   */
   @Post('contracts/:id/review')
-  @Roles(Role.legal_bp, Role.legal_lead)
+  @Roles(Role.admin, Role.legal_bp, Role.legal_lead)
   async review(
     @Param('id') id: string,
-    @Body('skillId') skillId: string | undefined,
+    @Body() body: { skillId?: string; sourceDocumentId?: string },
     @CurrentUser('id') userId: string,
+    @CurrentUser('role') role: Role,
     @Res() res: Response,
   ) {
-    const result = await this.contractService.reviewContract(id, userId, skillId);
+    const actor: ProjectActor = { id: userId, role };
+    const abort = new AbortController();
+    const result = await this.contractService.reviewContract(
+      id,
+      actor,
+      body?.skillId,
+      body?.sourceDocumentId,
+      abort.signal,
+    );
     if (result.stream) {
-      sendSSE(res, result.stream, { projectId: result.projectId });
+      sendSSE(
+        res,
+        result.stream,
+        {
+          projectId: result.projectId,
+          reviewRunId: result.reviewRunId,
+          sourceDocumentId: result.sourceDocumentId,
+          sourceVersion: result.sourceVersion,
+        },
+        () => abort.abort(),
+      );
     } else {
       res.json(result);
     }
@@ -99,39 +130,42 @@ export class ContractController {
 
   /** 上传合同附件（multipart: file + kind） */
   @Post('projects/:id/files')
-  @Roles(Role.business, Role.legal_bp, Role.legal_lead)
+  @Roles(Role.admin, Role.business, Role.legal_bp, Role.legal_lead)
   @UseInterceptors(FileInterceptor('file', { storage: contractStorage, limits: { fileSize: 20 * 1024 * 1024 } }))
   async upload(
     @Param('id') id: string,
     @UploadedFile() file: Express.Multer.File,
     @Body('kind') kind: string,
     @CurrentUser('id') userId: string,
-    @CurrentUser('role') role: string,
+    @CurrentUser('role') role: Role,
   ) {
-    return this.contractService.uploadFile(id, file, kind, userId, role);
+    const actor: ProjectActor = { id: userId, role };
+    return this.contractService.uploadFile(id, file, kind, actor);
   }
 
   /** 附件列表 */
   @Get('projects/:id/files')
-  @Roles(Role.business, Role.legal_bp, Role.legal_lead)
+  @Roles(Role.admin, Role.business, Role.legal_bp, Role.legal_lead)
   async listFiles(
     @Param('id') id: string,
     @CurrentUser('id') userId: string,
-    @CurrentUser('role') role: string,
+    @CurrentUser('role') role: Role,
   ) {
-    return this.contractService.listFiles(id, userId, role);
+    const actor: ProjectActor = { id: userId, role };
+    return this.contractService.listFiles(id, actor);
   }
 
   /** 下载附件（读磁盘流） */
   @Get('projects/:id/files/:fileId')
-  @Roles(Role.business, Role.legal_bp, Role.legal_lead)
+  @Roles(Role.admin, Role.business, Role.legal_bp, Role.legal_lead)
   async download(
     @Param('id') id: string,
     @Param('fileId') fileId: string,
     @CurrentUser('id') userId: string,
-    @CurrentUser('role') role: string,
+    @CurrentUser('role') role: Role,
     @Res() res: Response,
   ) {
-    await this.contractService.downloadFile(id, fileId, userId, role, res);
+    const actor: ProjectActor = { id: userId, role };
+    await this.contractService.downloadFile(id, fileId, actor, res);
   }
 }

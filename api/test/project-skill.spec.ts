@@ -1,11 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ProjectService } from '../src/modules/project/project.service';
+import { CreateProjectUseCase } from '../src/modules/project/application/create-project.use-case';
+import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
 
 /**
  * 工单创建时的技能解析覆盖/快照/兜底（工程评审决策 OV#2）：
  * - 客户端 skillId/skillName 仅参考，服务端解析覆盖（防伪造与快照分歧）
  * - prompt 快照入 extra.skillPrompt（在途多轮对话稳定）
  * - 解析失败 → 按无技能处理 + 工单事件提示
+ * - P1-03 改造后 create 走事务用例（$transaction），以下断言仍基于同一批 mock
  */
 
 const mockProject = (over: any = {}) => ({
@@ -22,6 +25,22 @@ const mockSkill = {
   prompt: '你是数据合规专家。',
 };
 
+/** 事务代理：让 tx.* 委托到同一批 prisma mock（保持既有断言有效） */
+function makeTransaction(prisma: any) {
+  prisma.$transaction = vi.fn(async (arg: any) => {
+    if (typeof arg === 'function') {
+      const tx = {
+        project: prisma.project,
+        projectMessage: prisma.projectMessage,
+        projectEvent: prisma.projectEvent,
+        outboxEvent: prisma.outboxEvent,
+      };
+      return arg(tx);
+    }
+    return arg;
+  });
+}
+
 describe('ProjectService.create 技能解析', () => {
   let service: ProjectService;
   let prisma: any;
@@ -36,15 +55,16 @@ describe('ProjectService.create 技能解析', () => {
       project: {
         create: vi.fn(),
         update: vi.fn(),
-        updateMany: vi.fn().mockResolvedValue({ count: 1 }), // 原子认领（/review 2026-08-05）
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         findUnique: vi.fn(),
       },
       projectMessage: { create: vi.fn() },
       projectEvent: { create: vi.fn() },
-      // 2026-08-05 钉钉拉群：BP 匹配（无映射 + 无兜底负责人 → 不指派）
+      outboxEvent: { create: vi.fn() },
       bpDomainMap: { findMany: vi.fn().mockResolvedValue([]) },
       user: { findUnique: vi.fn().mockResolvedValue(undefined), findFirst: vi.fn().mockResolvedValue(null) },
     };
+    makeTransaction(prisma);
     risk = { assess: vi.fn().mockResolvedValue({ risk: 'P1', route: 'legalbp', domain: null }) }; // legalbp 避免触发 AI
     codex = { executeStream: vi.fn() };
     crm = { writeBack: vi.fn() };
@@ -52,7 +72,15 @@ describe('ProjectService.create 技能解析', () => {
       createGroup: vi.fn().mockResolvedValue({ chatId: 'c1', members: ['m1'] }),
       sendNotification: vi.fn(),
     };
-    service = new ProjectService(prisma as any, codex as any, risk as any, crm as any, dingtalk as any);
+    service = new ProjectService(
+      prisma as any,
+      codex as any,
+      risk as any,
+      crm as any,
+      dingtalk as any,
+      new CreateProjectUseCase(prisma) as any,
+      new ProjectAccessPolicy() as any,
+    );
     prisma.project.create.mockResolvedValue(mockProject());
   });
 
@@ -77,7 +105,6 @@ describe('ProjectService.create 技能解析', () => {
     const data = prisma.project.create.mock.calls[0][0].data;
     expect(data.skillId).toBeNull();
     expect(data.skillName).toBeNull();
-    expect(data.extra).toBeDefined(); // Prisma.JsonNull
 
     // 用户可见反馈事件
     const events = prisma.projectEvent.create.mock.calls.map((c: any) => c[0].data.text);

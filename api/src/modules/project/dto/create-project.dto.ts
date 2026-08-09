@@ -53,11 +53,7 @@ export class CreateProjectMessageDto {
   @MinLength(1)
   @MaxLength(5000)
   text: string;
-
-  @IsOptional()
-  @IsString()
-  @IsIn(['user', 'assistant', 'legal'])
-  role?: string; // 默认 user
+  // 消息 role 由服务端根据 actor 派生（P1-01 5.3.6）：不允许客户端伪造 assistant/legal
 }
 
 export class ReplyProjectDto {

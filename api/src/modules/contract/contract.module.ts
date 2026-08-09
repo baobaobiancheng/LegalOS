@@ -3,9 +3,10 @@ import { ContractController } from './contract.controller';
 import { ContractService } from './contract.service';
 import { ContractTemplateService } from './contract-template.service';
 import { PrismaModule } from '../../prisma/prisma.module';
-import { CodexService } from '../../common/services/codex.service';
 import { MockDingTalkAdapter } from '../project/adapters/mock-dingtalk.adapter';
 import { DINGTALK_ADAPTER } from '../project/adapters/adapter.interfaces';
+import { ProjectAccessPolicy } from '../project/domain/project-access.policy';
+import { CreateProjectUseCase } from '../project/application/create-project.use-case';
 
 @Module({
   imports: [PrismaModule],
@@ -13,7 +14,8 @@ import { DINGTALK_ADAPTER } from '../project/adapters/adapter.interfaces';
   providers: [
     ContractService,
     ContractTemplateService,
-    CodexService,
+    ProjectAccessPolicy,
+    CreateProjectUseCase,
     { provide: DINGTALK_ADAPTER, useClass: MockDingTalkAdapter },
   ],
 })

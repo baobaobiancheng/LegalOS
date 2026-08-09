@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { spawn, ChildProcess } from 'child_process';
 import { existsSync, mkdirSync, rmSync, readdirSync, copyFileSync } from 'fs';
@@ -6,33 +6,42 @@ import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import {
+  CodexExecutionQueueService,
+  CodexExecutionCancelledError,
+  CodexQueueBusyError,
+  CODEX_CANCEL_GRACE_MS,
+} from './codex-execution-queue.service';
 
 interface CodexOptions {
   model?: string;
   maxTokens?: number;
   timeout?: number;
-  /** 隔离会话 ID（如 projectId），确保不同会话互不干扰 */
+  /** 隔离会话 ID（如 projectId），确保不同会话互不干扰；同会话任务严格串行 */
   sessionId?: string;
+  /** 排队超时（毫秒），覆盖默认 */
+  queueTimeoutMs?: number;
+  /** 调用方取消信号（HTTP/SSE 连接断开），取消排队或终止已启动任务 */
+  signal?: AbortSignal;
 }
 
 @Injectable()
 export class CodexService {
   private readonly logger = new Logger(CodexService.name);
-  private readonly maxConcurrency: number;
   private readonly codexBin: string;
   private readonly baseWorkspace: string;
   /** 服务器硬化模式（CODEX_HARDENED=true）：严格配置 + 环境白名单 + 认证走公司网关；
    *  本地开发保持 false，继续读真实 ~/.codex（auth.json / config.toml） */
   private readonly hardened: boolean;
-  private activeCount = 0;
-  private pendingQueue: Array<() => void> = [];
 
-  constructor(private readonly config: ConfigService) {
-    this.maxConcurrency = Number(this.config.get('CODEX_CONCURRENCY', 50));
+  constructor(
+    private readonly config: ConfigService,
+    private readonly queue: CodexExecutionQueueService,
+  ) {
     this.hardened = this.config.get('CODEX_HARDENED', 'false') === 'true';
     this.codexBin = this.findCodex();
 
-    // 隔离工作区根目录 — 每次调用创建独立子目录，会话间完全隔离
+    // 隔离工作区根目录 — 每次调用创建 <sessionId>/<executionId> 独立子目录，会话间完全隔离
     this.baseWorkspace = this.config.get('CODEX_WORKSPACE')
       || join(process.cwd(), '.tmp', 'codex-workspaces');
     mkdirSync(this.baseWorkspace, { recursive: true });
@@ -159,9 +168,26 @@ export class CodexService {
     return fake;
   }
 
-  /** 为每次调用创建独立子目录 */
-  private ensureWorkspace(sessionId?: string): string {
-    const dir = join(this.baseWorkspace, sessionId || randomUUID());
+  /** 排队中被取消（连接断开）返回的伪子进程：close(code=null)，标记 __cancelled 供调用方跳过落库 */
+  private cancelledStream(): ChildProcess {
+    const emitter = new EventEmitter();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const fake = Object.assign(emitter, { stdout, stderr, __cancelled: true }) as unknown as ChildProcess;
+    setImmediate(() => {
+      stdout.end();
+      stderr.end();
+      emitter.emit('close', null);
+    });
+    return fake;
+  }
+
+  /** 为每次调用创建 <sessionId>/<executionId> 独立子目录（同会话并发互不干扰） */
+  private ensureWorkspace(sessionId?: string, executionId?: string): string {
+    const dir = join(
+      this.baseWorkspace,
+      sessionId ? `${sessionId}/${executionId ?? randomUUID()}` : (executionId ?? randomUUID()),
+    );
     mkdirSync(dir, { recursive: true });
     // 硬化模式：CODEX_HOME 指向 dir/.codex，codex 要求该目录必须已存在（2026-08-09 实测）
     if (this.hardened) {
@@ -196,69 +222,117 @@ export class CodexService {
     }
   }
 
-  private async acquire(): Promise<void> {
-    while (this.activeCount >= this.maxConcurrency) {
-      await new Promise<void>((resolve) => this.pendingQueue.push(resolve));
-    }
-    this.activeCount++;
-  }
-
-  private release(): void {
-    this.activeCount--;
-    const next = this.pendingQueue.shift();
-    if (next) next();
-  }
-
-  /** 非流式调用 codex exec */
+  /** 非流式调用 codex exec — 经共享有界队列，排队/超时抛 AI 服务繁忙错误 */
   async execute(prompt: string, options?: CodexOptions): Promise<string> {
     if (!this.aiEnabled()) throw new Error('AI 执行已禁用（AI_EXECUTION_ENABLED=false）');
-    await this.acquire();
-    const workspaceDir = this.ensureWorkspace(options?.sessionId);
+    const sessionId = options?.sessionId;
+    const executionId = randomUUID();
+    const workspaceDir = this.ensureWorkspace(sessionId, executionId);
+    const args = this.buildArgs(options?.model ? ['-m', options.model] : []);
+    const timeout = options?.timeout ?? 120_000;
     try {
-      const timeout = options?.timeout ?? 120_000;
-      const args = this.buildArgs(options?.model ? ['-m', options.model] : []);
-      const result = await this.runCodex(prompt, args, timeout, workspaceDir);
+      const result = await this.queue.run(
+        { sessionId, queueTimeoutMs: options?.queueTimeoutMs, signal: options?.signal },
+        () => {
+          const runPromise = this.runCodex(prompt, args, timeout, workspaceDir);
+          return { result: runPromise, done: runPromise.then(() => undefined) };
+        },
+      );
       return result.trim();
-    } finally {
+    } catch (e) {
       this.cleanupWorkspace(workspaceDir);
-      this.release();
+      if (e instanceof CodexQueueBusyError) throw new ServiceUnavailableException(e.message);
+      throw e;
     }
   }
 
-  /** SSE 流式调用（支持 timeout，超时终止子进程 → close(code≠0) → 前端收到 error） */
-  executeStream(prompt: string, options?: CodexOptions): ChildProcess {
+  /**
+   * SSE 流式调用（支持 timeout，超时终止子进程 → close(code≠0) → 前端收到 error）。
+   * 已改为异步：经共享队列获得全局槽位 + session 槽位后才 spawn；返回 Promise<ChildProcess>。
+   * 队列满 / 排队超时在 spawn 前抛 ServiceUnavailableException（SSE 响应开始前返回 HTTP 错误）。
+   */
+  async executeStream(prompt: string, options?: CodexOptions): Promise<ChildProcess> {
     if (!this.aiEnabled()) {
       this.logger.warn('Codex executeStream 被拦截：AI_EXECUTION_ENABLED=false');
       return this.failedStream();
     }
-    const workspaceDir = this.ensureWorkspace(options?.sessionId);
+    const sessionId = options?.sessionId;
+    const executionId = randomUUID();
+    const workspaceDir = this.ensureWorkspace(sessionId, executionId);
     const args = this.buildArgs(options?.model ? ['-m', options.model] : []);
+    const timeout = options?.timeout ?? 120_000;
+    try {
+      return await this.queue.run(
+        { sessionId, queueTimeoutMs: options?.queueTimeoutMs, signal: options?.signal },
+        (abort) => this.spawnStreamChild(prompt, args, workspaceDir, timeout, abort),
+      );
+    } catch (e) {
+      this.cleanupWorkspace(workspaceDir);
+      if (e instanceof CodexExecutionCancelledError) {
+        return this.cancelledStream();
+      }
+      if (e instanceof CodexQueueBusyError) throw new ServiceUnavailableException(e.message);
+      throw e;
+    }
+  }
+
+  /** 流式任务 start：立即 spawn，注册超时终止 / 取消（SIGTERM→SIGKILL） / 工作区清理 */
+  private spawnStreamChild(
+    prompt: string,
+    args: string[],
+    workspaceDir: string,
+    timeout: number,
+    abort: AbortSignal,
+  ): { result: ChildProcess; done: Promise<void> } {
     const child = this.spawnCodex(args, workspaceDir);
 
-    // 工程评审决策 #7：executeStream 原本忽略 options.timeout，长任务（如合同草稿）
-    // 需要按调用方配置超时，超时后终止子进程由调用方 SSE 错误路径兜底
-    const timeout = options?.timeout ?? 120_000;
+    // 超时终止（工程评审决策 #7：长任务按调用方配置超时，超时 kill → 调用方 SSE 错误路径）
     const timer = setTimeout(() => {
       this.logger.warn(`Codex SSE 超时（${timeout}ms），终止子进程`);
       child.kill('SIGTERM');
     }, timeout);
     timer.unref?.();
 
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      this.logger.error(`Codex spawn 失败：${err.message}`);
-    });
-
-    child.on('close', () => {
+    let doneResolve!: () => void;
+    const done = new Promise<void>((resolve) => { doneResolve = resolve; });
+    // 一次性 finalize：error 与 close 都可能触发，双释放由队列 finalize 守卫兜底
+    const finalize = () => {
       clearTimeout(timer);
       this.cleanupWorkspace(workspaceDir);
+      doneResolve();
+    };
+
+    child.on('error', (err) => {
+      this.logger.error(`Codex spawn 失败：${err.message}`);
+      finalize(); // spawn 失败也要释放槽位（部分场景不触发 close）
+    });
+
+    child.on('close', (code) => {
+      this.logger.log(`Codex SSE 子进程退出 exitCode=${code}`);
+      finalize();
+    });
+
+    // 连接断开 / 调用方取消：先 SIGTERM，宽限期后仍未退出再 SIGKILL
+    abort.addEventListener('abort', () => {
+      (child as any).__cancelled = true;
+      if (child.exitCode === null && !child.killed) {
+        child.kill('SIGTERM');
+        const grace = setTimeout(() => {
+          if (child.exitCode === null) {
+            this.logger.warn('Codex 取消宽限期后仍未退出，强制 SIGKILL');
+            child.kill('SIGKILL');
+          }
+        }, CODEX_CANCEL_GRACE_MS);
+        grace.unref?.();
+      }
     });
 
     // stdin write 可能因子进程提前退出而失败
     try { child.stdin!.write(prompt, 'utf-8'); } catch {}
     try { child.stdin!.end(); } catch {}
 
-    return child;
+    // 便于结构化日志关联（sessionId/executionId 由调用方在 resolve 前后可写，此处仅预留）
+    return { result: child, done };
   }
 
   /** 内部：spawn codex，通过 stdin 传 prompt */
@@ -307,6 +381,6 @@ export class CodexService {
   }
 
   getStats() {
-    return { active: this.activeCount, pending: this.pendingQueue.length, max: this.maxConcurrency };
+    return this.queue.getStats();
   }
 }

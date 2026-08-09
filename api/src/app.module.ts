@@ -10,12 +10,14 @@ import { ContractModule } from './modules/contract/contract.module';
 import { SkillModule } from './modules/skill/skill.module';
 import { MembersModule } from './modules/members/members.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { CodexModule } from './common/services/codex.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     PrismaModule,
+    CodexModule,
     AuthModule,
     ProjectModule,
     ContractModule,

@@ -17,6 +17,7 @@ export function sendSSE(
   res: Response,
   stream: ChildProcess,
   donePayload: Record<string, unknown> = {},
+  onDisconnect?: () => void,
 ): void {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
@@ -26,6 +27,8 @@ export function sendSSE(
 
   // StringDecoder 自动处理跨 chunk 的多字节 UTF-8 字符
   const decoder = new StringDecoder('utf8');
+  // 标记正常结束（done/error 已写入），用于区分"连接断开"与"正常结束"
+  let ended = false;
 
   stream.stdout?.on('data', (chunk: Buffer) => {
     const text = decoder.write(chunk);
@@ -43,8 +46,10 @@ export function sendSSE(
       res.write(`data: ${JSON.stringify({ text: remaining })}\n\n`);
     }
     if (code === 0) {
+      ended = true;
       res.write(`data: ${JSON.stringify({ done: true, ...donePayload })}\n\n`);
     } else {
+      ended = true;
       res.write(`data: ${JSON.stringify({ error: true, message: 'AI 答复生成失败' })}\n\n`);
     }
     res.end();
@@ -52,14 +57,15 @@ export function sendSSE(
 
   stream.on('error', () => {
     if (res.destroyed || res.writableEnded) return;
+    ended = true;
     res.write(`data: ${JSON.stringify({ error: true, message: '服务异常' })}\n\n`);
     res.end();
   });
 
-  // 客户端断开时【不终止子进程】——让 Codex 跑完并落库（工程决策 2026-08-03）：
-  // 刷新/切页 ≠ 生成失败，用户下次打开工单可见完整草稿；
-  // 真正失败（Codex 退出非 0 / 超时 kill）才走 service 的失败路径（status→待处理）
+  // 客户端断开（P1-02 6.2-8）：取消排队中或终止已启动的 Codex 任务，释放队列槽位。
+  // 排队任务不 spawn；已启动任务由 CodexService 侧发 SIGTERM → 宽限期后 SIGKILL。
+  // 取消后的子进程标记 __cancelled，service 的 close handler 跳过失败落库（刷新 ≠ 生成失败）。
   res.on('close', () => {
-    /* 有意为之：不 kill */
+    if (!ended && onDisconnect) onDisconnect();
   });
 }

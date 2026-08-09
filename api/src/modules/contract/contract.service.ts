@@ -25,22 +25,25 @@ import { injectSkillSection } from '../../common/utils/skill-prompt';
 import { DINGTALK_ADAPTER, DingTalkAdapter } from '../project/adapters/adapter.interfaces';
 import { ContractTemplateService } from './contract-template.service';
 import { CreateContractDto, ContractElementsDto } from './dto/create-contract.dto';
-import { Project } from '@prisma/client';
+import { Prisma, ContractDocumentType } from '@prisma/client';
+import { ProjectAccessPolicy } from '../project/domain/project-access.policy';
+import { ProjectAction, ProjectActor } from '../project/domain/project-access.types';
+import { CreateProjectUseCase } from '../project/application/create-project.use-case';
 
 /**
  * 合同协作服务。
  *
  * 数据流（ASCII 图）：
- *   generateDraft（绕过 ProjectService.create 直接建单）
- *     → executeStream(合同起草 prompt, timeout 300s) → SSE 推前端
- *     → 流结束: assistant 消息落库 + status 分析中→待复核
- *   submitReview（business 发起法务审阅）
- *     → 原子更新 WHERE route=llm → legalbp/待复核
- *   reviewContract（legal AI 风险审查，2026-08-04 起可选技能）
- *     → 取最新合同文本（修订版 mammoth 抽取优先，否则草稿）
- *     → 技能解析（可选 skillId，实时 prompt，审查时选择）→ 持久化 skillId/skillName
- *     → executeStream(审查 prompt + 技能段) → SSE → assistant 消息落库
- *   uploadFile / downloadFile（附件，diskStorage 落盘 + ownership 校验）
+ *   generateDraft（复用 CreateProjectUseCase 事务建单，P1-03；绕过咨询 riskService/prompt）
+ *     → executeStream(合同起草 prompt, timeout 600s) → SSE 推前端
+ *     → 流结束: ContractDocument(type=draft, version=N) 落库 + assistant 消息 + status→待复核
+ *   submitReview（business 发起法务审阅，统一 Policy 校验）
+ *   reviewContract（legal AI 风险审查，P1-05）
+ *     → 显式 sourceDocumentId（缺省取项目最新可审查 ContractDocument，不再按 role/label 推断）
+ *     → 先创建 ContractReviewRun(queued/running, sourceDocumentId) 再启动 Codex
+ *     → 风险报告只进 ReviewRun.result，绝不创建为 ContractDocument
+ *   uploadFile / downloadFile（附件，diskStorage 落盘 + 统一 Policy；revised/final+docx 抽取
+ *     文本 → ContractDocument(type=revised/final)）
  */
 @Injectable()
 export class ContractService {
@@ -52,6 +55,8 @@ export class ContractService {
     private readonly codexService: CodexService,
     private readonly templateService: ContractTemplateService,
     @Inject(DINGTALK_ADAPTER) private readonly dingtalk: DingTalkAdapter,
+    private readonly createProjectUseCase: CreateProjectUseCase,
+    private readonly accessPolicy: ProjectAccessPolicy,
   ) {
     this.storageDir = process.env.CONTRACT_STORAGE_DIR
       || join(process.cwd(), 'storage', 'contracts');
@@ -62,13 +67,13 @@ export class ContractService {
   // ═══════════════════════════════════════════
 
   /**
-   * 生成合同草稿。**绕过 ProjectService.create()**：其内部写死 riskService.assess
-   * + 咨询四段式 prompt（buildConsultPrompt），不可为合同复用（工程评审决策 #2）。
-   * 返回 SSE 子进程供 controller 推送。
+   * 生成合同草稿。新建工单复用 CreateProjectUseCase（事务 + 幂等 + Outbox，P1-03），
+   * 不再手工分步创建。返回 SSE 子进程供 controller 推送。
    */
   async generateDraft(
     dto: CreateContractDto,
-    userId: string,
+    actor: ProjectActor,
+    signal?: AbortSignal,
   ): Promise<{ projectId: string; stream: ChildProcess }> {
     const template = await this.templateService.findBySlug(dto.templateSlug);
     const elements = dto.elements || {};
@@ -78,67 +83,73 @@ export class ContractService {
       throw new BadRequestException('请至少填写一个合同要素');
     }
 
-    let projectId = dto.projectId;
-    if (projectId) {
-      const existing = await this.prisma.project.findUnique({ where: { id: projectId } });
+    let projectId: string;
+    if (dto.projectId) {
+      const existing = await this.prisma.project.findUnique({ where: { id: dto.projectId } });
       if (!existing) throw new NotFoundException('工单不存在');
-      if (existing.creatorId !== userId) throw new ForbiddenException('无权操作此工单');
+      this.accessPolicy.assertCan(actor, ProjectAction.SendMessage, existing);
       if (existing.route !== 'llm') {
         throw new ConflictException('该工单已进入法务流程，无法继续生成'); // 升级守卫
       }
+      projectId = existing.id;
       await this.prisma.projectMessage.create({
         data: { projectId, role: 'user', text: this.buildElementsText(elements) },
       });
     } else {
-      const project = await this.prisma.project.create({
-        data: {
-          kind: 'contract',
-          title: `合同草稿·${template.name}`,
-          status: '分析中',
-          risk: 'P2',
-          route: 'llm',
-          creatorId: userId,
-          ownerId: userId,
-          contractTemplateSlug: template.slug,
-        },
+      const { project } = await this.createProjectUseCase.execute({
+        kind: 'contract',
+        title: `合同草稿·${template.name}`,
+        input: this.buildElementsText(elements),
+        creatorId: actor.id,
+        risk: 'P2',
+        route: 'llm',
+        legalBpId: null,
+        idempotencyKey: dto.idempotencyKey ?? null,
+        contractTemplateSlug: template.slug,
+        events: [this.formatTime() + ' · AI 正在生成合同草稿…'],
       });
       projectId = project.id;
-      await this.prisma.projectMessage.create({
-        data: { projectId, role: 'user', text: this.buildElementsText(elements) },
-      });
-      await this.addEvent(projectId, this.formatTime() + ' · AI 正在生成合同草稿…');
     }
 
     const prompt = this.buildDraftPrompt(template.prompt, elements, template.slug, template.name);
-    // 合同草稿远长于咨询回复：参照模板原文(≈9k字符)+完整起草实测 177s~300s+ 不稳定，
-    // timeout 放宽到 600s（实测超时根因，2026-08-03）
-    const stream = this.codexService.executeStream(prompt, {
+    // 合同草稿远长于咨询回复：timeout 放宽到 600s（实测超时根因，2026-08-03）
+    const stream = await this.codexService.executeStream(prompt, {
       timeout: 600_000,
       sessionId: projectId,
+      signal,
     });
 
     let fullText = '';
     stream.stdout?.on('data', (chunk: Buffer) => { fullText += chunk.toString(); });
 
     stream.on('close', async (code) => {
+      // 连接断开主动取消 → 不写失败状态（刷新 ≠ 生成失败）
+      if ((stream as any).__cancelled) return;
       if (code === 0 && fullText.trim()) {
         try {
-          await this.prisma.$transaction([
-            this.prisma.projectMessage.create({
+          await this.prisma.$transaction(async (tx) => {
+            // AI 草稿 → ContractDocument(type=draft, version=N)；消息仅供 UI，不是审查数据源
+            await this.createContractDocument(tx, {
+              projectId,
+              documentType: 'draft',
+              content: fullText.trim(),
+              createdBy: actor.id,
+            });
+            await tx.projectMessage.create({
               data: { projectId, role: 'assistant', text: fullText.trim() },
-            }),
-            this.prisma.project.update({
+            });
+            await tx.project.update({
               where: { id: projectId },
               data: { status: '待复核', result: fullText.trim() },
-            }),
-          ]);
+            });
+          });
           await this.addEvent(projectId, this.formatTime() + ' · 合同草稿已生成');
-        // 独立提示消息（不放入合同正文）：待补充统计 + 免责声明（工程决策 2026-08-04）
-        const pendingCount = (fullText.match(/【待补充】/g) || []).length;
-        await this.addEvent(
-          projectId,
-          `本稿共 ${pendingCount} 处【待补充】，需双方确认后填写。本稿由 AI 生成，仅供参考，需经法务审阅后生效。`,
-        );
+          // 独立提示消息（不放入合同正文）
+          const pendingCount = (fullText.match(/【待补充】/g) || []).length;
+          await this.addEvent(
+            projectId,
+            `本稿共 ${pendingCount} 处【待补充】，需双方确认后填写。本稿由 AI 生成，仅供参考，需经法务审阅后生效。`,
+          );
         } catch (err) {
           this.logger.error(`合同草稿落库失败：${err}`);
         }
@@ -163,11 +174,11 @@ export class ContractService {
   // 发起法务审阅 / AI 风险审查
   // ═══════════════════════════════════════════
 
-  /** business 发起法务审阅 — 原子守卫 WHERE route=llm 防重复提交（工程评审决策 #3） */
-  async submitReview(projectId: string, userId: string) {
+  /** business 发起法务审阅 — 原子守卫 WHERE route=llm 防重复提交（统一 Policy 校验） */
+  async submitReview(projectId: string, actor: ProjectActor) {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('工单不存在');
-    if (project.creatorId !== userId) throw new ForbiddenException('无权操作此工单');
+    this.accessPolicy.assertCan(actor, ProjectAction.SubmitReview, project);
 
     const updated = await this.prisma.project.updateMany({
       where: { id: projectId, route: 'llm' },
@@ -187,19 +198,30 @@ export class ContractService {
     return { projectId, status: '待复核' };
   }
 
-  /** legal AI 风险审查 — 取最新合同文本（修订版 mammoth 抽取优先，否则草稿），SSE 推风险清单 */
+  /**
+   * legal AI 风险审查（P1-05）：显式 sourceDocumentId，缺省取项目最新可审查 ContractDocument。
+   * 风险报告永远只进 ContractReviewRun.result，绝不创建为 ContractDocument。
+   */
   async reviewContract(
     projectId: string,
-    userId: string,
+    actor: ProjectActor,
     skillId?: string,
-  ): Promise<{ projectId: string; stream: ChildProcess }> {
+    sourceDocumentId?: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    projectId: string;
+    stream: ChildProcess;
+    reviewRunId: string;
+    sourceDocumentId: string;
+    sourceVersion: number;
+  }> {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('工单不存在');
     if (project.kind !== 'contract') throw new BadRequestException('非合同工单');
     if (project.status !== '待复核') throw new BadRequestException('当前状态不可发起审查');
+    this.accessPolicy.assertCan(actor, ProjectAction.ReviewContract, project);
 
-    // 技能解析（2026-08-04 技能库）：合同审查的技能选择发生在审查时 → 读实时 prompt（工程决策 R-2）
-    // 可用范围 = 公有 + 自己的私有（与 usable 列表同语义）
+    // 技能解析（审查时选技能 → 读实时 prompt；可用范围 = 公有 + 自己的私有）
     let skillName: string | null = null;
     let skillPrompt: string | null = null;
     if (skillId) {
@@ -208,7 +230,7 @@ export class ContractService {
           where: {
             id: skillId,
             isActive: true,
-            OR: [{ visibility: 'public' }, { creatorId: userId, visibility: 'private' }],
+            OR: [{ visibility: 'public' }, { creatorId: actor.id, visibility: 'private' }],
           },
         })
         .catch(() => null);
@@ -216,12 +238,9 @@ export class ContractService {
         skillName = skill.name;
         skillPrompt = skill.prompt;
       } else {
-        // 解析失败（不存在/停用/无权）→ 按无技能审查 + 日志（工程决策 OV#2 兜底语义）
         this.logger.warn(`审查技能 skillId=${skillId} 解析失败，按无技能审查`);
       }
     }
-
-    // 审查所用技能持久化到工单（工程决策 OV#2：工单详情可溯源，成功标准 6 对合同工单可验证）
     if (skillName) {
       await this.prisma.project.update({
         where: { id: projectId },
@@ -229,57 +248,114 @@ export class ContractService {
       });
     }
 
-    // 最新合同文本：assistant 消息按时间倒序取 1 条
-    // （上传修订版时 mammoth 抽取文本以 assistant/label=修订版文本 入消息，比草稿新）
-    const latest = await this.prisma.projectMessage.findFirst({
-      where: { projectId, role: 'assistant' },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (!latest?.text?.trim()) throw new BadRequestException('未找到可审查的合同文本');
+    // 解析源文档：显式 sourceDocumentId 必须属于当前项目；缺省取最新可审查文档
+    const sourceDoc = await this.resolveSourceDocument(projectId, sourceDocumentId);
+    if (!sourceDoc) throw new BadRequestException('未找到可审查的合同文档');
 
-    const prompt = this.buildReviewPrompt(latest.text, skillName ?? undefined, skillPrompt ?? undefined);
-    const stream = this.codexService.executeStream(prompt, {
-      timeout: 600_000,
-      sessionId: projectId,
+    // 先创建 ContractReviewRun 再启动 Codex（9.3-5）
+    const reviewRun = await this.prisma.contractReviewRun.create({
+      data: {
+        projectId,
+        sourceDocumentId: sourceDoc.id,
+        status: 'running',
+        startedAt: new Date(),
+        skillId: skillId ?? null,
+        createdBy: actor.id,
+      },
     });
+
+    const prompt = this.buildReviewPrompt(
+      sourceDoc.content,
+      skillName ?? undefined,
+      skillPrompt ?? undefined,
+    );
+
+    let stream: ChildProcess;
+    try {
+      stream = await this.codexService.executeStream(prompt, {
+        timeout: 600_000,
+        sessionId: projectId,
+        signal,
+      });
+    } catch (e) {
+      // 队列繁忙/排队超时：审查未开始，标记 failed（SSE 开始前返回 HTTP 错误）
+      await this.prisma.contractReviewRun
+        .update({
+          where: { id: reviewRun.id },
+          data: {
+            status: 'failed',
+            errorMessage: String((e as Error)?.message ?? e).slice(0, 200),
+            completedAt: new Date(),
+          },
+        })
+        .catch(() => undefined);
+      throw e;
+    }
 
     let fullText = '';
     stream.stdout?.on('data', (chunk: Buffer) => { fullText += chunk.toString(); });
 
     stream.on('close', async (code) => {
+      if ((stream as any).__cancelled) {
+        await this.prisma.contractReviewRun
+          .update({
+            where: { id: reviewRun.id },
+            data: { status: 'cancelled', errorMessage: '审查已取消', completedAt: new Date() },
+          })
+          .catch(() => undefined);
+        return;
+      }
       if (code === 0 && fullText.trim()) {
         try {
-          await this.prisma.projectMessage.create({
-            data: { projectId, role: 'assistant', text: fullText.trim(), label: 'AI 风险审查' },
-          });
+          // 风险报告只进 ReviewRun.result（9.3-6）；另写 ProjectMessage 供 UI 展示
+          await this.prisma.$transaction([
+            this.prisma.contractReviewRun.update({
+              where: { id: reviewRun.id },
+              data: { status: 'succeeded', result: fullText.trim(), completedAt: new Date() },
+            }),
+            this.prisma.projectMessage.create({
+              data: { projectId, role: 'assistant', text: fullText.trim(), label: 'AI 风险审查' },
+            }),
+          ]);
           await this.addEvent(projectId, this.formatTime() + ' · AI 风险审查完成');
         } catch (err) {
           this.logger.error(`审查结果落库失败：${err}`);
         }
       } else {
+        await this.prisma.contractReviewRun
+          .update({
+            where: { id: reviewRun.id },
+            data: { status: 'failed', errorMessage: 'Codex 审查失败或超时', completedAt: new Date() },
+          })
+          .catch(() => undefined);
         await this.addEvent(projectId, this.formatTime() + ' · AI 风险审查失败，请人工审阅');
       }
     });
 
-    return { projectId, stream };
+    return {
+      projectId,
+      stream,
+      reviewRunId: reviewRun.id,
+      sourceDocumentId: sourceDoc.id,
+      sourceVersion: sourceDoc.version,
+    };
   }
 
   // ═══════════════════════════════════════════
   // 附件（上传 / 列表 / 下载）
   // ═══════════════════════════════════════════
 
-  /** 上传合同附件（multer diskStorage 已落盘到 file.path；ownership 校验见工程评审决策 #1） */
+  /** 上传合同附件（multer diskStorage 已落盘到 file.path；统一 Policy 校验） */
   async uploadFile(
     projectId: string,
     file: Express.Multer.File,
     kind: string,
-    userId: string,
-    role: string,
+    actor: ProjectActor,
   ) {
     if (!file) throw new BadRequestException('未收到文件');
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('工单不存在');
-    this.assertAccess(project, userId, role);
+    this.accessPolicy.assertCan(actor, ProjectAction.ManageFile, project);
 
     // 类型白名单（不信任 mimetype，工程评审决策 #6）
     const ext = extname(file.originalname).toLowerCase();
@@ -307,7 +383,7 @@ export class ContractService {
           storedName: file.filename || `${randomUUID()}${ext}`,
           mimeType: file.mimetype,
           size: file.size,
-          uploadedBy: userId,
+          uploadedBy: actor.id,
         },
       });
     } catch (e) {
@@ -316,14 +392,31 @@ export class ContractService {
       throw new InternalServerErrorException('附件保存失败');
     }
 
-    // revised + .docx：mammoth 抽取文本入消息，供 AI 审查修订版（工程评审决策 #4）
-    if (kind === 'revised' && ext === '.docx') {
+    // revised/final + .docx：mammoth 抽取正文 → ContractDocument（9.3-2/9.3-3）。
+    // 抽取失败不得创建空文档，返回 textExtracted=false 让前端可识别"暂不可审查"。
+    let textExtracted = false;
+    if ((kind === 'revised' || kind === 'final') && ext === '.docx') {
       try {
         const result = await mammoth.extractRawText({ path: file.path });
         const text = result.value.trim();
         if (text) {
-          await this.prisma.projectMessage.create({
-            data: { projectId, role: 'assistant', text, label: '修订版文本' },
+          textExtracted = true;
+          await this.prisma.$transaction(async (tx) => {
+            await this.createContractDocument(tx, {
+              projectId,
+              documentType: kind as ContractDocumentType,
+              content: text,
+              sourceFileId: record.id,
+              createdBy: actor.id,
+            });
+            await tx.projectMessage.create({
+              data: {
+                projectId,
+                role: 'assistant',
+                text,
+                label: kind === 'revised' ? '修订版文本' : '终稿文本',
+              },
+            });
           });
         }
       } catch (e) {
@@ -332,14 +425,20 @@ export class ContractService {
     }
 
     await this.addEvent(projectId, this.formatTime() + ` · 上传了合同文件：${file.originalname}`);
-    return { fileId: record.id, originalName: record.originalName, size: record.size, kind: record.kind };
+    return {
+      fileId: record.id,
+      originalName: record.originalName,
+      size: record.size,
+      kind: record.kind,
+      textExtracted,
+    };
   }
 
   /** 附件列表（含上传人显示名） */
-  async listFiles(projectId: string, userId: string, role: string) {
+  async listFiles(projectId: string, actor: ProjectActor) {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('工单不存在');
-    this.assertAccess(project, userId, role);
+    this.accessPolicy.assertCan(actor, ProjectAction.ManageFile, project);
     return this.prisma.contractFile.findMany({
       where: { projectId },
       include: { uploader: { select: { displayName: true } } },
@@ -351,13 +450,12 @@ export class ContractService {
   async downloadFile(
     projectId: string,
     fileId: string,
-    userId: string,
-    role: string,
+    actor: ProjectActor,
     res: Response,
   ) {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('工单不存在');
-    this.assertAccess(project, userId, role);
+    this.accessPolicy.assertCan(actor, ProjectAction.ManageFile, project);
 
     const file = await this.prisma.contractFile.findFirst({
       where: { id: fileId, projectId },
@@ -381,14 +479,53 @@ export class ContractService {
   // 内部方法
   // ═══════════════════════════════════════════
 
-  /** ownership 校验：business 仅自己创建的工单；legal 仅自己处理/未分配（工程评审决策 #1） */
-  private assertAccess(project: Project, userId: string, role: string) {
-    if (role === 'business') {
-      if (project.creatorId !== userId) throw new ForbiddenException('无权操作此工单');
-    } else {
-      if (project.legalBpId && project.legalBpId !== userId && project.ownerId !== userId) {
-        throw new ForbiddenException('无权操作此工单');
+  /**
+   * 解析审查源文档（P1-05）：显式 sourceDocumentId 必须属于当前项目；
+   * 缺省取项目最新 ContractDocument（风险报告只进 ReviewRun，不会混入文档表，
+   * 因此不会把上一次风险报告当合同正文）。
+   */
+  private async resolveSourceDocument(
+    projectId: string,
+    sourceDocumentId?: string,
+  ): Promise<{ id: string; content: string; version: number } | null> {
+    if (sourceDocumentId) {
+      const doc = await this.prisma.contractDocument.findFirst({
+        where: { id: sourceDocumentId, projectId },
+        select: { id: true, content: true, version: true },
+      });
+      if (!doc) throw new BadRequestException('源文档不存在或不属于当前工单');
+      return doc;
+    }
+    return this.prisma.contractDocument.findFirst({
+      where: { projectId },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, content: true, version: true },
+    });
+  }
+
+  /**
+   * 版本号安全分配（9.3-4）：事务内 count+1；并发唯一冲突(P2002)重试，不覆盖旧版本。
+   */
+  private async createContractDocument(
+    tx: Prisma.TransactionClient,
+    data: {
+      projectId: string;
+      documentType: ContractDocumentType;
+      content: string;
+      sourceFileId?: string | null;
+      createdBy?: string | null;
+    },
+    attempts = 0,
+  ): Promise<any> {
+    const count = await tx.contractDocument.count({ where: { projectId: data.projectId } });
+    const version = count + 1;
+    try {
+      return await tx.contractDocument.create({ data: { ...data, version } });
+    } catch (e: any) {
+      if (e?.code === 'P2002' && attempts < 5) {
+        return this.createContractDocument(tx, data, attempts + 1);
       }
+      throw e;
     }
   }
 
@@ -399,7 +536,6 @@ export class ContractService {
   private buildElementsText(e: ContractElementsDto): string {
     const fields: [string, string | undefined][] = [
       ['甲方', e.partyA], ['乙方', e.partyB], ['金额', e.amount], ['期限', e.term],
-      // 详细信息（对齐 elementsSchema 全部字段，缺一不可）
       ['甲方通讯地址', e.partyAAddress], ['甲方授权代表', e.partyARepresentative],
       ['甲方经办人', e.partyAContact], ['甲方联系电话', e.partyATel], ['甲方电子邮件', e.partyAEmail],
       ['乙方通讯地址', e.partyBAddress], ['乙方联系人', e.partyBContact], ['乙方联系电话', e.partyBTel],
@@ -474,7 +610,7 @@ export class ContractService {
 
 ## 合同内容
 ${text}`;
-    // 技能段由共享 util 注入（含边界标记剥除，同样应用于合同审查路径——工程决策 OV#1 修订）
+    // 技能段由共享 util 注入（含边界标记剥除）
     return injectSkillSection(base, skillName ?? '', skillPrompt ?? '');
   }
 
