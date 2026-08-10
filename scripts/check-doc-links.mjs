@@ -52,29 +52,30 @@ for (const doc of docs) {
   if (/\b7 个 migration\b|\b74\/74 测试\b/.test(text)) FAILS.push(`${doc}: 含硬编码迁移/测试数量`)
 }
 
-// CRM 接口需求文档在 git 仓库外（产品需求文档/ 是仓库兄弟目录）：
-// 本机存在时校验其「附录 B 接口↔代码映射表」引用的文件/符号仍存在；CI 无此路径则跳过。
-const CRM_DOC = resolve(ROOT, '../产品需求文档/V0.1.0/后期待办/CRM合同审核对接-接口需求文档.md')
-if (existsSync(CRM_DOC)) {
-  const crmText = readFileSync(CRM_DOC, 'utf8')
-  // 附录 B 行格式：`文件路径`:`符号`(...)
-  const symbolRe = /`([^`]+)`:`([^`]+)`/g
-  let m2, n = 0
-  while ((m2 = symbolRe.exec(crmText))) {
-    const file = m2[1]
-    const symbol = m2[2]
-    const abs = resolve(ROOT, file)
-    if (!existsSync(abs)) {
-      FAILS.push(`${CRM_DOC}: 映射表引用文件不存在 ${file}`)
-      continue
-    }
-    if (!hasSymbol(readFileSync(abs, 'utf8'), symbol)) {
-      FAILS.push(`${CRM_DOC}: ${file} 中找不到符号 ${symbol}`)
-    }
-    n++
+// CRM 契约内部核对（plan-eng-review 2026-08-10）：接口 ↔ 代码位置，符号级断言。
+// 文档已删内部附录（CRM-facing），映射表移入本脚本，防文档与代码失效；CI 同样生效。
+const CRM_SYMBOLS = [
+  ['api/src/modules/project/project.controller.ts', 'create'], // 建单入口 POST /projects
+  ['api/src/modules/project/application/create-project.use-case.ts', 'CreateProjectUseCase.execute'], // 建单用例(事务+幂等+crmReference)
+  ['api/src/modules/project/dto/create-project.dto.ts', 'crmReference'], // crmReference 入参
+  ['api/src/modules/project/adapters/adapter.interfaces.ts', 'CrmAdapter'], // CRM 适配器抽象
+  ['api/src/modules/project/adapters/mock-crm.adapter.ts', 'MockCrmAdapter'], // Mock 实现
+  ['api/src/modules/project/project.service.ts', 'reply'], // 回传触发(writeBack)
+  ['api/src/modules/project/project.service.ts', 'executeStream'], // AI 自动回传(无 CRM 调用)
+  ['api/src/modules/project/project.controller.ts', 'transfer'], // 转派(不调 CRM)
+  ['api/src/modules/contract/contract.controller.ts', 'upload'], // 文件上传
+  ['api/src/modules/contract/contract.service.ts', 'uploadFile'], // 附件类型(仅 revised|final)
+  ['api/src/modules/project/application/create-project.use-case.ts', 'idempotencyKey'], // 幂等键
+]
+for (const [file, symbol] of CRM_SYMBOLS) {
+  const abs = resolve(ROOT, file)
+  if (!existsSync(abs)) {
+    FAILS.push(`CRM 契约映射:文件不存在 ${file}`)
+    continue
   }
-  if (n === 0) FAILS.push(`${CRM_DOC}: 未匹配到任何「文件:符号」映射（附录 B 格式可能被改动）`)
-  docs.push('CRM 合同审核对接-接口需求文档.md')
+  if (!hasSymbol(readFileSync(abs, 'utf8'), symbol)) {
+    FAILS.push(`CRM 契约映射:${file} 中找不到符号 ${symbol}`)
+  }
 }
 
 if (FAILS.length) {
