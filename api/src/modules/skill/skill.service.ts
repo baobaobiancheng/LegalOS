@@ -29,7 +29,7 @@ const userSelect = { id: true, username: true, displayName: true, role: true };
  * - pending 不可编辑/不可停用（审核中的快照不可改）；创建者可撤回，lead/admin 可审核
  * - public 编辑权仅 lead/admin；business 响应剥离 prompt
  * - 全部状态变更用条件更新（WHERE visibility=...），影响 0 行 → 409（并发防护）
- * - 审核记录 append-only（reviewLog Json 数组），驳回历史不覆盖丢失（工程评审决策 OV#2）
+ * - 审核记录写入 SkillReviewLog append-only 表，状态和审计记录同一事务提交
  */
 @Injectable()
 export class SkillService {
@@ -132,30 +132,38 @@ export class SkillService {
       include: {
         creator: { select: userSelect },
         approver: { select: userSelect },
+        reviewLogs: { orderBy: { createdAt: 'asc' } },
       },
       orderBy: { createdAt: 'desc' },
     });
 
     // 列表剥离 prompt + 按可见性过滤（私有硬边界，工程评审决策 #6）；
-    // 我的技能保留 reviewLog（驳回原因直接展示，无需逐条 detail）；其余 scope 剥离
+    // 我的技能保留规范化审核历史，旧 JSON 只作为迁移期 fallback。
     return items
       .filter((s) => this.canView(s, userId, role))
-      .map(({ prompt: _prompt, reviewLog, ...rest }) =>
-        scope === 'mine' ? { ...rest, reviewLog } : rest,
-      );
+      .map((s: any) => {
+        const { prompt: _prompt, reviewLog: legacyLog, reviewLogs, ...rest } = s;
+        return scope === 'mine'
+          ? { ...rest, reviewLog: this.normalizeReviewLogs(reviewLogs, legacyLog) }
+          : rest;
+      });
   }
 
   /** 详情（审核页需要 prompt 全文；business 剥离） */
   async detail(id: string, userId: string, role: Role) {
     const skill = await this.prisma.skill.findUnique({
       where: { id },
-      include: { creator: { select: userSelect }, approver: { select: userSelect } },
+      include: {
+        creator: { select: userSelect },
+        approver: { select: userSelect },
+        reviewLogs: { orderBy: { createdAt: 'asc' } },
+      },
     });
     if (!skill) throw new NotFoundException('技能不存在');
     if (!this.canView(skill, userId, role)) throw new ForbiddenException('无权查看此技能');
 
-    const { reviewLog, ...rest } = skill;
-    const result: any = { ...rest, reviewLog };
+    const { reviewLog: legacyLog, reviewLogs, ...rest } = skill as any;
+    const result: any = { ...rest, reviewLog: this.normalizeReviewLogs(reviewLogs, legacyLog) };
     if (role === Role.business) {
       // business 剥离 prompt + 审核记录（核心资产与内部治理信息最小暴露）
       delete result.prompt;
@@ -193,11 +201,24 @@ export class SkillService {
 
   /** 提交审核：private → pending（仅创建者，条件更新） */
   async submit(id: string, userId: string) {
-    const updated = await this.prisma.skill.updateMany({
-      where: { id, creatorId: userId, visibility: 'private' },
-      data: { visibility: 'pending' },
+    const eventId = `submit:${randomUUID()}`;
+    const changed = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.skill.updateMany({
+        where: { id, creatorId: userId, visibility: 'private' },
+        data: { visibility: 'pending' },
+      });
+      if (updated.count === 0) return false;
+      await this.createReviewLog(tx, {
+        eventId,
+        skillId: id,
+        action: 'submit',
+        fromState: 'private',
+        toState: 'pending',
+        actorId: userId,
+      });
+      return true;
     });
-    if (updated.count === 0) {
+    if (!changed) {
       const skill = await this.prisma.skill.findUnique({ where: { id } });
       if (!skill) throw new NotFoundException('技能不存在');
       throw skill.creatorId === userId
@@ -209,11 +230,24 @@ export class SkillService {
 
   /** 撤回：pending → private（仅创建者，条件更新） */
   async withdraw(id: string, userId: string) {
-    const updated = await this.prisma.skill.updateMany({
-      where: { id, creatorId: userId, visibility: 'pending' },
-      data: { visibility: 'private' },
+    const eventId = `withdraw:${randomUUID()}`;
+    const changed = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.skill.updateMany({
+        where: { id, creatorId: userId, visibility: 'pending' },
+        data: { visibility: 'private' },
+      });
+      if (updated.count === 0) return false;
+      await this.createReviewLog(tx, {
+        eventId,
+        skillId: id,
+        action: 'withdraw',
+        fromState: 'pending',
+        toState: 'private',
+        actorId: userId,
+      });
+      return true;
     });
-    if (updated.count === 0) {
+    if (!changed) {
       const skill = await this.prisma.skill.findUnique({ where: { id } });
       if (!skill) throw new NotFoundException('技能不存在');
       throw skill.creatorId === userId
@@ -249,21 +283,16 @@ export class SkillService {
         if (!skill) throw new NotFoundException('技能不存在');
         throw new ConflictException('只有待审核状态的技能可审核');
       }
-      await tx.skillReviewLog.create({
-        data: {
-          eventId,
-          skillId: id,
-          action,
-          fromState: 'pending',
-          toState,
-          actorId: userId,
-          reason: dto.reason?.trim() ?? null,
-        },
+      await this.createReviewLog(tx, {
+        eventId,
+        skillId: id,
+        action,
+        fromState: 'pending',
+        toState,
+        actorId: userId,
+        reason: dto.reason?.trim() ?? null,
       });
     });
-
-    // 兼容：JSON reviewLog 仍追加（前端 detail 展示用），失败不阻断；审计以新表 SkillReviewLog 为准
-    await this.appendReviewLog(id, dto.approved ? 'approve' : 'reject', userId, dto.reason);
 
     return { id, visibility: toState };
   }
@@ -276,11 +305,29 @@ export class SkillService {
     }
     this.assertOwnerOrLead(skill, userId, role);
 
-    const updated = await this.prisma.skill.updateMany({
-      where: { id, isActive: true },
-      data: { isActive: false },
+    const eventId = `archive:${randomUUID()}`;
+    const changed = await this.prisma.$transaction(async (tx) => {
+      const current = await tx.skill.findUnique({
+        where: { id },
+        select: { visibility: true },
+      });
+      if (!current || current.visibility === 'pending') return false;
+      const updated = await tx.skill.updateMany({
+        where: { id, isActive: true, visibility: current.visibility },
+        data: { isActive: false },
+      });
+      if (updated.count === 0) return false;
+      await this.createReviewLog(tx, {
+        eventId,
+        skillId: id,
+        action: 'archive',
+        fromState: current.visibility,
+        toState: current.visibility,
+        actorId: userId,
+      });
+      return true;
     });
-    if (updated.count === 0) throw new ConflictException('技能已处于停用状态');
+    if (!changed) throw new ConflictException('技能已处于停用状态');
     return { id, isActive: false };
   }
 
@@ -289,11 +336,28 @@ export class SkillService {
     const skill = await this.mustGet(id);
     this.assertOwnerOrLead(skill, userId, role);
 
-    const updated = await this.prisma.skill.updateMany({
-      where: { id, isActive: false },
-      data: { isActive: true },
+    const eventId = `restore:${randomUUID()}`;
+    const changed = await this.prisma.$transaction(async (tx) => {
+      const current = await tx.skill.findUnique({
+        where: { id },
+        select: { visibility: true },
+      });
+      const updated = await tx.skill.updateMany({
+        where: { id, isActive: false },
+        data: { isActive: true },
+      });
+      if (updated.count === 0) return false;
+      await this.createReviewLog(tx, {
+        eventId,
+        skillId: id,
+        action: 'restore',
+        fromState: current?.visibility ?? skill.visibility,
+        toState: current?.visibility ?? skill.visibility,
+        actorId: userId,
+      });
+      return true;
     });
-    if (updated.count === 0) throw new ConflictException('技能未处于停用状态');
+    if (!changed) throw new ConflictException('技能未处于停用状态');
     return { id, isActive: true };
   }
 
@@ -328,27 +392,43 @@ export class SkillService {
     return skill;
   }
 
-  /** append-only 审核记录：读当前数组 → 追加 → 写回（驳回历史不覆盖，OV#2） */
-  private async appendReviewLog(
-    id: string,
-    action: 'approve' | 'reject',
-    reviewerId: string,
-    reason?: string,
+  /** 规范化审核日志写入：状态变更和 append-only 记录必须在同一事务。 */
+  private createReviewLog(
+    tx: any,
+    data: {
+      eventId: string;
+      skillId: string;
+      action: SkillReviewAction;
+      fromState: string;
+      toState: string;
+      actorId: string;
+      reason?: string | null;
+    },
   ) {
-    try {
-      const skill = await this.prisma.skill.findUnique({ where: { id } });
-      const log = Array.isArray(skill?.reviewLog) ? (skill.reviewLog as any[]) : [];
-      log.push({
-        action,
-        reviewerId,
-        reason: reason?.trim() ?? null,
-        at: new Date().toISOString(),
-      });
-      await this.prisma.skill.update({ where: { id }, data: { reviewLog: log } });
-    } catch (e) {
-      // 审核记录失败不阻断主流程（可降级：仅当前审核结果生效）
-      this.logger.warn(`reviewLog 追加失败：${e}`);
+    return tx.skillReviewLog.create({
+      data: {
+        ...data,
+        reason: data.reason ?? null,
+      },
+    });
+  }
+
+  /** 读取规范化表；迁移尚未完成的旧数据才回退到 reviewLog JSON。 */
+  private normalizeReviewLogs(logs: any[] | undefined, legacy: unknown): any[] {
+    if (Array.isArray(logs) && logs.length) {
+      return logs.map((log) => ({
+        eventId: log.eventId,
+        action: log.action,
+        reviewerId: log.actorId,
+        reason: log.reason ?? null,
+        at: log.createdAt instanceof Date
+          ? log.createdAt.toISOString()
+          : String(log.createdAt ?? ''),
+        fromState: log.fromState,
+        toState: log.toState,
+      }));
     }
+    return Array.isArray(legacy) ? legacy : [];
   }
 
   /** Prisma 唯一约束冲突判断（P2002） */

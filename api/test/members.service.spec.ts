@@ -22,12 +22,18 @@ describe('MembersService', () => {
         findUnique: vi.fn(),
         findMany: vi.fn(),
       },
-      dingTalkContactStaging: { createMany: vi.fn().mockResolvedValue({ count: 2 }) },
+      dingTalkContactStaging: {
+        createMany: vi.fn().mockResolvedValue({ count: 2 }),
+        findMany: vi.fn(),
+      },
       dingTalkSyncBatch: { create: vi.fn().mockResolvedValue({ id: 'batch-1' }), update: vi.fn().mockResolvedValue({}) },
       user: { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn().mockResolvedValue({ id: 'u' }), findFirst: vi.fn() },
       bpDomainMap: { upsert: vi.fn(), deleteMany: vi.fn() },
       project: { count: vi.fn() },
-      $transaction: vi.fn((ops: any[]) => Promise.all(ops)),
+      $transaction: vi.fn(async (arg: any) => {
+        if (typeof arg === 'function') return arg(prisma);
+        return Promise.all(arg);
+      }),
     };
     dingtalk = { syncContacts: vi.fn() };
     service = new MembersService(prisma as any, dingtalk as any);
@@ -52,6 +58,10 @@ describe('MembersService', () => {
         { id: 'u-b', displayName: '重名用户' }, // 同名两人 → 不自动绑定
       ])
       .mockResolvedValueOnce([]);
+    prisma.dingTalkContactStaging.findMany.mockResolvedValue([
+      { userId: 'U-1', name: '彭宇欣', mobile: '138' },
+      { userId: 'U-2', name: '重名用户', mobile: '139' },
+    ]);
 
     const result = await service.syncContacts();
 

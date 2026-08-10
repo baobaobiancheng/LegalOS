@@ -2,7 +2,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
-import { request } from '../../api/client'
+import { RequestError, request } from '../../api/client'
+import ErrorState from '../../components/ErrorState.vue'
 import type { Skill } from '../../types'
 import { SKILL_GROUPS, SKILL_PROMPT_MAX_LENGTH, lastRejectReason } from '../../types'
 
@@ -20,6 +21,8 @@ const activeTab = ref<'public' | 'mine' | 'pending'>('public')
 const skills = ref<Skill[]>([])
 const loading = ref(false)
 const groupFilter = ref('')
+const listError = ref<RequestError | null>(null)
+const actionError = ref<RequestError | null>(null)
 
 // 新建/编辑表单
 const showForm = ref(false)
@@ -39,8 +42,11 @@ const openDetail = async (s: Skill) => {
   detail.value = null
   try {
     detail.value = await request<Skill>(`/skills/${s.id}`)
-  } catch {
+  } catch (error) {
     // 列表数据无 prompt（服务端剥离），失败时仅展示基础信息
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '技能详情加载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
     detail.value = { ...s, prompt: '（prompt 加载失败，请重试）' }
   }
 }
@@ -99,8 +105,11 @@ const fetchList = async () => {
   try {
     const q = groupFilter.value ? `&group=${encodeURIComponent(groupFilter.value)}` : ''
     skills.value = await request<Skill[]>(`/skills?scope=${activeTab.value}${q}`)
-  } catch (e: any) {
-    console.error('技能列表加载失败', e)
+    listError.value = null
+  } catch (error) {
+    listError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '技能列表加载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
   } finally {
     loading.value = false
   }
@@ -150,29 +159,32 @@ const saveSkill = async () => {
     if (editing.value) {
       await request(`/skills/${editing.value.id}`, {
         method: 'PUT',
-        body: JSON.stringify({
+        body: {
           name: form.value.name,
           group: form.value.group,
           description: form.value.description,
           prompt: form.value.prompt,
-        }),
+        },
       })
     } else {
       await request('/skills', {
         method: 'POST',
-        body: JSON.stringify({
+        body: {
           slug: form.value.slug.trim() || undefined,
           name: form.value.name,
           group: form.value.group,
           description: form.value.description,
           prompt: form.value.prompt,
-        }),
+        },
       })
     }
     showForm.value = false
     fetchList()
-  } catch (e: any) {
-    formError.value = e?.message || '保存失败'
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '保存失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+    formError.value = actionError.value.payload.error
   } finally {
     saving.value = false
   }
@@ -184,8 +196,10 @@ const act = async (id: string, action: 'submit' | 'withdraw' | 'archive' | 'rest
   try {
     await request(`/skills/${id}/${action}`, { method: 'POST' })
     fetchList()
-  } catch (e: any) {
-    alert(e?.message || '操作失败')
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '操作失败，请重试', code: 'UNKNOWN', statusCode: 0 })
   }
 }
 
@@ -197,7 +211,10 @@ const openReview = async (s: Skill) => {
   try {
     const d = await request<Skill>(`/skills/${s.id}`)
     reviewingPrompt.value = d.prompt || ''
-  } catch {
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '审核详情加载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
     reviewingPrompt.value = s.prompt || ''
   }
 }
@@ -211,12 +228,14 @@ const submitReview = async (approved: boolean) => {
   try {
     await request(`/skills/${reviewing.value.id}/review`, {
       method: 'POST',
-      body: JSON.stringify({ approved, reason: reviewReason.value.trim() || undefined }),
+      body: { approved, reason: reviewReason.value.trim() || undefined },
     })
     reviewing.value = null
     fetchList()
-  } catch (e: any) {
-    alert(e?.message || '审核失败')
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '审核失败，请重试', code: 'UNKNOWN', statusCode: 0 })
   }
 }
 
@@ -405,15 +424,25 @@ const logout = () => {
           </div>
         </div>
 
+        <ErrorState
+          v-if="listError || actionError"
+          :message="(listError || actionError)!.payload.error"
+          :request-id="(listError || actionError)!.payload.requestId"
+          :on-retry="listError ? fetchList : undefined"
+        />
+
         <!-- 技能列表 -->
         <div
-          v-if="!loading && !skills.length"
+          v-if="!listError && !loading && !skills.length"
           class="empty-state"
         >
           <p>{{ activeTab === 'pending' ? '暂无待审核技能' : activeTab === 'mine' ? '还没有技能，点击右上角新建' : '暂无公有技能' }}</p>
         </div>
 
-        <div class="skill-grid">
+        <div
+          v-if="!listError"
+          class="skill-grid"
+        >
           <div
             v-for="s in skills"
             :key="s.id"

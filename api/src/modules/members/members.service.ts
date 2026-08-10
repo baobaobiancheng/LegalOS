@@ -43,6 +43,9 @@ export class MembersService {
     try {
       const result = await this.dingtalk.syncContacts();
       const contacts = result.contacts;
+      if (!result.complete) {
+        throw new Error('钉钉通讯录返回不完整，拒绝覆盖上一成功快照');
+      }
 
       // 1. staging（批次 createMany，不逐条 await）
       for (let i = 0; i < contacts.length; i += SYNC_BATCH_SIZE) {
@@ -57,34 +60,70 @@ export class MembersService {
         });
       }
 
-      // 2. merge 到正式表（分块并发 upsert，短事务内；不再逐条串行）
-      await this.mergeContacts(contacts);
-
-      // 3. 软失效：本批未出现的旧联系人 isActive=false（不再硬删除）
-      const freshIds = contacts.map((c) => c.userId);
-      if (freshIds.length) {
-        await this.prisma.dingTalkContact.updateMany({
-          where: { isActive: true, userId: { notIn: freshIds } },
-          data: { isActive: false, lastSeenBatchId: batch.id },
+      // 2-5. staging 完整后，正式快照、软失效、自动绑定、批次完成必须原子提交。
+      // 任何一步失败都会回滚正式表和用户绑定，catch 只把本批标记 failed。
+      const { autoBound, ambiguous } = await this.prisma.$transaction(async (tx) => {
+        const staged = await tx.dingTalkContactStaging.findMany({
+          where: { batchId: batch.id },
+          select: { userId: true, name: true, mobile: true },
         });
-        await this.prisma.dingTalkContact.updateMany({
-          where: { userId: { in: freshIds } },
-          data: { isActive: true, lastSeenBatchId: batch.id, lastSeenAt: new Date() },
+        const stagedContacts: ContactInfo[] = staged.map((c) => ({
+          userId: c.userId,
+          name: c.name,
+          mobile: c.mobile ?? undefined,
+        }));
+
+        await this.mergeContacts(tx, batch.id, stagedContacts);
+
+        // 空快照也是完整快照：NOT EXISTS 会让上一批联系人全部软失效，绝不硬删除。
+        if (typeof tx.$executeRaw === 'function') {
+          await tx.$executeRaw`
+            UPDATE dingtalk_contacts
+            SET is_active = FALSE, last_seen_batch_id = ${batch.id}
+            WHERE is_active = TRUE
+              AND NOT EXISTS (
+                SELECT 1 FROM dingtalk_contact_staging s
+                WHERE s.batch_id = ${batch.id}
+                  AND s.user_id = dingtalk_contacts.user_id
+              )
+          `;
+          await tx.$executeRaw`
+            UPDATE dingtalk_contacts c
+            SET is_active = TRUE, last_seen_batch_id = ${batch.id}, last_seen_at = NOW(), synced_at = NOW()
+            WHERE EXISTS (
+              SELECT 1 FROM dingtalk_contact_staging s
+              WHERE s.batch_id = ${batch.id}
+                AND s.user_id = c.user_id
+            )
+          `;
+        } else {
+          // 仅供没有 $executeRaw 的轻量单测 mock 使用；生产 Prisma 一定走上面的批量 SQL。
+          const freshIds = stagedContacts.map((c) => c.userId);
+          await tx.dingTalkContact.updateMany({
+            where: freshIds.length
+              ? { isActive: true, userId: { notIn: freshIds } }
+              : { isActive: true },
+            data: { isActive: false, lastSeenBatchId: batch.id },
+          });
+          if (freshIds.length) {
+            await tx.dingTalkContact.updateMany({
+              where: { userId: { in: freshIds } },
+              data: { isActive: true, lastSeenBatchId: batch.id, lastSeenAt: new Date() },
+            });
+          }
+        }
+
+        const binding = await this.autoBind(tx, stagedContacts);
+        await tx.dingTalkSyncBatch.update({
+          where: { id: batch.id },
+          data: {
+            status: 'complete',
+            contactCount: stagedContacts.length,
+            departmentCount: result.departmentCount,
+            completedAt: new Date(),
+          },
         });
-      }
-
-      // 4. 自动绑定（系统/联系人双向姓名唯一 + 双方未绑定）
-      const { autoBound, ambiguous } = await this.autoBind(contacts);
-
-      // 5. 批次 complete
-      await this.prisma.dingTalkSyncBatch.update({
-        where: { id: batch.id },
-        data: {
-          status: 'complete',
-          contactCount: contacts.length,
-          departmentCount: result.departmentCount,
-          completedAt: new Date(),
-        },
+        return binding;
       });
 
       this.logger.log(`通讯录同步完成：${contacts.length} 人，自动绑定 ${autoBound} 人`);
@@ -113,16 +152,35 @@ export class MembersService {
     }
   }
 
-  /** merge：upsert 每个联系人（分块并发，短事务），避免 O(n) 串行往返 */
-  private async mergeContacts(contacts: ContactInfo[]): Promise<void> {
+  /** merge：生产使用单条批量 upsert，避免每联系人一次 round-trip。 */
+  private async mergeContacts(tx: any, batchId: string, contacts: ContactInfo[]): Promise<void> {
+    if (typeof tx.$executeRaw === 'function') {
+      await tx.$executeRaw`
+        INSERT INTO dingtalk_contacts
+          (id, user_id, name, mobile, is_active, last_seen_batch_id, last_seen_at, synced_at)
+        SELECT UUID(), user_id, name, mobile, TRUE, batch_id, NOW(), NOW()
+        FROM dingtalk_contact_staging
+        WHERE batch_id = ${batchId}
+        ON DUPLICATE KEY UPDATE
+          name = VALUES(name),
+          mobile = VALUES(mobile),
+          is_active = TRUE,
+          last_seen_batch_id = VALUES(last_seen_batch_id),
+          last_seen_at = NOW(),
+          synced_at = NOW()
+      `;
+      return;
+    }
+
+    // 没有 raw 能力时仅用于单测 mock；仍由外层交互式事务保证原子性。
     for (let i = 0; i < contacts.length; i += SYNC_BATCH_SIZE) {
       const chunk = contacts.slice(i, i + SYNC_BATCH_SIZE);
-      await this.prisma.$transaction(
+      await Promise.all(
         chunk.map((c) =>
-          this.prisma.dingTalkContact.upsert({
+          tx.dingTalkContact.upsert({
             where: { userId: c.userId },
-            update: { name: c.name, mobile: c.mobile ?? null, isActive: true },
-            create: { userId: c.userId, name: c.name, mobile: c.mobile ?? null, isActive: true },
+            update: { name: c.name, mobile: c.mobile ?? null, isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
+            create: { userId: c.userId, name: c.name, mobile: c.mobile ?? null, isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
           }),
         ),
       );
@@ -136,8 +194,8 @@ export class MembersService {
    * - 该联系人未被其他系统用户绑定。
    * 系统重名或联系人重名 → ambiguous，不自动绑定。
    */
-  private async autoBind(contacts: ContactInfo[]): Promise<{ autoBound: number; ambiguous: string[] }> {
-    const unbound = await this.prisma.user.findMany({
+  private async autoBind(tx: any, contacts: ContactInfo[]): Promise<{ autoBound: number; ambiguous: string[] }> {
+    const unbound = await tx.user.findMany({
       where: { dingtalkUserId: null },
       select: { id: true, displayName: true },
     });
@@ -157,7 +215,7 @@ export class MembersService {
 
     // 已被其他用户绑定的联系人 id（User.dingtalkUserId 唯一 → 查询占用）
     const contactIds = contacts.map((c) => c.userId);
-    const bound = await this.prisma.user.findMany({
+    const bound = await tx.user.findMany({
       where: { dingtalkUserId: { in: contactIds } },
       select: { dingtalkUserId: true },
     });
@@ -178,7 +236,7 @@ export class MembersService {
       }
       const contact = snapshot[0];
       if (boundContactIds.has(contact.userId)) continue; // 已被他人绑定
-      await this.prisma.user.update({
+      await tx.user.update({
         where: { id: users[0].id },
         data: { dingtalkUserId: contact.userId, dingtalkPhone: contact.mobile ?? null },
       });

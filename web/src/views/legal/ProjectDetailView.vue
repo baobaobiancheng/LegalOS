@@ -2,11 +2,13 @@
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
-import { getAccessToken, request } from '../../api/client'
+import { RequestError, request, requestForm } from '../../api/client'
+import { requestStreamOrJson } from '../../api/sse'
 import MarkdownContent from '../../components/MarkdownContent.vue'
 import DownloadMenu from '../../components/DownloadMenu.vue'
 import type { ContractDocStyle } from '../../utils/markdown-to-docx'
 import type { ContractFile, ContractTemplate, ProjectDetail, MessageDto, EventDto } from '../../types'
+import ErrorState from '../../components/ErrorState.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -18,6 +20,8 @@ const input = ref('')
 const sending = ref(false)
 const streaming = ref('')
 const loading = ref(true)
+const loadError = ref<RequestError | null>(null)
+const actionError = ref<RequestError | null>(null)
 const id = route.params.id as string
 const contractFiles = ref<ContractFile[]>([])
 const uploadingFinal = ref(false)
@@ -35,9 +39,17 @@ onMounted(async () => {
         try {
           const templates = await request<ContractTemplate[]>('/contract-templates')
           templateStyle.value = templates.find(t => t.slug === data.contractTemplateSlug)?.style
-        } catch {}
+        } catch (error) {
+          actionError.value = error instanceof RequestError
+            ? error
+            : new RequestError({ error: '合同模板样式加载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+        }
       }
     }
+  } catch (error) {
+    loadError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '工单加载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
   } finally { loading.value = false }
 })
 
@@ -59,50 +71,34 @@ const sendMessage = async () => {
   const text = input.value.trim()
   input.value = ''
   sending.value = true
+  actionError.value = null
 
   messages.value.push({ id: 'tmp-' + Date.now(), role: 'user', text, createdAt: new Date().toISOString() } as any)
   scrollBottom()
 
   try {
-    const { getAccessToken } = await import('../../api/client')
-    const res = await fetch(`/api/projects/${id}/messages`, {
-      method: 'POST', credentials: 'include',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${getAccessToken()}` },
-      body: JSON.stringify({ text, role: 'user' }),
+    streaming.value = ''
+    let aiMsg: any | undefined
+    const data = await requestStreamOrJson<{ route?: string; done?: boolean; error?: boolean; text?: string }>(`/projects/${id}/messages`, {
+      method: 'POST',
+      body: { text, role: 'user' },
+    }, (d) => {
+      if (d.done === true) void refreshMessages()
+      if (d.error === true || typeof d.text === 'string') {
+        aiMsg ??= { id: 'streaming', role: 'assistant', text: '', createdAt: new Date().toISOString() }
+        if (messages.value[messages.value.length - 1] !== aiMsg) messages.value.push(aiMsg)
+      }
+      if (d.error === true) aiMsg!.text = '⚠️ AI 答复生成失败，已通知法务BP处理'
+      else if (typeof d.text === 'string') { streaming.value += d.text; aiMsg!.text = streaming.value; scrollBottom() }
     })
-    const ct = res.headers.get('content-type') || ''
-
-    if (ct.includes('text/event-stream')) {
-      streaming.value = ''
-      const reader = res.body?.getReader()
-      const decoder = new TextDecoder('utf-8', { fatal: false })
-      if (!reader) return
-
-      const aiMsg: any = { id: 'streaming', role: 'assistant', text: '', createdAt: new Date().toISOString() }
-      messages.value.push(aiMsg)
+    if (data?.route === 'legalbp') {
+      messages.value.push({ id: 'ev-' + Date.now(), _event: true, text: '风险升级，已通知法务 BP 人工处理', createdAt: new Date().toISOString() } as any)
       scrollBottom()
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        for (const line of decoder.decode(value, { stream: true }).split('\n')) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const d = JSON.parse(line.slice(6))
-            if (d.done) { refreshMessages() }
-            else if (d.error) { aiMsg.text = '⚠️ AI 答复生成失败，已通知法务BP处理' }
-            else if (d.text) { streaming.value += d.text; aiMsg.text = streaming.value; scrollBottom() }
-          } catch {}
-        }
-      }
-    } else {
-      const d = await res.json()
-      if (d.route === 'legalbp' || !res.ok) {
-        messages.value.push({ id: 'ev-' + Date.now(), _event: true, text: '风险升级，已通知法务 BP 人工处理', createdAt: new Date().toISOString() } as any)
-        scrollBottom()
-      }
     }
-  } catch {
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '消息发送失败，请重试', code: 'UNKNOWN', statusCode: 0 })
     messages.value.push({ id: 'err-' + Date.now(), _event: true, text: '消息发送失败，请重试', createdAt: new Date().toISOString() } as any)
   } finally { sending.value = false; streaming.value = '' }
 }
@@ -113,7 +109,11 @@ const refreshMessages = async () => {
     project.value = data
     mergeTimeline(data)
     scrollBottom()
-  } catch {}
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '工单刷新失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  }
 }
 
 const canReply = () => project.value?.route === 'legalbp' && project.value?.status !== '已回传' && project.value?.status !== '已取消'
@@ -127,7 +127,11 @@ const canUploadFinal = computed(() =>
 const loadFiles = async () => {
   try {
     contractFiles.value = await request<ContractFile[]>(`/projects/${id}/files`)
-  } catch {}
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '附件加载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  }
 }
 
 const triggerFinalUpload = () => finalInput.value?.click()
@@ -138,17 +142,18 @@ const handleFinalUpload = async (e: Event) => {
   target.value = ''
   if (!file) return
   uploadingFinal.value = true
+  actionError.value = null
   try {
     const fd = new FormData()
     fd.append('file', file)
     fd.append('kind', 'final')
-    const res = await fetch(`/api/projects/${id}/files`, {
-      method: 'POST', credentials: 'include',
-      headers: { authorization: `Bearer ${getAccessToken()}` },
-      body: fd,
-    })
-    if (res.ok) await loadFiles()
-  } catch {}
+    await requestForm(`/projects/${id}/files`, fd, { method: 'POST' })
+    await loadFiles()
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '定稿上传失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  }
   uploadingFinal.value = false
 }
 
@@ -166,7 +171,14 @@ const reply = async () => {
   if (!input.value.trim()) return
   const text = input.value.trim()
   input.value = ''
-  try { await request(`/projects/${id}/reply`, { method: 'POST', body: { text } }); await refreshMessages() } catch {}
+  try {
+    await request(`/projects/${id}/reply`, { method: 'POST', body: { text } })
+    await refreshMessages()
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '回传失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  }
 }
 
 const goBack = () => router.push('/legal/projects')
@@ -311,9 +323,14 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
       </header>
 
       <div
-        v-if="!loading"
+        v-if="!loading && !loadError"
         class="app-content chat-content animate-in"
       >
+        <ErrorState
+          v-if="actionError"
+          :message="actionError.payload.error"
+          :request-id="actionError.payload.requestId"
+        />
         <div
           id="msg-container"
           class="msg-scroll"
@@ -447,6 +464,12 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
         </div>
       </div>
 
+      <ErrorState
+        v-else-if="loadError"
+        :message="loadError.payload.error"
+        :request-id="loadError.payload.requestId"
+        :on-retry="() => router.go(0)"
+      />
       <div
         v-else
         class="welcome-hero"

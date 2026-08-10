@@ -3,6 +3,7 @@ import { ProjectService } from '../src/modules/project/project.service';
 import { ProjectStateMachine } from '../src/modules/project/domain/project-state-machine';
 import { CreateProjectUseCase } from '../src/modules/project/application/create-project.use-case';
 import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
+import { EscalateProjectToLegalUseCase } from '../src/modules/project/application/escalate-project-to-legal.use-case';
 
 /**
  * 钉钉拉群链路（P1-04 改造后）：
@@ -34,6 +35,8 @@ function makeTransaction(prisma: any) {
         projectMessage: prisma.projectMessage,
         projectEvent: prisma.projectEvent,
         outboxEvent: prisma.outboxEvent,
+        bpDomainMap: prisma.bpDomainMap,
+        user: prisma.user,
       };
       return arg(tx);
     }
@@ -78,6 +81,7 @@ describe('ProjectService 钉钉拉群链路', () => {
       { findAll: vi.fn(), findOne: vi.fn() } as any,
       new ProjectStateMachine() as any,
       { execute: vi.fn() } as any,
+      new EscalateProjectToLegalUseCase(prisma) as any,
     );
 
     prisma.project.create.mockResolvedValue(mockProject());
@@ -200,26 +204,38 @@ describe('ProjectService 钉钉拉群链路', () => {
     );
 
     expect(result.route).toBe('legalbp');
-    // 修复验证：legalBpId 被重新匹配并写库
-    const updates = prisma.project.update.mock.calls.map((c: any) => c[0].data);
-    expect(updates.some((d: any) => d.legalBpId === 'u-bp')).toBe(true);
+    // 统一升级用例：匹配结果与 route/status 在条件更新中一次提交
+    expect(prisma.project.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'p-1', route: 'llm' },
+        data: expect.objectContaining({ route: 'legalbp', legalBpId: 'u-bp' }),
+      }),
+    );
     // 升级补建群改入队 Outbox（不再同步建群）
     await new Promise((r) => setTimeout(r, 10));
     expect(dingtalk.createGroup).not.toHaveBeenCalled();
     expect(prisma.outboxEvent.create).toHaveBeenCalled();
   });
 
-  it('转派（transfer）：legal_lead 可转派，legalBpId 变更 → 新 BP 进群（旧 BP 留群）', async () => {
+  it('转派（transfer）：legal_lead 可转派，legalBpId 变更 → 入队补人事件（旧 BP 留群）', async () => {
     prisma.project.findUnique.mockResolvedValue(mockProject({ legalBpId: 'u-old', dingtalkChatId: 'c1' }));
     prisma.project.update.mockResolvedValue(mockProject({ legalBpId: 'u-new' }));
 
     await service.transfer('p-1', 'u-new', { id: 'u-lead', role: 'legal_lead' });
 
     await new Promise((r) => setTimeout(r, 10));
-    expect(dingtalk.addMember).toHaveBeenCalledWith('c1', 'U-new');
+    expect(dingtalk.addMember).not.toHaveBeenCalled();
+    expect(prisma.outboxEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          eventType: 'dingtalk.member.add',
+          payload: { projectId: 'p-1', userId: 'u-new' },
+        }),
+      }),
+    );
   });
 
-  it('转派目标未绑定钉钉：跳过加人 + 事件记录', async () => {
+  it('转派目标未绑定钉钉：仍入队，由 Worker 记录人工处理事件', async () => {
     prisma.project.findUnique.mockResolvedValue(mockProject({ legalBpId: 'u-old', dingtalkChatId: 'c1' }));
     prisma.project.update.mockResolvedValue(mockProject({ legalBpId: 'u-new' }));
     prisma.user.findUnique.mockImplementation(async ({ where }: any) =>
@@ -230,8 +246,9 @@ describe('ProjectService 钉钉拉群链路', () => {
 
     await new Promise((r) => setTimeout(r, 10));
     expect(dingtalk.addMember).not.toHaveBeenCalled();
-    const events = prisma.projectEvent.create.mock.calls.map((c: any) => c[0].data.text);
-    expect(events.some((t: string) => t.includes('未绑定钉钉'))).toBe(true);
+    expect(prisma.outboxEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ eventType: 'dingtalk.member.add' }) }),
+    );
   });
 
   it('法务 BP 不能自行转派（P1-01）：transfer 抛 Forbidden', async () => {
@@ -253,7 +270,7 @@ describe('ProjectService 钉钉拉群链路', () => {
     expect(prisma.project.update).not.toHaveBeenCalled();
   });
 
-  it('reply 回传认领：回传人 ≠ 原 BP（但已指派）→ 触发加人（三处检测之 reply）', async () => {
+  it('reply 回传认领：回传人 ≠ 原 BP（但已指派）→ 入队补人（三处检测之 reply）', async () => {
     prisma.project.updateMany.mockResolvedValue({ count: 1 });
     // ownerId=u-bp 视为已指派给 u-bp；legalBpId 仍为 u-old → 回传后加人
     prisma.project.findUnique.mockResolvedValue(mockProject({ legalBpId: 'u-old', ownerId: 'u-bp', dingtalkChatId: 'c1', status: '待复核' }));
@@ -261,7 +278,15 @@ describe('ProjectService 钉钉拉群链路', () => {
     await service.reply('p-1', { text: '法务意见' }, { id: 'u-bp', role: 'legal_bp' });
 
     await new Promise((r) => setTimeout(r, 10));
-    expect(dingtalk.addMember).toHaveBeenCalledWith('c1', 'U-bp');
+    expect(dingtalk.addMember).not.toHaveBeenCalled();
+    expect(prisma.outboxEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          eventType: 'dingtalk.member.add',
+          payload: { projectId: 'p-1', userId: 'u-bp' },
+        }),
+      }),
+    );
   });
 
   it('reply 未指派：legal_bp 无权回传（P1-01：仅已指派给自己）', async () => {

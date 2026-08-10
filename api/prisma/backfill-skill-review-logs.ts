@@ -40,6 +40,12 @@ async function main(): Promise<void> {
         continue;
       }
       const eventId = `legacy:${s.id}:${i}`;
+      const createdAt = el.at ? new Date(String(el.at)) : new Date();
+      if (Number.isNaN(createdAt.getTime())) {
+        unparseable++;
+        bad.push(`${s.slug}#${i}: 非法时间=${String(el.at)}`);
+        continue;
+      }
       const data = {
         eventId,
         skillId: s.id,
@@ -48,15 +54,25 @@ async function main(): Promise<void> {
         toState: 'unknown',
         actorId: String(el.reviewerId ?? 'unknown'),
         reason: el.reason ? String(el.reason) : null,
-        createdAt: el.at ? new Date(String(el.at)) : new Date(),
+        createdAt,
       };
+      const existing = await prisma.skillReviewLog.findUnique({ where: { eventId }, select: { id: true } });
+      if (existing) {
+        skipped++;
+        continue;
+      }
       if (DRY_RUN) {
         created++;
         continue;
       }
-      const r = await prisma.skillReviewLog.upsert({ where: { eventId }, update: {}, create: data });
-      if (r.id) created++;
-      else skipped++;
+      try {
+        await prisma.skillReviewLog.create({ data });
+        created++;
+      } catch (e: any) {
+        // 并发执行另一份回填脚本时，唯一 eventId 竞争按已存在处理。
+        if (e?.code === 'P2002') skipped++;
+        else throw e;
+      }
     }
   }
 

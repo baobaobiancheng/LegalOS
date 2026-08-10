@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ProjectService } from '../src/modules/project/project.service';
 import { ProjectStateMachine } from '../src/modules/project/domain/project-state-machine';
 import { CreateProjectUseCase } from '../src/modules/project/application/create-project.use-case';
+import { EscalateProjectToLegalUseCase } from '../src/modules/project/application/escalate-project-to-legal.use-case';
 import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
 
 /**
@@ -84,6 +85,7 @@ describe('ProjectService.create 技能解析', () => {
       { findAll: vi.fn(), findOne: vi.fn() } as any,
       new ProjectStateMachine() as any,
       { execute: vi.fn() } as any,
+      new EscalateProjectToLegalUseCase(prisma) as any,
     );
     prisma.project.create.mockResolvedValue(mockProject());
   });

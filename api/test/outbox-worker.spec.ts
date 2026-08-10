@@ -22,7 +22,7 @@ const makePrisma = () => ({
     updateMany: vi.fn(),
     count: vi.fn(),
   },
-  project: { findUnique: vi.fn(), update: vi.fn() },
+  project: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
   user: { findUnique: vi.fn() },
   projectEvent: { create: vi.fn() },
 });
@@ -231,5 +231,29 @@ describe('OutboxWorker 钉钉建群幂等', () => {
     // 建群路径从未写 dingtalkChatId='PENDING'
     const updateCalls = prisma.project.update.mock.calls.map((c: any) => c[1]?.data?.dingtalkChatId);
     expect(updateCalls).not.toContain('PENDING');
+  });
+
+  it('补拉新 BP：由 Worker 调钉钉并更新成员快照，且事件成功', async () => {
+    outbox.claimNext.mockResolvedValue([
+      claim({
+        eventType: 'dingtalk.member.add',
+        payload: { projectId: 'p1', userId: 'bp1' },
+      }),
+    ]);
+    prisma.project.findUnique.mockResolvedValue({
+      dingtalkChatId: 'g1',
+      dingtalkMembers: '["U1"]',
+      status: '待复核',
+    });
+    prisma.user.findUnique.mockResolvedValue({ dingtalkUserId: 'B1', displayName: '法务BP' });
+
+    await worker.pollOnce();
+
+    expect(dingtalk.addMember).toHaveBeenCalledWith('g1', 'B1');
+    expect(prisma.project.updateMany).toHaveBeenCalledWith({
+      where: { id: 'p1', dingtalkMembers: '["U1"]' },
+      data: { dingtalkMembers: '["U1","B1"]' },
+    });
+    expect(outbox.markSucceeded).toHaveBeenCalledWith('e1', 'tok');
   });
 });

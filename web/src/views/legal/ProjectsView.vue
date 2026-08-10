@@ -186,6 +186,13 @@
           </div>
         </template>
 
+        <ErrorState
+          v-else-if="remote.status.value === 'error'"
+          :message="remote.error.value?.payload?.error || '工单加载失败，请重试'"
+          :request-id="remote.requestId.value"
+          :on-retry="remote.load"
+        />
+
         <!-- Empty -->
         <div
           v-else-if="!groups[activeTab]?.length"
@@ -264,11 +271,12 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { request } from '../../api/client'
+import ErrorState from '../../components/ErrorState.vue'
+import { useRemoteData } from '../../composables/useRemoteData'
 import type { ProjectListResponse, ProjectListItem } from '../../types'
 
 const router = useRouter()
 const auth = useAuthStore()
-const loading = ref(true)
 const activeTab = ref('待处理')
 
 const groups = ref<Record<string, ProjectListItem[]>>({
@@ -276,6 +284,14 @@ const groups = ref<Record<string, ProjectListItem[]>>({
 })
 
 const totalCount = ref(0)
+
+const remote = useRemoteData(async () => {
+  const data = await request<ProjectListResponse>('/projects')
+  groups.value = data.groups
+  totalCount.value = data.total
+  return data
+})
+const loading = computed(() => remote.status.value === 'loading')
 
 // 统计概览
 const stats = computed(() => [
@@ -292,14 +308,7 @@ const tabs = [
   { key: '数字分身处理', label: 'AI 处理' },
 ]
 
-onMounted(async () => {
-  try {
-    const data = await request<ProjectListResponse>('/projects')
-    groups.value = data.groups
-    totalCount.value = data.total
-  } catch {}
-  loading.value = false
-})
+onMounted(remote.load)
 
 const kindIcon = (k: string) => ({
   consult: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',

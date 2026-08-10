@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { ref, nextTick, onMounted } from 'vue'
 import { useAuthStore } from '../../stores/auth'
-import { getAccessToken, request } from '../../api/client'
+import { request, RequestError } from '../../api/client'
+import { requestStreamOrJson } from '../../api/sse'
 import { useFileUpload } from '../../composables/useFileUpload'
 import type { AttachedFile } from '../../composables/useFileUpload'
 import MarkdownContent from '../../components/MarkdownContent.vue'
 import DownloadMenu from '../../components/DownloadMenu.vue'
 import ChatInputBar from '../../components/ChatInputBar.vue'
 import BusinessSidebarLayout from '../../components/BusinessSidebarLayout.vue'
+import ErrorState from '../../components/ErrorState.vue'
 import type { Skill } from '../../types'
 import { GENERAL_SKILL } from '../../types'
 
@@ -27,12 +29,20 @@ const msgContainer = ref<HTMLElement | null>(null)
 // 交互（frontend-design 重设计）：欢迎页领域卡片选择（对话方向感），对话开始后不再显示
 const usableSkills = ref<Skill[]>([])
 const selectedSkill = ref<{ id?: string; name: string }>({ name: GENERAL_SKILL.name })
+const skillsError = ref<RequestError | null>(null)
+const lastError = ref<RequestError | null>(null)
 
-onMounted(async () => {
+const loadSkills = async () => {
   try {
     usableSkills.value = await request<Skill[]>('/skills?scope=usable')
-  } catch { usableSkills.value = [] }
-})
+    skillsError.value = null
+  } catch (error) {
+    skillsError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '咨询领域加载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  }
+}
+onMounted(loadSkills)
 
 const pickSkill = (s: { id?: string; name: string }) => {
   selectedSkill.value = s
@@ -71,68 +81,63 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
   const displayText = buildDisplayText(text, files)
 
   sending.value = true
+  lastError.value = null
   messages.value.push({ role: 'user', text: displayText, _files: files })
   scrollBottom()
 
   if (!projectId.value) {
     try {
-      const res = await fetch('/api/projects', {
-        method: 'POST', credentials: 'include',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${getAccessToken()}` },
-        body: JSON.stringify({
+      const data = await request<{ id: string; route: string; risk?: string }>('/projects', {
+        method: 'POST',
+        body: {
           kind: 'consult',
           title: text.slice(0, 50) || '文件咨询',
           input: fullInput,
           // 技能（2026-08-04）：选中兜底"通用法务咨询"时 skillId=undefined → 后端不注入（工程评审决策 #2）
           skillId: selectedSkill.value.id || undefined,
-        }),
+        },
       })
-      const data = await res.json()
       projectId.value = data.id; projectRoute.value = data.route
       if (data.route === 'legalbp') {
         messages.value.push({ _event: true, text: '系统判定 ' + data.risk + ' 风险，已创建工单并通知法务 BP' })
         upgraded.value = true
       }
-    } catch { messages.value.push({ _event: true, text: '服务异常，请稍后重试' }); sending.value = false; return }
+    } catch (error) {
+      lastError.value = error instanceof RequestError
+        ? error
+        : new RequestError({ error: '服务异常，请稍后重试', code: 'UNKNOWN', statusCode: 0 })
+      messages.value.push({ _event: true, text: lastError.value.payload.error })
+      sending.value = false
+      return
+    }
   }
 
   if (projectRoute.value === 'llm' && !upgraded.value) {
     expectingAI.value = true
     try {
-      const res = await fetch(`/api/projects/${projectId.value}/messages`, {
-        method: 'POST', credentials: 'include',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${getAccessToken()}` },
-        body: JSON.stringify({ text: fullInput, role: 'user' }),
+      let fullText = ''
+      let aiMsg: any | undefined
+      const data = await requestStreamOrJson<{ route?: string; done?: boolean; error?: boolean; text?: string }>(`/projects/${projectId.value}/messages`, {
+        method: 'POST',
+        body: { text: fullInput, role: 'user' },
+      }, (d) => {
+        if (d.text || d.error) {
+          aiMsg ??= { id: 'streaming', role: 'assistant', text: '' }
+          if (messages.value[messages.value.length - 1] !== aiMsg) messages.value.push(aiMsg)
+        }
+        if (d.text) { fullText += String(d.text); aiMsg!.text = fullText; scrollBottom() }
+        if (d.error) aiMsg!.text = '⚠️ AI 答复生成失败，已通知法务BP处理'
       })
-      const ct = res.headers.get('content-type') || ''
-      if (ct.includes('text/event-stream')) {
-        let fullText = ''
-        const aiMsg: any = { role: 'assistant', text: '' }
-        messages.value.push(aiMsg); scrollBottom()
-        const reader = res.body?.getReader()
-        const decoder = new TextDecoder('utf-8', { fatal: false })
-        if (reader) {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            for (const line of decoder.decode(value, { stream: true }).split('\n')) {
-              if (!line.startsWith('data: ')) continue
-              try {
-                const d = JSON.parse(line.slice(6))
-                if (d.done || d.error) break
-                if (d.text) { fullText += d.text; aiMsg.text = fullText; scrollBottom() }
-              } catch {}
-            }
-          }
-        }
-      } else {
-        const d = await res.json()
-        if (d.route === 'legalbp') {
-          messages.value.push({ _event: true, text: '追问触发风险升级，已通知法务 BP 人工处理' })
-          upgraded.value = true; projectRoute.value = 'legalbp'
-        }
+      if (data?.route === 'legalbp') {
+        messages.value.push({ _event: true, text: '追问触发风险升级，已通知法务 BP 人工处理' })
+        upgraded.value = true; projectRoute.value = 'legalbp'
       }
-    } catch { messages.value.push({ _event: true, text: '消息发送失败，请重试' }) }
+    } catch (error) {
+      lastError.value = error instanceof RequestError
+        ? error
+        : new RequestError({ error: '消息发送失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+      messages.value.push({ _event: true, text: lastError.value.payload.error })
+    }
     expectingAI.value = false
   } else {
     messages.value.push({ _event: true, text: '已收到，法务 BP 处理后将回传至此处' })
@@ -144,16 +149,20 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
 const handleUpgrade = async () => {
   if (upgrading.value || !projectId.value) return
   upgrading.value = true
+  lastError.value = null
   try {
-    await fetch(`/api/projects/${projectId.value}/messages`, {
-      method: 'POST', credentials: 'include',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${getAccessToken()}` },
-      body: JSON.stringify({ text: '申请升级为人工处理', role: 'user' }),
+    await request(`/projects/${projectId.value}/messages`, {
+      method: 'POST',
+      body: { text: '申请升级为人工处理', role: 'user' },
     })
     upgraded.value = true; projectRoute.value = 'legalbp'
     messages.value.push({ _event: true, text: '已申请升级人工处理，法务 BP 将尽快跟进' })
     scrollBottom()
-  } catch {}
+  } catch (error) {
+    lastError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '升级人工处理失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  }
   upgrading.value = false
 }
 
@@ -260,6 +269,13 @@ const handleUpgrade = async () => {
       </div>
     </div>
 
+    <ErrorState
+      v-if="skillsError"
+      :message="skillsError.payload.error"
+      :request-id="skillsError.payload.requestId"
+      :on-retry="loadSkills"
+    />
+
     <div
       ref="msgContainer"
       class="msg-scroll"
@@ -335,6 +351,11 @@ const handleUpgrade = async () => {
       v-if="!upgraded"
       :disabled="sending"
       @send="handleSend"
+    />
+    <ErrorState
+      v-if="lastError"
+      :message="lastError.payload.error"
+      :request-id="lastError.payload.requestId"
     />
   </BusinessSidebarLayout>
 </template>

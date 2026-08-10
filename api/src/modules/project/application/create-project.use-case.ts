@@ -53,7 +53,13 @@ export function dingtalkGroupOutboxDedupKey(projectId: string): string {
   return `project:${projectId}:dingtalk-group:create:v1`;
 }
 
+/** 新 BP 加入已有群的稳定去重键：同一工单/BP 只保留一个外部副作用事件。 */
+export function dingtalkMemberOutboxDedupKey(projectId: string, userId: string): string {
+  return `project:${projectId}:dingtalk-member:add:${userId}:v1`;
+}
+
 export const OUTBOX_EVENT_DINGTALK_GROUP_CREATE = 'dingtalk.group.create';
+export const OUTBOX_EVENT_DINGTALK_MEMBER_ADD = 'dingtalk.member.add';
 
 @Injectable()
 export class CreateProjectUseCase {
@@ -67,19 +73,10 @@ export class CreateProjectUseCase {
    * - created=false：命中幂等键，返回已存在工单（已校验创建者一致）
    */
   async execute(cmd: CreateProjectCommand): Promise<{ project: any; created: boolean }> {
-    const include = {
-      creator: { select: { id: true, username: true, displayName: true, role: true } },
-      owner: { select: { id: true, username: true, displayName: true, role: true } },
-    };
-
     // 0. 幂等预查（P1-03）：同一 idempotencyKey 只创建一个工单
     if (cmd.idempotencyKey) {
-      const existing = await this.prisma.project.findUnique({
-        where: { idempotencyKey: cmd.idempotencyKey },
-        include,
-      });
+      const existing = await this.findExistingByIdempotencyKey(cmd.idempotencyKey, cmd.creatorId);
       if (existing) {
-        this.assertCreatorConsistency(existing, cmd.creatorId);
         return { project: existing, created: false };
       }
     }
@@ -105,7 +102,7 @@ export class CreateProjectUseCase {
             contractTemplateSlug: cmd.contractTemplateSlug ?? null,
             extra: cmd.extra ?? Prisma.JsonNull,
           },
-          include,
+          include: this.projectInclude,
         });
 
         // 首条消息（role 由服务端派生：用户输入恒为 'user'）
@@ -155,18 +152,32 @@ export class CreateProjectUseCase {
     } catch (e: any) {
       // 并发撞幂等键唯一约束（P2002）→ 重新读取返回已存在工单（先校验创建者）
       if (cmd.idempotencyKey && e?.code === 'P2002') {
-        const existing = await this.prisma.project.findUnique({
-          where: { idempotencyKey: cmd.idempotencyKey },
-          include,
-        });
+        const existing = await this.findExistingByIdempotencyKey(cmd.idempotencyKey, cmd.creatorId);
         if (existing) {
-          this.assertCreatorConsistency(existing, cmd.creatorId);
           return { project: existing, created: false };
         }
       }
       throw e;
     }
   }
+
+  /**
+   * 幂等重试的轻量预查。调用方应在任何风险模型、外部副作用或流式 AI
+   * 启动之前调用，避免同一请求重试再次消耗模型额度或产生第二个任务。
+   */
+  async findExistingByIdempotencyKey(idempotencyKey: string, creatorId: string): Promise<any | null> {
+    const existing = await this.prisma.project.findUnique({
+      where: { idempotencyKey },
+      include: this.projectInclude,
+    });
+    if (existing) this.assertCreatorConsistency(existing, creatorId);
+    return existing;
+  }
+
+  private readonly projectInclude = {
+    creator: { select: { id: true, username: true, displayName: true, role: true } },
+    owner: { select: { id: true, username: true, displayName: true, role: true } },
+  } as const;
 
   /**
    * 幂等键碰撞时的创建者一致性校验：不同用户碰撞同一键返回 409，不能泄露他人工单。

@@ -14,7 +14,7 @@
     "lint": "eslint \"{src,test}/**/*.ts\" --max-warnings=0",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:unit": "vitest run --exclude \"test/**/*.integration.spec.ts\"",
-    "test:integration": "vitest run \"test/**/*.integration.spec.ts\""
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"

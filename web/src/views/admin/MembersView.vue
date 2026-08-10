@@ -120,8 +120,22 @@
       </header>
 
       <div class="app-content animate-in">
+        <ErrorState
+          v-if="loadError"
+          :message="loadError.payload.error"
+          :request-id="loadError.payload.requestId"
+          :on-retry="loadAll"
+        />
+        <ErrorState
+          v-if="actionError"
+          :message="actionError.payload.error"
+          :request-id="actionError.payload.requestId"
+        />
         <!-- 同步结果 + 失败计数 -->
-        <div class="stats-row">
+        <div
+          v-if="!loadError"
+          class="stats-row"
+        >
           <div class="stat-card glass-card">
             <span class="stat-value">{{ syncResult?.total ?? '—' }}</span>
             <span class="stat-label">通讯录成员</span>
@@ -140,14 +154,17 @@
           </div>
         </div>
         <p
-          v-if="syncResult?.ambiguous?.length"
+          v-if="!loadError && syncResult?.ambiguous?.length"
           class="warn-line"
         >
           ⚠️ 重名未自动绑定（请在下方手动绑定）：{{ syncResult.ambiguous.join('、') }}
         </p>
 
         <!-- 系统用户绑定表 -->
-        <div class="panel glass-card">
+        <div
+          v-if="!loadError"
+          class="panel glass-card"
+        >
           <div class="panel-head">
             <h3 class="panel-title">
               系统用户 × 钉钉绑定
@@ -201,7 +218,10 @@
         </div>
 
         <!-- BP 领域映射 -->
-        <div class="panel glass-card">
+        <div
+          v-if="!loadError"
+          class="panel glass-card"
+        >
           <div class="panel-head">
             <h3 class="panel-title">
               法务 BP 工作范围（领域 → 拉群匹配）
@@ -261,6 +281,12 @@
               @input="searchContacts"
             >
             <div class="contact-list">
+              <ErrorState
+                v-if="contactError"
+                :message="contactError.payload.error"
+                :request-id="contactError.payload.requestId"
+                :on-retry="searchContacts"
+              />
               <button
                 v-for="c in contacts"
                 :key="c.userId"
@@ -297,7 +323,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
-import { request } from '../../api/client'
+import { RequestError, request } from '../../api/client'
+import ErrorState from '../../components/ErrorState.vue'
 
 /**
  * 管理端成员管理（2026-08-05 钉钉拉群模块）：
@@ -307,6 +334,8 @@ const router = useRouter()
 const auth = useAuthStore()
 
 const syncing = ref(false)
+const loadError = ref<RequestError | null>(null)
+const actionError = ref<RequestError | null>(null)
 const syncResult = ref<{ total: number; autoBound: number; ambiguous: string[] } | null>(null)
 const failures = ref<number | null>(null)
 
@@ -317,15 +346,22 @@ const bpUsers = ref<Array<{ id: string; displayName: string; bound: boolean; dom
 const bpDomains = ref<string[]>([])
 
 const loadAll = async () => {
-  const [userData, bpData, failData] = await Promise.all([
-    request<any>('/admin/members/users'),
-    request<any>('/admin/members/bp-domains'),
-    request<any>('/admin/members/failures'),
-  ])
-  users.value = userData.items || userData || []
-  bpUsers.value = bpData.users || []
-  bpDomains.value = bpData.domains || []
-  failures.value = failData.noGroup ?? null
+  try {
+    const [userData, bpData, failData] = await Promise.all([
+      request<any>('/admin/members/users'),
+      request<any>('/admin/members/bp-domains'),
+      request<any>('/admin/members/failures'),
+    ])
+    users.value = userData.items || userData || []
+    bpUsers.value = bpData.users || []
+    bpDomains.value = bpData.domains || []
+    failures.value = failData.noGroup ?? null
+    loadError.value = null
+  } catch (error) {
+    loadError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '成员数据加载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  }
 }
 
 onMounted(loadAll)
@@ -342,11 +378,14 @@ const roleLabel = (r: string) => ({ legal_bp: '法务 BP', legal_lead: '法务�
 
 const doSync = async () => {
   syncing.value = true
+  actionError.value = null
   try {
     syncResult.value = await request<any>('/admin/members/sync', { method: 'POST' })
     await loadAll()
-  } catch (e: any) {
-    alert(e?.message || '同步失败')
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '同步失败，请重试', code: 'UNKNOWN', statusCode: 0 })
   } finally {
     syncing.value = false
   }
@@ -356,6 +395,7 @@ const doSync = async () => {
 const bindTarget = ref<{ id: string; displayName: string } | null>(null)
 const contactKeyword = ref('')
 const contacts = ref<Array<{ userId: string; name: string; mobile?: string }>>([])
+const contactError = ref<RequestError | null>(null)
 
 const openBind = (u: { id: string; displayName: string }) => {
   bindTarget.value = u
@@ -364,10 +404,16 @@ const openBind = (u: { id: string; displayName: string }) => {
 }
 
 const searchContacts = async () => {
-  if (!contactKeyword.value.trim()) { contacts.value = []; return }
+  if (!contactKeyword.value.trim()) { contacts.value = []; contactError.value = null; return }
   try {
     contacts.value = await request<any>(`/admin/members/contacts?keyword=${encodeURIComponent(contactKeyword.value.trim())}`)
-  } catch { contacts.value = [] }
+    contactError.value = null
+  } catch (error) {
+    contacts.value = []
+    contactError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '通讯录搜索失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  }
 }
 
 const doBind = async (c: { userId: string }) => {
@@ -375,19 +421,27 @@ const doBind = async (c: { userId: string }) => {
   try {
     await request('/admin/members/bind', {
       method: 'POST',
-      body: JSON.stringify({ userId: bindTarget.value.id, dingtalkUserId: c.userId }),
+      body: { userId: bindTarget.value.id, dingtalkUserId: c.userId },
     })
     bindTarget.value = null
     await loadAll()
-  } catch (e: any) {
-    alert(e?.message || '绑定失败')
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '绑定失败，请重试', code: 'UNKNOWN', statusCode: 0 })
   }
 }
 
 const unbind = async (u: { id: string; displayName: string }) => {
   if (!confirm(`确认解绑 ${u.displayName} 的钉钉绑定？`)) return
-  await request('/admin/members/unbind', { method: 'POST', body: JSON.stringify({ userId: u.id }) })
-  await loadAll()
+  try {
+    await request('/admin/members/unbind', { method: 'POST', body: { userId: u.id } })
+    await loadAll()
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '解绑失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  }
 }
 
 // ── BP 领域映射 ──
@@ -395,14 +449,17 @@ const toggling = ref(false)
 const toggleDomain = async (u: { id: string }, d: string, enabled: boolean) => {
   if (toggling.value) return
   toggling.value = true
+  actionError.value = null
   try {
     await request('/admin/members/bp-domains', {
       method: 'PUT',
-      body: JSON.stringify({ userId: u.id, domain: d, enabled }),
+      body: { userId: u.id, domain: d, enabled },
     })
     await loadAll()
-  } catch (e: any) {
-    alert(e?.message || '配置失败')
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '配置失败，请重试', code: 'UNKNOWN', statusCode: 0 })
   } finally {
     toggling.value = false
   }

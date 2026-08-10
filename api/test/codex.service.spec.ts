@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, rmSync } from 'fs';
 
 /**
  * Codex 安全加固单测（2026-08-09 P0-01）+ 并发队列（P1-02）：
@@ -168,5 +168,37 @@ describe('CodexService 本地模式（默认）', () => {
     const env = spawnMock.mock.calls[0][2].env as NodeJS.ProcessEnv;
     expect(env.DATABASE_URL).toBeUndefined();
     expect(env.JWT_SECRET).toBeUndefined();
+  });
+
+  it('execute 超时：先终止并等待 close，不提前释放队列槽位', async () => {
+    const svc = makeService(makeConfig({ AI_EXECUTION_ENABLED: 'true' }));
+    const promise = svc.execute('超时测试', { timeout: 10 });
+    await new Promise((r) => setTimeout(r, 30));
+
+    const child = spawnMock.mock.results[0].value as any;
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    // 非流式调用在 close 前不能 reject，否则同 session 的下一任务会提前启动。
+    let settled = false;
+    void promise.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise((r) => setImmediate(r));
+    expect(settled).toBe(false);
+
+    child.emit('close', null);
+    await expect(promise).rejects.toThrow('timed out');
+  });
+
+  it('流结束后同时回收 execution 目录和空 session 父目录', async () => {
+    const workspace = join(process.cwd(), '.tmp', `codex-parent-cleanup-${Date.now()}`);
+    const svc = makeService(makeConfig({
+      AI_EXECUTION_ENABLED: 'true',
+      CODEX_WORKSPACE: workspace,
+    }));
+
+    const stream = await svc.executeStream('目录回收测试', { sessionId: 'session-cleanup' });
+    (stream as any).emit('close', 0);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(existsSync(join(workspace, 'session-cleanup'))).toBe(false);
+    rmSync(workspace, { recursive: true, force: true });
   });
 });

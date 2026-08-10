@@ -13,10 +13,15 @@ import {
   existsSync,
   statSync,
   createReadStream,
+  closeSync,
+  openSync,
+  readSync,
   unlinkSync,
+  mkdirSync,
+  renameSync,
 } from 'fs';
 import { join, extname } from 'path';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import * as mammoth from 'mammoth';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CodexService } from '../../common/services/codex.service';
@@ -75,7 +80,39 @@ export class ContractService {
     dto: CreateContractDto,
     actor: ProjectActor,
     signal?: AbortSignal,
-  ): Promise<{ projectId: string; stream: ChildProcess }> {
+  ): Promise<{
+    projectId: string;
+    stream?: ChildProcess;
+    reused?: boolean;
+    status?: string;
+    generationRunId?: string;
+    documentId?: string | null;
+  }> {
+    // Project.idempotencyKey 只保护“建单”；生成流还必须有自己的唯一运行记录。
+    // 否则两个请求可能只落一个 Project，却各自启动一条 Codex 流。
+    if (!dto.projectId && dto.idempotencyKey) {
+      const existing = await this.createProjectUseCase.findExistingByIdempotencyKey(
+        dto.idempotencyKey,
+        actor.id,
+      );
+      if (existing) {
+        this.accessPolicy.assertCan(actor, ProjectAction.SendMessage, existing);
+        const requestKey = this.buildGenerationRequestKey(dto, existing.id).requestKey;
+        const existingRun = await this.prisma.contractGenerationRun.findUnique({
+          where: { requestKey },
+        });
+        // 竞态窗口：首个请求可能刚提交 Project、尚未创建 GenerationRun。
+        // 此时只返回处理中，不得再启动第二条流；首个请求会继续完成自己的 claim。
+        return {
+          projectId: existing.id,
+          reused: true,
+          status: existingRun?.status === 'succeeded' ? existing.status : existing.status,
+          generationRunId: existingRun?.id,
+          documentId: existingRun?.documentId,
+        };
+      }
+    }
+
     const template = await this.templateService.findBySlug(dto.templateSlug);
     const elements = dto.elements || {};
 
@@ -85,19 +122,36 @@ export class ContractService {
     }
 
     let projectId: string;
+    let existingProject: any | null = null;
+    let createdProject = false;
     if (dto.projectId) {
-      const existing = await this.prisma.project.findUnique({ where: { id: dto.projectId } });
-      if (!existing) throw new NotFoundException('工单不存在');
-      this.accessPolicy.assertCan(actor, ProjectAction.SendMessage, existing);
-      if (existing.route !== 'llm') {
+      existingProject = await this.prisma.project.findUnique({ where: { id: dto.projectId } });
+      if (!existingProject) throw new NotFoundException('工单不存在');
+      this.accessPolicy.assertCan(actor, ProjectAction.SendMessage, existingProject);
+      if (existingProject.route !== 'llm') {
         throw new ConflictException('该工单已进入法务流程，无法继续生成'); // 升级守卫
       }
-      projectId = existing.id;
-      await this.prisma.projectMessage.create({
-        data: { projectId, role: 'user', text: this.buildElementsText(elements) },
+      projectId = existingProject.id;
+
+      const candidateRequestKey = this.buildGenerationRequestKey(dto, projectId).requestKey;
+      const existingGenerationRun = await this.prisma.contractGenerationRun.findUnique({
+        where: { requestKey: candidateRequestKey },
       });
+      // 已有处理中/已完成项目的同一请求是幂等重试，不得追加用户消息或重新启动 Codex。
+      // 已完成项目若使用不同要素指纹，则允许生成新版本；版本由 ContractDocument 唯一约束保护。
+      if (['分析中', '待复核', '已回传'].includes(existingProject.status)) {
+        if (existingGenerationRun || existingProject.status === '分析中') {
+          return {
+            projectId,
+            reused: true,
+            status: existingProject.status,
+            generationRunId: existingGenerationRun?.id,
+            documentId: existingGenerationRun?.documentId,
+          };
+        }
+      }
     } else {
-      const { project } = await this.createProjectUseCase.execute({
+      const { project, created } = await this.createProjectUseCase.execute({
         kind: 'contract',
         title: `合同草稿·${template.name}`,
         input: this.buildElementsText(elements),
@@ -110,27 +164,87 @@ export class ContractService {
         events: [this.formatTime() + ' · AI 正在生成合同草稿…'],
       });
       projectId = project.id;
+      createdProject = created;
+      if (!created) {
+        const requestKey = this.buildGenerationRequestKey(dto, projectId).requestKey;
+        const existingRun = await this.prisma.contractGenerationRun.findUnique({
+          where: { requestKey },
+        });
+        return {
+          projectId,
+          reused: true,
+          status: project.status,
+          generationRunId: existingRun?.id,
+          documentId: existingRun?.documentId,
+        };
+      }
+    }
+
+    const { requestKey, elementsHash } = this.buildGenerationRequestKey(dto, projectId);
+    const generationRun = await this.claimGenerationRun(
+      projectId,
+      requestKey,
+      dto.templateSlug,
+      elementsHash,
+    );
+    if (!generationRun.claimed) {
+      return {
+        projectId,
+        reused: true,
+        status: generationRun.run.status === 'succeeded'
+          ? (existingProject?.status ?? '待复核')
+          : (existingProject?.status ?? '分析中'),
+        generationRunId: generationRun.run.id,
+        documentId: generationRun.run.documentId,
+      };
+    }
+
+    // 只有真正 claim 到 GenerationRun 的请求才能写首条续生成消息和启动 Codex。
+    if (!createdProject && dto.projectId) {
+      await this.prisma.projectMessage.create({
+        data: { projectId, role: 'user', text: this.buildElementsText(elements) },
+      });
     }
 
     const prompt = this.buildDraftPrompt(template.prompt, elements, template.slug, template.name);
     // 合同草稿远长于咨询回复：timeout 放宽到 600s（实测超时根因，2026-08-03）
-    const stream = await this.codexService.executeStream(prompt, {
-      timeout: 600_000,
-      sessionId: projectId,
-      signal,
-    });
+    const generationRunId = generationRun.run.id;
+    let stream: ChildProcess;
+    try {
+      stream = await this.codexService.executeStream(prompt, {
+        timeout: 600_000,
+        sessionId: projectId,
+        signal,
+      });
+    } catch (error) {
+      await this.prisma.contractGenerationRun.update({
+        where: { id: generationRunId },
+        data: {
+          status: 'failed',
+          completedAt: new Date(),
+          errorMessage: String((error as Error)?.message ?? error).slice(0, 200),
+        },
+      }).catch(() => undefined);
+      throw error;
+    }
 
     let fullText = '';
     stream.stdout?.on('data', (chunk: Buffer) => { fullText += chunk.toString(); });
 
     stream.on('close', async (code) => {
       // 连接断开主动取消 → 不写失败状态（刷新 ≠ 生成失败）
-      if ((stream as any).__cancelled) return;
+      if ((stream as any).__cancelled) {
+        await this.prisma.contractGenerationRun.update({
+          where: { id: generationRunId },
+          data: { status: 'cancelled', completedAt: new Date(), errorMessage: '合同生成已取消' },
+        }).catch(() => undefined);
+        return;
+      }
       if (code === 0 && fullText.trim()) {
         try {
           await this.prisma.$transaction(async (tx) => {
             // AI 草稿 → ContractDocument(type=draft, version=N)；消息仅供 UI，不是审查数据源
-            await this.createContractDocument(tx, {
+            const document = await this.createContractDocument(tx, {
               projectId,
               documentType: 'draft',
               content: fullText.trim(),
@@ -142,6 +256,15 @@ export class ContractService {
             await tx.project.update({
               where: { id: projectId },
               data: { status: '待复核', result: fullText.trim() },
+            });
+            await tx.contractGenerationRun.update({
+              where: { id: generationRunId },
+              data: {
+                status: 'succeeded',
+                documentId: document.id,
+                completedAt: new Date(),
+                errorMessage: null,
+              },
             });
           });
           await this.addEvent(projectId, this.formatTime() + ' · 合同草稿已生成');
@@ -157,6 +280,10 @@ export class ContractService {
       } else {
         this.logger.error(`合同草稿生成失败，code=${code}`);
         try {
+          await this.prisma.contractGenerationRun.update({
+            where: { id: generationRunId },
+            data: { status: 'failed', completedAt: new Date(), errorMessage: 'Codex 合同生成失败或超时' },
+          });
           await this.prisma.project.update({
             where: { id: projectId },
             data: { status: '待处理', isFailed: true },
@@ -168,7 +295,51 @@ export class ContractService {
       }
     });
 
-    return { projectId, stream };
+    return { projectId, stream, generationRunId };
+  }
+
+  /**
+   * 生成请求键：显式 idempotencyKey 优先；已有工单无 key 时用模板+要素指纹。
+   * 同一 key 只允许一条运行流；不同指纹可以安全生成新 ContractDocument 版本。
+   */
+  private buildGenerationRequestKey(dto: CreateContractDto, projectId: string) {
+    const canonicalElements = JSON.stringify(
+      Object.entries(dto.elements ?? {})
+        .filter(([, value]) => typeof value === 'string' && value.trim())
+        .sort(([a], [b]) => a.localeCompare(b)),
+    );
+    const elementsHash = createHash('sha256').update(canonicalElements).digest('hex');
+    const requestKey = dto.idempotencyKey
+      ? `contract:idempotency:${dto.idempotencyKey}`
+      : `contract:project:${projectId}:template:${dto.templateSlug}:elements:${elementsHash}`;
+    return { requestKey, elementsHash };
+  }
+
+  /** 原子 claim：P2002 竞争者读取既有 running/succeeded 记录，不得再 spawn。 */
+  private async claimGenerationRun(
+    projectId: string,
+    requestKey: string,
+    templateSlug: string,
+    elementsHash: string,
+  ): Promise<{ run: any; claimed: boolean }> {
+    try {
+      const run = await this.prisma.contractGenerationRun.create({
+        data: {
+          projectId,
+          requestKey,
+          templateSlug,
+          elementsHash,
+          status: 'running',
+          startedAt: new Date(),
+        },
+      });
+      return { run, claimed: true };
+    } catch (error: any) {
+      if (error?.code !== 'P2002') throw error;
+      const run = await this.prisma.contractGenerationRun.findUnique({ where: { requestKey } });
+      if (!run) throw error;
+      return { run, claimed: false };
+    }
   }
 
   // ═══════════════════════════════════════════
@@ -188,7 +359,7 @@ export class ContractService {
       projectId,
       route: 'legalbp',
       status: '待复核',
-      eventTexts: [this.formatTime() + ' · 已发起法务审阅，已提交法务处理，通知排队中'],
+      eventTexts: [this.formatTime() + ' · 已发起法务审阅，已提交法务处理，等待 BP 分配'],
     });
     if (!upgraded) throw new ConflictException('该工单已进入法务流程');
 
@@ -342,7 +513,7 @@ export class ContractService {
   // 附件（上传 / 列表 / 下载）
   // ═══════════════════════════════════════════
 
-  /** 上传合同附件（multer diskStorage 已落盘到 file.path；统一 Policy 校验） */
+  /** 上传合同附件（先落 staging，Policy 通过后再移动到项目目录，P1-06） */
   async uploadFile(
     projectId: string,
     file: Express.Multer.File,
@@ -351,8 +522,16 @@ export class ContractService {
   ) {
     if (!file) throw new BadRequestException('未收到文件');
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
-    if (!project) throw new NotFoundException('工单不存在');
-    this.accessPolicy.assertCan(actor, ProjectAction.ManageFile, project);
+    if (!project) {
+      this.tryCleanup(file.path);
+      throw new NotFoundException('工单不存在');
+    }
+    try {
+      this.accessPolicy.assertCan(actor, ProjectAction.ManageFile, project);
+    } catch (e) {
+      this.tryCleanup(file.path);
+      throw e;
+    }
 
     // 类型白名单（不信任 mimetype，工程评审决策 #6）
     const ext = extname(file.originalname).toLowerCase();
@@ -365,9 +544,29 @@ export class ContractService {
       this.tryCleanup(file.path);
       throw new BadRequestException('文件超过 20MB 限制');
     }
+    try {
+      this.assertFileSignature(file.path, ext);
+    } catch (e) {
+      this.tryCleanup(file.path);
+      throw e;
+    }
     if (kind !== 'revised' && kind !== 'final') {
       this.tryCleanup(file.path);
       throw new BadRequestException('kind 仅支持 revised / final');
+    }
+
+    const storedName = file.filename || `${randomUUID()}${ext}`;
+    const projectDir = join(this.storageDir, projectId);
+    const finalPath = join(projectDir, storedName);
+    try {
+      // file.path 仍位于 staging；只有完成对象级鉴权和输入校验后才进入
+      // projectId 目录，避免未授权请求先创建/污染业务目录。
+      mkdirSync(projectDir, { recursive: true });
+      renameSync(file.path, finalPath);
+    } catch (e) {
+      this.tryCleanup(file.path);
+      this.logger.error(`附件移动到正式目录失败：${e}`);
+      throw new InternalServerErrorException('附件保存失败');
     }
 
     let record;
@@ -377,14 +576,14 @@ export class ContractService {
           projectId,
           kind,
           originalName: file.originalname,
-          storedName: file.filename || `${randomUUID()}${ext}`,
+          storedName,
           mimeType: file.mimetype,
           size: file.size,
           uploadedBy: actor.id,
         },
       });
     } catch (e) {
-      this.tryCleanup(file.path);
+      this.tryCleanup(finalPath);
       this.logger.error(`附件记录落库失败：${e}`);
       throw new InternalServerErrorException('附件保存失败');
     }
@@ -394,7 +593,7 @@ export class ContractService {
     let textExtracted = false;
     if ((kind === 'revised' || kind === 'final') && ext === '.docx') {
       try {
-        const result = await mammoth.extractRawText({ path: file.path });
+        const result = await mammoth.extractRawText({ path: finalPath });
         const text = result.value.trim();
         if (text) {
           textExtracted = true;
@@ -613,6 +812,36 @@ ${text}`;
 
   private tryCleanup(path?: string) {
     if (path) { try { unlinkSync(path); } catch {} }
+  }
+
+  /**
+   * 校验常见文件头，避免仅凭扩展名把伪装的二进制文件送入后续解析链路。
+   * 文本格式只拒绝明显的二进制 NUL；DOCX/PDF 必须匹配 ZIP/PDF 文件签名。
+   */
+  private assertFileSignature(filePath: string, ext: string): void {
+    const fd = openSync(filePath, 'r');
+    const buffer = Buffer.alloc(4096);
+    let bytesRead = 0;
+    try {
+      bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
+    } finally {
+      closeSync(fd);
+    }
+    const sample = buffer.subarray(0, bytesRead);
+    const isPdf = sample.subarray(0, 5).toString('ascii') === '%PDF-';
+    const isZip = sample.length >= 4
+      && sample[0] === 0x50
+      && sample[1] === 0x4b
+      && (sample[2] === 0x03 || sample[2] === 0x05 || sample[2] === 0x07)
+      && (sample[3] === 0x04 || sample[3] === 0x06 || sample[3] === 0x08);
+    const hasNul = sample.includes(0);
+
+    const valid = ext === '.pdf'
+      ? isPdf
+      : ext === '.docx'
+        ? isZip
+        : !hasNul;
+    if (!valid) throw new BadRequestException('文件内容与扩展名不匹配');
   }
 
   private async addEvent(projectId: string, text: string) {

@@ -24,17 +24,17 @@ import { Role } from '@prisma/client';
 import { ProjectActor } from '../project/domain/project-access.types';
 
 /**
- * multer diskStorage：文件直接落盘到 storage/contracts/{projectId}/，不占内存
- * （NestJS FileInterceptor 默认 memoryStorage 需显式覆盖，工程评审决策 #6）。
+ * multer diskStorage：先落盘到 storage/contracts/.staging/，不占内存。
+ * 不能在鉴权前写入项目目录，正式目录移动由 ContractService 在 Policy
+ * 校验通过后完成（P1-06）。
  * 文件名用 uuid+扩展名，避免路径穿越与中文文件名问题。
  */
 const storageDir = process.env.CONTRACT_STORAGE_DIR
   || join(process.cwd(), 'storage', 'contracts');
 
 const contractStorage = multer.diskStorage({
-  destination: (req, _file, cb) => {
-    const projectId = (req.params as any).id;
-    const dir = join(storageDir, projectId || 'tmp');
+  destination: (_req, _file, cb) => {
+    const dir = join(storageDir, '.staging');
     mkdirSync(dir, { recursive: true });
     cb(null, dir);
   },

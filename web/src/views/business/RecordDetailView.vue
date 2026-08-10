@@ -2,13 +2,15 @@
 import { ref, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
-import { request } from '../../api/client'
+import { RequestError, request } from '../../api/client'
+import { requestStreamOrJson } from '../../api/sse'
 import { useFileUpload } from '../../composables/useFileUpload'
 import type { AttachedFile } from '../../composables/useFileUpload'
 import MarkdownContent from '../../components/MarkdownContent.vue'
 import DownloadMenu from '../../components/DownloadMenu.vue'
 import ChatInputBar from '../../components/ChatInputBar.vue'
 import BusinessSidebarLayout from '../../components/BusinessSidebarLayout.vue'
+import ErrorState from '../../components/ErrorState.vue'
 import type { ContractDocStyle } from '../../utils/markdown-to-docx'
 import type { ProjectDetail, MessageDto, EventDto, ContractTemplate } from '../../types'
 
@@ -23,6 +25,8 @@ const templateStyle = ref<ContractDocStyle | undefined>()
 const sending = ref(false)
 const streaming = ref('')
 const loading = ref(true)
+const loadError = ref<RequestError | null>(null)
+const actionError = ref<RequestError | null>(null)
 const id = route.params.id as string
 
 onMounted(async () => {
@@ -34,8 +38,16 @@ onMounted(async () => {
       try {
         const templates = await request<ContractTemplate[]>('/contract-templates')
         templateStyle.value = templates.find(t => t.slug === data.contractTemplateSlug)?.style
-      } catch {}
+      } catch (error) {
+        actionError.value = error instanceof RequestError
+          ? error
+          : new RequestError({ error: '合同模板样式加载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+      }
     }
+  } catch (error) {
+    loadError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '记录加载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
   } finally { loading.value = false }
 })
 
@@ -57,47 +69,34 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
   const fullInput = buildFullInput(text, files)
   const displayText = buildDisplayText(text, files)
   sending.value = true
+  actionError.value = null
 
   messages.value.push({ id: 'tmp-' + Date.now(), role: 'user', text: displayText, createdAt: new Date().toISOString() } as any)
   scrollBottom()
 
   try {
-    const { getAccessToken } = await import('../../api/client')
-    const res = await fetch(`/api/projects/${id}/messages`, {
-      method: 'POST', credentials: 'include',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${getAccessToken()}` },
-      body: JSON.stringify({ text: fullInput, role: 'user' }),
+    streaming.value = ''
+    let aiMsg: any | undefined
+    const data = await requestStreamOrJson<{ route?: string; done?: boolean; error?: boolean; text?: string }>(`/projects/${id}/messages`, {
+      method: 'POST',
+      body: { text: fullInput, role: 'user' },
+    }, (d) => {
+      if (d.done === true) void refreshMessages()
+      if (d.error === true || typeof d.text === 'string') {
+        aiMsg ??= { id: 'streaming', role: 'assistant', text: '', createdAt: new Date().toISOString() }
+        if (messages.value[messages.value.length - 1] !== aiMsg) messages.value.push(aiMsg)
+      }
+      if (d.error === true) aiMsg!.text = '⚠️ AI 答复生成失败，已通知法务BP处理'
+      else if (typeof d.text === 'string') { streaming.value += d.text; aiMsg!.text = streaming.value; scrollBottom() }
     })
-    const ct = res.headers.get('content-type') || ''
-
-    if (ct.includes('text/event-stream')) {
-      streaming.value = ''
-      const reader = res.body?.getReader()
-      const decoder = new TextDecoder('utf-8', { fatal: false })
-      if (!reader) return
-      const aiMsg: any = { id: 'streaming', role: 'assistant', text: '', createdAt: new Date().toISOString() }
-      messages.value.push(aiMsg); scrollBottom()
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        for (const line of decoder.decode(value, { stream: true }).split('\n')) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const d = JSON.parse(line.slice(6))
-            if (d.done) { refreshMessages() }
-            else if (d.error) { aiMsg.text = '⚠️ AI 答复生成失败，已通知法务BP处理' }
-            else if (d.text) { streaming.value += d.text; aiMsg.text = streaming.value; scrollBottom() }
-          } catch {}
-        }
-      }
-    } else {
-      const d = await res.json()
-      if (d.route === 'legalbp' || !res.ok) {
-        messages.value.push({ id: 'ev-' + Date.now(), _event: true, text: '风险升级，已通知法务 BP 人工处理', createdAt: new Date().toISOString() } as any)
-        scrollBottom()
-      }
+    if (data?.route === 'legalbp') {
+      messages.value.push({ id: 'ev-' + Date.now(), _event: true, text: '风险升级，已通知法务 BP 人工处理', createdAt: new Date().toISOString() } as any)
+      scrollBottom()
     }
-  } catch {
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '消息发送失败，请重试', code: 'UNKNOWN', statusCode: 0 })
     messages.value.push({ id: 'err-' + Date.now(), _event: true, text: '消息发送失败，请重试', createdAt: new Date().toISOString() } as any)
   } finally { sending.value = false; streaming.value = '' }
 }
@@ -106,7 +105,11 @@ const refreshMessages = async () => {
   try {
     const data = await request<ProjectDetail>(`/projects/${id}`)
     project.value = data; mergeTimeline(data); scrollBottom()
-  } catch {}
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '记录刷新失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  }
 }
 
 const goBack = () => router.push('/business/records')
@@ -142,7 +145,7 @@ const timeFmt = (ts: string) => { const d = new Date(ts); return `${String(d.get
         class="tb-muted"
       >加载中…</span>
     </template>
-    <template v-if="!loading">
+    <template v-if="!loading && !loadError">
       <div
         id="msg-container"
         class="msg-scroll"
@@ -200,7 +203,18 @@ const timeFmt = (ts: string) => { const d = new Date(ts); return `${String(d.get
         placeholder="继续追问，可上传文件…"
         @send="handleSend"
       />
+      <ErrorState
+        v-if="actionError"
+        :message="actionError.payload.error"
+        :request-id="actionError.payload.requestId"
+      />
     </template>
+    <ErrorState
+      v-else-if="loadError"
+      :message="loadError.payload.error"
+      :request-id="loadError.payload.requestId"
+      :on-retry="() => router.go(0)"
+    />
     <div
       v-else
       class="welcome-hero"

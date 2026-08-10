@@ -156,20 +156,17 @@ describe('SkillService', () => {
   // ── review（审核） ──
 
   describe('review（pending → public / private）', () => {
-    it('通过：pending → public + approvedBy/At + reviewLog append', async () => {
+    it('通过：pending → public + approvedBy/At + 规范化审核日志同事务写入', async () => {
       prisma.skill.updateMany.mockResolvedValue({ count: 1 });
-      prisma.skill.findUnique.mockResolvedValue(skillRow({ visibility: 'pending', reviewLog: [] }));
-      prisma.skill.update.mockResolvedValue({});
       await service.review('sk-1', { approved: true }, 'u-lead');
 
       expect(prisma.skill.updateMany.mock.calls[0][0]).toMatchObject({
         where: { id: 'sk-1', visibility: 'pending' },
         data: { visibility: 'public', approvedBy: 'u-lead' },
       });
-      // reviewLog append-only：保留历史
-      const log = prisma.skill.update.mock.calls[0][0].data.reviewLog;
-      expect(log).toHaveLength(1);
-      expect(log[0]).toMatchObject({ action: 'approve', reviewerId: 'u-lead' });
+      const log = prisma.skillReviewLog.create.mock.calls[0][0].data;
+      expect(log).toMatchObject({ action: 'approve', actorId: 'u-lead', fromState: 'pending', toState: 'public' });
+      expect(prisma.skill.update).not.toHaveBeenCalled();
     });
 
     it('驳回缺少原因 → 400', async () => {
@@ -178,19 +175,13 @@ describe('SkillService', () => {
       );
     });
 
-    it('驳回：pending → private + reviewLog 保留全部历史（二次驳回不覆盖首次原因）', async () => {
+    it('驳回：pending → private + 规范化日志保留本次原因', async () => {
       prisma.skill.updateMany.mockResolvedValue({ count: 1 });
-      const history = [
-        { action: 'reject', reviewerId: 'u-lead', reason: '首次驳回原因', at: '2026-08-04T00:00:00Z' },
-      ];
-      prisma.skill.findUnique.mockResolvedValue(skillRow({ visibility: 'pending', reviewLog: history }));
-      prisma.skill.update.mockResolvedValue({});
       await service.review('sk-1', { approved: false, reason: '二次驳回原因' }, 'u-lead');
 
-      const log = prisma.skill.update.mock.calls[0][0].data.reviewLog;
-      expect(log).toHaveLength(2);
-      expect(log[0].reason).toBe('首次驳回原因');
-      expect(log[1]).toMatchObject({ action: 'reject', reason: '二次驳回原因' });
+      const log = prisma.skillReviewLog.create.mock.calls[0][0].data;
+      expect(log).toMatchObject({ action: 'reject', reason: '二次驳回原因', actorId: 'u-lead' });
+      expect(prisma.skill.update).not.toHaveBeenCalled();
     });
 
     it('非 pending 状态 → 409（并发防护：审核瞬间被撤回）', async () => {

@@ -1,4 +1,5 @@
 import type { ApiError } from '../types'
+import { apiLogger } from './logger'
 
 /** accessToken 存内存（Pinia），不落 localStorage，防 XSS */
 let accessToken: string | null = null
@@ -10,6 +11,7 @@ export const getAccessToken = () => accessToken
 export class RequestError extends Error {
   constructor(readonly payload: ApiError) {
     super(payload.error)
+    this.name = 'RequestError'
   }
 }
 
@@ -22,10 +24,13 @@ async function refreshAccessToken(): Promise<boolean> {
         credentials: 'include',
       })
       if (!response.ok) return false
-      const data = (await response.json()) as { accessToken: string }
+      const text = await response.text()
+      const data = JSON.parse(text) as { accessToken?: string }
+      if (!data.accessToken) return false
       accessToken = data.accessToken
       return true
-    } catch {
+    } catch (error) {
+      apiLogger.warn('auth.refresh_failed', { reason: error instanceof Error ? error.name : 'unknown' })
       return false
     } finally {
       refreshing = null
@@ -34,66 +39,125 @@ async function refreshAccessToken(): Promise<boolean> {
   return refreshing
 }
 
-type RequestOptions = { method?: string; body?: unknown; retry?: boolean; timeoutMs?: number }
+export type RequestOptions = {
+  method?: string
+  body?: unknown
+  retry?: boolean
+  timeoutMs?: number
+  signal?: AbortSignal
+}
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
 /** 从响应头读取请求 ID(服务端 X-Request-ID),供错误详情与排查 */
-function readRequestId(response: Response): string | undefined {
+export function readRequestId(response: Response): string | undefined {
   const id = response.headers.get('x-request-id')
   return id && id.length <= 64 ? id : undefined
 }
 
-export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, retry = true, timeoutMs = DEFAULT_TIMEOUT_MS } = options
+const isSafeRetryMethod = (method: string) => ['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())
 
-  // 超时用 AbortController;AbortError 映射为可识别错误(不自动重放)
+const toErrorPayload = (statusCode: number, requestId?: string, payload?: unknown): ApiError => {
+  if (payload && typeof payload === 'object' && typeof (payload as Record<string, unknown>).error === 'string') {
+    const value = payload as ApiError
+    return { ...value, statusCode: value.statusCode || statusCode, requestId: value.requestId || requestId }
+  }
+  return {
+    error: '服务响应异常，请稍后重试',
+    code: 'BAD_RESPONSE',
+    statusCode,
+    ...(requestId ? { requestId } : {}),
+  }
+}
+
+/** 将一次响应解析为 JSON；预期 JSON 的 2xx 非 JSON 也必须失败。 */
+export async function parseApiResponse<T>(response: Response): Promise<T> {
+  if (response.status === 204) return undefined as T
+
+  const requestId = readRequestId(response)
+  const text = await response.text()
+  let parsed: unknown
+  let isJson = false
+  if (text.trim()) {
+    try {
+      parsed = JSON.parse(text)
+      isJson = true
+    } catch {
+      isJson = false
+    }
+  }
+
+  if (!response.ok) {
+    const error = new RequestError(toErrorPayload(response.status, requestId, isJson ? parsed : undefined))
+    apiLogger.warn('http.error', { statusCode: response.status, requestId, code: error.payload.code })
+    throw error
+  }
+
+  if (!isJson) {
+    const error = new RequestError(toErrorPayload(response.status, requestId))
+    apiLogger.warn('http.bad_response', { statusCode: response.status, requestId, code: error.payload.code })
+    throw error
+  }
+  return parsed as T
+}
+
+/** 发起 API 请求并处理安全方法的单飞刷新；POST 等副作用请求绝不自动重放。 */
+export async function apiFetch(path: string, options: RequestOptions = {}): Promise<Response> {
+  const { method = 'GET', body, retry = true, timeoutMs = DEFAULT_TIMEOUT_MS, signal } = options
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+  const abortFromCaller = () => controller.abort()
+  if (signal) {
+    if (signal.aborted) controller.abort()
+    else signal.addEventListener('abort', abortFromCaller, { once: true })
+  }
+
   let response: Response
   try {
     response = await fetch(`/api${path}`, {
       method,
       credentials: 'include',
       headers: {
-        ...(body ? { 'content-type': 'application/json' } : {}),
+        ...(body !== undefined && !(body instanceof FormData) ? { 'content-type': 'application/json' } : {}),
+        Accept: 'application/json',
         ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
       },
-      ...(body ? { body: JSON.stringify(body) } : {}),
+      ...(body !== undefined ? { body: body instanceof FormData ? body : JSON.stringify(body) } : {}),
       signal: controller.signal,
     })
-  } catch (e) {
-    // 网络中断 / 超时 / 域名失败：fetch 抛 TypeError/AbortError
-    const aborted = e instanceof DOMException && e.name === 'AbortError'
-    throw new RequestError({
-      error: aborted ? '请求超时,请重试' : '网络异常,请检查连接后重试',
-      code: aborted ? 'REQUEST_TIMEOUT' : 'NETWORK_ERROR',
+  } catch (error) {
+    const aborted = error instanceof DOMException && error.name === 'AbortError'
+    const requestError = new RequestError({
+      error: timedOut ? '请求超时，请重试' : aborted ? '请求已取消' : '网络异常，请检查连接后重试',
+      code: timedOut ? 'REQUEST_TIMEOUT' : aborted ? 'REQUEST_ABORTED' : 'NETWORK_ERROR',
       statusCode: 0,
     })
+    apiLogger.warn('http.transport_error', { path, method, code: requestError.payload.code })
+    throw requestError
   } finally {
     clearTimeout(timer)
+    if (signal) signal.removeEventListener('abort', abortFromCaller)
   }
 
   const requestId = readRequestId(response)
-
-  // accessToken 过期时静默刷新并重试一次(401 会话恢复失败是预期降级,不显示为系统故障)
-  if (response.status === 401 && retry && path !== '/auth/refresh') {
-    if (await refreshAccessToken()) {
-      return request<T>(path, { ...options, retry: false })
-    }
+  // 只有 GET/HEAD/OPTIONS 可安全重放；POST 401 必须让调用方决定，避免重复业务写入。
+  if (response.status === 401 && retry && path !== '/auth/refresh' && isSafeRetryMethod(method)) {
+    if (await refreshAccessToken()) return apiFetch(path, { ...options, retry: false })
   }
+  if (response.status === 401 && retry && path !== '/auth/refresh' && !isSafeRetryMethod(method)) {
+    apiLogger.warn('http.unsafe_401_no_replay', { path, method, requestId, statusCode: response.status })
+  }
+  return response
+}
 
-  if (response.status === 204) return undefined as T
+export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  return parseApiResponse<T>(await apiFetch(path, options))
+}
 
-  const payload = (await response.json().catch(() => ({
-    error: '服务响应异常',
-    code: 'BAD_RESPONSE',
-    statusCode: response.status,
-  }))) as ApiError
-
-  // 服务端未带 requestId(如 BAD_RESPONSE 兜底)时,补上响应头里的
-  if (!payload.requestId && requestId) payload.requestId = requestId
-
-  if (!response.ok) throw new RequestError(payload)
-  return payload as unknown as T
+export async function requestForm<T>(path: string, formData: FormData, options: Omit<RequestOptions, 'body'> = {}): Promise<T> {
+  return parseApiResponse<T>(await apiFetch(path, { ...options, body: formData }))
 }

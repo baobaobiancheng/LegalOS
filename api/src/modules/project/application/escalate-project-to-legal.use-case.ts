@@ -19,6 +19,9 @@ export interface EscalateToLegalCommand {
   risk?: RiskLevel;
   legalBpId?: string | null;
   ownerId?: string | null;
+  result?: string | null;
+  /** 风险/技能解析出的领域；未显式指定 legalBpId 时由用例统一匹配 BP。 */
+  domain?: string | null;
   /** 事件文案（含时间戳前缀） */
   eventTexts?: string[];
 }
@@ -44,20 +47,32 @@ export class EscalateProjectToLegalUseCase {
       return { upgraded: false, project: existing };
     }
 
-    const project = await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
+      let matchedBpId: string | null = null;
+      if (cmd.legalBpId === undefined) {
+        matchedBpId = await this.matchLegalBp(tx, cmd.domain ?? null);
+      } else {
+        matchedBpId = cmd.legalBpId;
+      }
+
       // 条件更新：仅 route=llm 的工单可升级（并发防护，重复请求 count=0 → 幂等返回）
       const data: Record<string, unknown> = { route: 'legalbp' };
       if (cmd.status) data.status = cmd.status;
       if (cmd.risk) data.risk = cmd.risk;
-      if (cmd.legalBpId !== undefined) data.legalBpId = cmd.legalBpId;
+      if (cmd.result !== undefined) data.result = cmd.result;
+      data.legalBpId = matchedBpId;
       if (cmd.ownerId !== undefined) data.ownerId = cmd.ownerId;
+      else if (matchedBpId) data.ownerId = matchedBpId;
       const updated = await tx.project.updateMany({
         where: { id: cmd.projectId, route: 'llm' },
         data: data as any,
       });
       if (updated.count === 0) {
         // 已被并发升级 → 读取当前状态幂等返回
-        return tx.project.findUnique({ where: { id: cmd.projectId } });
+        return {
+          upgraded: false,
+          project: await tx.project.findUnique({ where: { id: cmd.projectId } }),
+        };
       }
       for (const text of cmd.eventTexts ?? []) {
         await tx.projectEvent.create({ data: { projectId: cmd.projectId, text } });
@@ -78,9 +93,30 @@ export class EscalateProjectToLegalUseCase {
       } catch (e: any) {
         if (e?.code !== 'P2002') throw e;
       }
-      return tx.project.findUnique({ where: { id: cmd.projectId } });
+      return {
+        upgraded: true,
+        project: await tx.project.findUnique({ where: { id: cmd.projectId } }),
+      };
     });
 
-    return { upgraded: true, project };
+    return result;
+  }
+
+  /** 领域映射优先，找不到时取最早创建且已绑定钉钉的法务负责人。 */
+  private async matchLegalBp(tx: any, domain: string | null): Promise<string | null> {
+    if (domain) {
+      const maps = await tx.bpDomainMap.findMany({
+        where: { domain },
+        include: { user: { select: { id: true, dingtalkUserId: true } } },
+      });
+      const bound = maps.find((m: any) => m.user?.dingtalkUserId);
+      if (bound) return bound.user.id;
+    }
+    const lead = await tx.user.findFirst({
+      where: { role: 'legal_lead', dingtalkUserId: { not: null } },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    });
+    return lead?.id ?? null;
   }
 }

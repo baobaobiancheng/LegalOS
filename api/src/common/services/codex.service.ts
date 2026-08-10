@@ -1,8 +1,8 @@
 import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { spawn, ChildProcess } from 'child_process';
-import { existsSync, mkdirSync, rmSync, readdirSync, copyFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, rmSync, rmdirSync, readdirSync, copyFileSync } from 'fs';
+import { dirname, join, sep } from 'path';
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
@@ -30,6 +30,7 @@ export class CodexService {
   private readonly logger = new Logger(CodexService.name);
   private readonly codexBin: string;
   private readonly baseWorkspace: string;
+  private readonly terminationTimers = new WeakMap<ChildProcess, NodeJS.Timeout>();
   /** 服务器硬化模式（CODEX_HARDENED=true）：严格配置 + 环境白名单 + 认证走公司网关；
    *  本地开发保持 false，继续读真实 ~/.codex（auth.json / config.toml） */
   private readonly hardened: boolean;
@@ -215,10 +216,52 @@ export class CodexService {
     return dir;
   }
 
-  /** 清理会话工作目录 */
+  /**
+   * 清理执行目录，并在最后一个执行结束后回收空 session 父目录。
+   * 只使用 rmdirSync 删除空父目录，避免误删同 session 的并发/残留内容；baseWorkspace 本身永不删除。
+   */
   private cleanupWorkspace(dir?: string) {
     if (dir && dir.startsWith(this.baseWorkspace)) {
-      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+      try {
+        rmSync(dir, { recursive: true, force: true });
+        const sessionDir = dirname(dir);
+        if (sessionDir !== this.baseWorkspace && sessionDir.startsWith(`${this.baseWorkspace}${sep}`)) {
+          try { rmdirSync(sessionDir); } catch { /* 非空或已被其他任务使用 */ }
+        }
+      } catch {}
+    }
+  }
+
+  /**
+   * 统一终止子进程：先给 Codex 一个 SIGTERM 宽限期，仍未退出才 SIGKILL。
+   * 非流式任务必须等 close 事件后才 reject，避免队列提前释放槽位。
+   */
+  private terminateChild(child: ChildProcess, reason: string): void {
+    if (child.exitCode !== null && child.exitCode !== undefined) return;
+
+    try { child.kill('SIGTERM'); } catch (e) {
+      this.logger.warn(`Codex ${reason} SIGTERM 失败：${(e as Error).message}`);
+    }
+
+    if (this.terminationTimers.has(child)) return;
+    const grace = setTimeout(() => {
+      this.terminationTimers.delete(child);
+      if (child.exitCode === null || child.exitCode === undefined) {
+        this.logger.warn(`Codex ${reason} 宽限期后仍未退出，强制 SIGKILL`);
+        try { child.kill('SIGKILL'); } catch (e) {
+          this.logger.warn(`Codex ${reason} SIGKILL 失败：${(e as Error).message}`);
+        }
+      }
+    }, CODEX_CANCEL_GRACE_MS);
+    grace.unref?.();
+    this.terminationTimers.set(child, grace);
+  }
+
+  private clearTerminationTimer(child: ChildProcess): void {
+    const timer = this.terminationTimers.get(child);
+    if (timer) {
+      clearTimeout(timer);
+      this.terminationTimers.delete(child);
     }
   }
 
@@ -235,7 +278,8 @@ export class CodexService {
         { sessionId, queueTimeoutMs: options?.queueTimeoutMs, signal: options?.signal },
         () => {
           const runPromise = this.runCodex(prompt, args, timeout, workspaceDir);
-          return { result: runPromise, done: runPromise.then(() => undefined) };
+          // done 只表示槽位生命周期，不能把同一个 reject 再制造成未处理 Promise。
+          return { result: runPromise, done: runPromise.then(() => undefined, () => undefined) };
         },
       );
       return result.trim();
@@ -289,15 +333,19 @@ export class CodexService {
     // 超时终止（工程评审决策 #7：长任务按调用方配置超时，超时 kill → 调用方 SSE 错误路径）
     const timer = setTimeout(() => {
       this.logger.warn(`Codex SSE 超时（${timeout}ms），终止子进程`);
-      child.kill('SIGTERM');
+      this.terminateChild(child, 'SSE 超时');
     }, timeout);
     timer.unref?.();
 
     let doneResolve!: () => void;
     const done = new Promise<void>((resolve) => { doneResolve = resolve; });
     // 一次性 finalize：error 与 close 都可能触发，双释放由队列 finalize 守卫兜底
+    let finalized = false;
     const finalize = () => {
+      if (finalized) return;
+      finalized = true;
       clearTimeout(timer);
+      this.clearTerminationTimer(child);
       this.cleanupWorkspace(workspaceDir);
       doneResolve();
     };
@@ -315,16 +363,7 @@ export class CodexService {
     // 连接断开 / 调用方取消：先 SIGTERM，宽限期后仍未退出再 SIGKILL
     abort.addEventListener('abort', () => {
       (child as any).__cancelled = true;
-      if (child.exitCode === null && !child.killed) {
-        child.kill('SIGTERM');
-        const grace = setTimeout(() => {
-          if (child.exitCode === null) {
-            this.logger.warn('Codex 取消宽限期后仍未退出，强制 SIGKILL');
-            child.kill('SIGKILL');
-          }
-        }, CODEX_CANCEL_GRACE_MS);
-        grace.unref?.();
-      }
+      this.terminateChild(child, '取消');
     });
 
     // stdin write 可能因子进程提前退出而失败
@@ -348,31 +387,39 @@ export class CodexService {
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
       let timedOut = false;
+      let settled = false;
 
       const timer = setTimeout(() => {
         timedOut = true;
-        child.kill('SIGTERM');
-        reject(new Error('Codex execution timed out'));
+        this.terminateChild(child, '非流式超时');
       }, timeout);
+
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.clearTerminationTimer(child);
+        this.cleanupWorkspace(workspaceDir);
+        fn();
+      };
 
       child.stdout!.on('data', (chunk: Buffer) => { stdoutChunks.push(chunk); });
       child.stderr!.on('data', (chunk: Buffer) => { stderrChunks.push(chunk); });
 
       child.on('close', (code) => {
-        clearTimeout(timer);
-        if (timedOut) return;
-        if (code === 0) {
-          resolve(Buffer.concat(stdoutChunks).toString('utf-8'));
+        if (timedOut) {
+          settle(() => reject(new Error('Codex execution timed out')));
+        } else if (code === 0) {
+          settle(() => resolve(Buffer.concat(stdoutChunks).toString('utf-8')));
         } else {
           const err = Buffer.concat(stderrChunks).toString('utf-8');
           this.logger.error(`Codex 退出 code=${code}：${err.slice(0, 200)}`);
-          reject(new Error(`Codex exited with code ${code}`));
+          settle(() => reject(new Error(`Codex exited with code ${code}`)));
         }
       });
 
       child.on('error', (err) => {
-        clearTimeout(timer);
-        reject(err);
+        settle(() => reject(err));
       });
 
       try { child.stdin!.write(prompt, 'utf-8'); } catch {}

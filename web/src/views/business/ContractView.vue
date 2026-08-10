@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
-import { getAccessToken, request } from '../../api/client'
+import { RequestError, request, requestForm } from '../../api/client'
+import { streamSse } from '../../api/sse'
 import MarkdownContent from '../../components/MarkdownContent.vue'
 import DownloadMenu from '../../components/DownloadMenu.vue'
 import BusinessSidebarLayout from '../../components/BusinessSidebarLayout.vue'
+import ErrorState from '../../components/ErrorState.vue'
 import type { ContractTemplate } from '../../types'
 
 // ── 步骤状态 ──
@@ -13,6 +15,7 @@ const step = ref(1)
 // ── 模板 ──
 const templates = ref<ContractTemplate[]>([])
 const loadingTemplates = ref(true)
+const templateError = ref<RequestError | null>(null)
 const selected = ref<ContractTemplate | null>(null)
 
 // ── 表单要素（按模板 elementsSchema 动态渲染，每模板字段不同）──
@@ -44,14 +47,21 @@ const uploading = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 
 const events = ref<{ text: string }[]>([])
+const lastError = ref<RequestError | null>(null)
 
-onMounted(async () => {
+const loadTemplates = async () => {
   loadingTemplates.value = true
   try {
     templates.value = await request<ContractTemplate[]>('/contract-templates')
-  } catch {}
+    templateError.value = null
+  } catch (error) {
+    templateError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '合同模板加载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  }
   loadingTemplates.value = false
-})
+}
+onMounted(loadTemplates)
 
 const pickTemplate = (t: ContractTemplate) => {
   selected.value = t
@@ -77,6 +87,7 @@ const generateDraft = async () => {
   generating.value = true
   draftComplete.value = false
   draftText.value = ''
+  lastError.value = null
 
   const body: Record<string, unknown> = {
     templateSlug: selected.value.slug,
@@ -85,46 +96,26 @@ const generateDraft = async () => {
   if (projectId.value) body.projectId = projectId.value
 
   try {
-    const res = await fetch('/api/contracts/generate', {
-      method: 'POST', credentials: 'include',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${getAccessToken()}` },
-      body: JSON.stringify(body),
-    })
-    const ct = res.headers.get('content-type') || ''
-
-    if (ct.includes('text/event-stream')) {
-      const reader = res.body?.getReader()
-      const decoder = new TextDecoder('utf-8', { fatal: false })
-      let text = ''
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          for (const line of decoder.decode(value, { stream: true }).split('\n')) {
-            if (!line.startsWith('data: ')) continue
-            try {
-              const d = JSON.parse(line.slice(6))
-              if (d.done) {
-                if (d.projectId) projectId.value = d.projectId
-                if (d.status) projectStatus.value = d.status
-                draftComplete.value = true
-                step.value = 3
-                events.value.push({ text: '合同草稿已生成' })
-              } else if (d.error) {
-                events.value.push({ text: '草稿生成失败，请重试' })
-              } else if (d.text) {
-                text += d.text
-                draftText.value = text
-              }
-            } catch {}
-          }
-        }
+    let text = ''
+    await streamSse('/contracts/generate', { method: 'POST', body }, (d) => {
+      if (d.done === true) {
+        if (typeof d.projectId === 'string') projectId.value = d.projectId
+        if (typeof d.status === 'string') projectStatus.value = d.status
+        draftComplete.value = true
+        step.value = 3
+        events.value.push({ text: '合同草稿已生成' })
+      } else if (d.error === true) {
+        events.value.push({ text: '草稿生成失败，请重试' })
+      } else if (typeof d.text === 'string') {
+        text += d.text
+        draftText.value = text
       }
-    } else {
-      events.value.push({ text: '草稿生成失败，请稍后重试' })
-    }
-  } catch {
-    events.value.push({ text: '服务异常，请稍后重试' })
+    })
+  } catch (error) {
+    lastError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '服务异常，请稍后重试', code: 'UNKNOWN', statusCode: 0 })
+    events.value.push({ text: lastError.value.payload.error })
   }
   generating.value = false
 }
@@ -138,18 +129,18 @@ const handleUpload = async (e: Event) => {
   target.value = ''
   if (!file || !projectId.value) return
   uploading.value = true
+  lastError.value = null
   try {
     const fd = new FormData()
     fd.append('file', file)
     fd.append('kind', 'revised')
-    const res = await fetch(`/api/projects/${projectId.value}/files`, {
-      method: 'POST', credentials: 'include',
-      headers: { authorization: `Bearer ${getAccessToken()}` },
-      body: fd,
-    })
-    events.value.push({ text: res.ok ? `已上传修订版：${file.name}` : '修订版上传失败，请重试' })
-  } catch {
-    events.value.push({ text: '上传失败，请重试' })
+    await requestForm(`/projects/${projectId.value}/files`, fd, { method: 'POST' })
+    events.value.push({ text: `已上传修订版：${file.name}` })
+  } catch (error) {
+    lastError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '上传失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+    events.value.push({ text: lastError.value.payload.error })
   }
   uploading.value = false
 }
@@ -158,6 +149,7 @@ const handleUpload = async (e: Event) => {
 const submitReview = async () => {
   if (submittingReview.value || submittedReview.value || !projectId.value) return
   submittingReview.value = true
+  lastError.value = null
   try {
     const data = await request<{ projectId: string; status: string }>(`/contracts/${projectId.value}/submit-review`, {
       method: 'POST',
@@ -166,8 +158,11 @@ const submitReview = async () => {
     projectStatus.value = data.status
     submittedReview.value = true
     events.value.push({ text: '已提交法务审阅，工单已进入法务 BP 流程' })
-  } catch {
-    events.value.push({ text: '发起法务审阅失败，请重试' })
+  } catch (error) {
+    lastError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '发起法务审阅失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+    events.value.push({ text: lastError.value.payload.error })
   }
   submittingReview.value = false
 }
@@ -211,6 +206,12 @@ const submitReview = async () => {
       </template>
     </div>
 
+    <ErrorState
+      v-if="lastError"
+      :message="lastError.payload.error"
+      :request-id="lastError.payload.requestId"
+    />
+
     <!-- 步骤1：选模板 -->
     <section
       v-if="step === 1"
@@ -238,6 +239,12 @@ const submitReview = async () => {
           style="height:170px;border:none;cursor:default"
         />
       </div>
+      <ErrorState
+        v-else-if="templateError"
+        :message="templateError.payload.error"
+        :request-id="templateError.payload.requestId"
+        :on-retry="loadTemplates"
+      />
       <template v-else>
         <div class="template-grid">
           <article

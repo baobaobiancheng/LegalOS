@@ -22,6 +22,7 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
   private readonly pollIntervalMs: number;
   private readonly batchSize: number;
   private readonly maxAttempts: number;
+  private readonly dingtalkMock: boolean;
   private stopped = false;
   private polling = false;
   private timer: NodeJS.Timeout | null = null;
@@ -35,6 +36,7 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
     this.pollIntervalMs = Number(config.get('OUTBOX_POLL_INTERVAL_MS', 1000));
     this.batchSize = Number(config.get('OUTBOX_BATCH_SIZE', 10));
     this.maxAttempts = Number(config.get('OUTBOX_MAX_ATTEMPTS', 8));
+    this.dingtalkMock = config.get('DINGTALK_MOCK', 'false') === 'true';
   }
 
   async onApplicationBootstrap(): Promise<void> {
@@ -109,6 +111,8 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
     switch (event.eventType) {
       case 'dingtalk.group.create':
         return this.handleDingtalkGroupCreate(event);
+      case 'dingtalk.member.add':
+        return this.handleDingtalkMemberAdd(event);
       default:
         throw new Error(`未知 Outbox 事件类型：${event.eventType}`);
     }
@@ -171,7 +175,7 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
 
     await this.addProjectEvent(
       projectId,
-      `${this.fmt()} · 钉钉群已创建${process.env.DINGTALK_MOCK === 'true' ? '（模拟）' : ''}`,
+      `${this.fmt()} · 钉钉群已创建${this.dingtalkMock ? '（模拟）' : ''}`,
     );
 
     // 首条消息（纯文字：工单标题 + 风险 + 提出人）
@@ -212,6 +216,61 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
       this.logger.log(`reconciliation：${bp.displayName} 已补拉入群（${projectId}）`);
     } catch (e) {
       this.logger.warn(`成员 reconciliation 失败（${projectId}）：${e}`);
+    }
+  }
+
+  /**
+   * 给已有群补拉新 BP。事件执行前重读工单和用户，避免使用请求时的过期指派；
+   * 没有群时抛错让建群/重试先完成，未绑定钉钉时记录人工处理事件并消费掉任务。
+   */
+  private async handleDingtalkMemberAdd(event: any): Promise<void> {
+    const { projectId, userId } = event.payload as { projectId?: string; userId?: string };
+    if (!projectId || !userId) throw new Error('payload 缺少 projectId/userId');
+
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { dingtalkChatId: true, dingtalkMembers: true, status: true },
+    });
+    if (!project || project.status === '已取消') return;
+    if (!project.dingtalkChatId) throw new Error('钉钉群尚未创建，等待建群任务完成');
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { dingtalkUserId: true, displayName: true },
+    });
+    if (!user?.dingtalkUserId) {
+      await this.addProjectEvent(
+        projectId,
+        `${this.fmt()} · ${user?.displayName || '新法务 BP'} 未绑定钉钉，无法加入群`,
+      );
+      return;
+    }
+
+    const members = this.parseMembers(project.dingtalkMembers);
+    if (members.includes(user.dingtalkUserId)) return;
+
+    await this.dingtalk.addMember(project.dingtalkChatId, user.dingtalkUserId);
+
+    // 带旧快照条件，避免多个 Worker 并发补人时后写覆盖先写；冲突交给 Outbox 重试。
+    const nextMembers = [...members, user.dingtalkUserId];
+    const updated = await this.prisma.project.updateMany({
+      where: { id: projectId, dingtalkMembers: project.dingtalkMembers },
+      data: { dingtalkMembers: JSON.stringify(nextMembers) },
+    });
+    if (updated.count === 0) throw new Error('钉钉群成员快照发生并发变化，请重试');
+
+    await this.addProjectEvent(
+      projectId,
+      `${this.fmt()} · ${user.displayName} 已加入钉钉群${this.dingtalkMock ? '（模拟）' : ''}`,
+    );
+  }
+
+  private parseMembers(value: string | null): string[] {
+    try {
+      const parsed = JSON.parse(value || '[]');
+      return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+    } catch {
+      return [];
     }
   }
 
