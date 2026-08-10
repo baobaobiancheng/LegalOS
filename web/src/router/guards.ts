@@ -11,6 +11,11 @@ export function registerGuards(router: Router) {
   router.beforeEach(async (to) => {
     const auth = useAuthStore()
 
+    // CAS 回调：/login?ticket=xxx —— 先兑换 ticket,不能被旧会话 fetchMe 跳走（codex #7）
+    const hasCasTicket =
+      to.name === 'login' && typeof to.query.ticket === 'string' && Boolean(to.query.ticket)
+    if (hasCasTicket) return true
+
     if (!auth.resolved) await auth.fetchMe()
 
     if (to.meta.public) {

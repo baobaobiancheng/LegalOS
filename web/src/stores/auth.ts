@@ -21,6 +21,18 @@ export const useAuthStore = defineStore('auth', () => {
     return data.user
   }
 
+  /** CAS 登录（T3）：前端收 ?ticket= 后调 /auth/cas-login 兑换 */
+  async function casLogin(ticket: string) {
+    const data = await request<{ accessToken: string; user: User }>('/auth/cas-login', {
+      method: 'POST',
+      body: { ticket },
+    })
+    setAccessToken(data.accessToken)
+    user.value = data.user
+    resolved.value = true
+    return data.user
+  }
+
   /**
    * 恢复会话：内存无 token 时先尝试 refresh（httpOnly cookie 自动携带）
    */
@@ -48,5 +60,5 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
   }
 
-  return { user, resolved, isLoggedIn, currentRole, login, fetchMe, logout }
+  return { user, resolved, isLoggedIn, currentRole, login, casLogin, fetchMe, logout }
 })

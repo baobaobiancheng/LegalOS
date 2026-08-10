@@ -1,19 +1,34 @@
 import {
+  Inject,
   Injectable,
   UnauthorizedException,
   HttpException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { User } from '@prisma/client';
+import { Role, User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  CAS_ADAPTER,
+  CasAdapter,
+  CasAuthError,
+  CasAuthErrorType,
+  CasUserInfo,
+} from './adapters/cas-adapter.interface';
+import { CasLoginDto } from './dto/cas-login.dto';
 import { LoginDto } from './dto/login.dto';
 import { PublicUserDto } from './dto/token-response.dto';
 
 const LOCK_THRESHOLD = 5;
 const LOCK_DURATION_MS = 30 * 60 * 1000;
+/** CAS 会话链绝对上限（T6）：refresh 旋转不超此期限，防无限存活。默认 7 天 */
+const DEFAULT_SESSION_CAP_MS = 7 * 24 * 60 * 60 * 1000;
+const PASSWORD = 'password';
+const CAS = 'cas';
+type AuthMethod = typeof PASSWORD | typeof CAS;
 
 @Injectable()
 export class AuthService {
@@ -21,10 +36,21 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    @Inject(CAS_ADAPTER) private readonly cas: CasAdapter,
   ) {}
 
   get refreshTtlMs() {
     return Number(this.config.get('REFRESH_TOKEN_TTL_MS') || 86_400_000);
+  }
+
+  /** CAS 会话链绝对上限（T6） */
+  get sessionCapMs() {
+    return Number(this.config.get('SESSION_CAP_MS') || DEFAULT_SESSION_CAP_MS);
+  }
+
+  /** CAS 强制环境（生产/预发）：密码登录与 password-authMethod refresh 均拒绝 */
+  get casEnforced() {
+    return this.config.get<string>('CAS_ENFORCED') === 'true';
   }
 
   private publicUser(user: User): PublicUserDto {
@@ -40,8 +66,12 @@ export class AuthService {
     return crypto.createHash('sha256').update(token).digest('hex');
   }
 
-  /** 签发 access + refresh token 对，refresh 落库用于旋转与重放保护 */
-  private async issueTokens(user: User) {
+  /** 签发 access + refresh token 对，refresh 落库用于旋转与重放保护（T6:authMethod+绝对上限） */
+  private async issueTokens(
+    user: User,
+    authMethod: AuthMethod = PASSWORD,
+    chainOriginalExpiresAt?: Date,
+  ) {
     const accessToken = await this.jwt.signAsync({
       sub: user.id,
       role: user.role,
@@ -49,10 +79,13 @@ export class AuthService {
     });
 
     const jti = crypto.randomUUID();
-    const expiresAt = new Date(Date.now() + this.refreshTtlMs);
+    // 会话链绝对上限：首次签发定死,旋转时继承（不重置）,链寿命封顶防无限存活
+    const originalExpiresAt = chainOriginalExpiresAt ?? new Date(Date.now() + this.sessionCapMs);
+    const capMs = originalExpiresAt.getTime();
+    const expiresAt = new Date(Math.min(Date.now() + this.refreshTtlMs, capMs));
     const refreshToken = await this.jwt.signAsync(
       { sub: user.id, jti, type: 'refresh' },
-      { expiresIn: Math.floor(this.refreshTtlMs / 1000) },
+      { expiresIn: Math.max(1, Math.floor((expiresAt.getTime() - Date.now()) / 1000)) },
     );
 
     await this.prisma.refreshToken.create({
@@ -61,6 +94,8 @@ export class AuthService {
         jti,
         tokenHash: this.hashToken(refreshToken),
         expiresAt,
+        authMethod,
+        originalExpiresAt,
       },
     });
 
@@ -115,6 +150,100 @@ export class AuthService {
     return { ...tokens, user: this.publicUser(user) };
   }
 
+  /** 是否 CAS_ADMIN_USERNAMES 名单成员（一期 admin 引导,设计 T4） */
+  private isCasAdmin(casUsername: string): boolean {
+    const list = (this.config.get<string>('CAS_ADMIN_USERNAMES') || '')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    return list.includes(casUsername.trim().toLowerCase());
+  }
+
+  /** CAS_ROLE_MAP：'user:role,user2:role2'（一期供给 legal_bp/legal_lead 等,设计 T4） */
+  private casRoleMap(): Record<string, Role> {
+    const raw = this.config.get<string>('CAS_ROLE_MAP') || '';
+    const map: Record<string, Role> = {};
+    for (const pair of raw.split(',')) {
+      const [user, role] = pair.split(':').map((s) => s.trim());
+      if (
+        user &&
+        (role === 'admin' || role === 'legal_bp' || role === 'legal_lead' || role === 'business')
+      ) {
+        map[user.toLowerCase()] = role as Role;
+      }
+    }
+    return map;
+  }
+
+  /** 领域角色解析：CAS 只认证身份,领域角色平台自管（P2）；admin 名单 > 预映射 > 默认 business */
+  private resolveRole(casUsername: string): Role {
+    if (this.isCasAdmin(casUsername)) return 'admin';
+    return this.casRoleMap()[casUsername.trim().toLowerCase()] ?? 'business';
+  }
+
+  /**
+   * CAS 登录（T3）：validate → 按 casUsername 找/建(upsert 并发安全) → 领域角色平台自管 → 发 JWT。
+   * 错误码：ticket 无效→401；CAS 不可达/超时→503(不重试,防消费一次性 ticket)；BYPASS 生产误开→启动时拒。
+   */
+  async casLogin(dto: CasLoginDto, ip?: string) {
+    let info: CasUserInfo;
+    try {
+      info = await this.cas.validateTicket(dto.ticket);
+    } catch (e) {
+      if (e instanceof CasAuthError) {
+        if (e.type === CasAuthErrorType.INVALID_TICKET) {
+          throw new UnauthorizedException({
+            error: '登录已失效，请重新登录',
+            code: 'INVALID_CAS_TICKET',
+          });
+        }
+        throw new ServiceUnavailableException({
+          error: '认证服务暂不可用，请稍后重试',
+          code: 'CAS_UNAVAILABLE',
+        });
+      }
+      throw e;
+    }
+
+    if (!info.username) {
+      throw new UnauthorizedException({
+        error: '认证返回缺少用户标识',
+        code: 'INVALID_CAS_TICKET',
+      });
+    }
+
+    // inactive 显式拒绝：不能靠 JWT guard 兜底（登录尚未签发 token）
+    const existing = await this.prisma.user.findUnique({ where: { casUsername: info.username } });
+    if (existing && !existing.isActive) {
+      throw new UnauthorizedException({ error: '账号已停用，请联系管理员', code: 'USER_DISABLED' });
+    }
+
+    const isAdmin = this.isCasAdmin(info.username);
+    const updateData: { displayName: string; role?: Role } = { displayName: info.name };
+    if (isAdmin) updateData.role = 'admin'; // admin 名单命中→升级,不降级
+
+    // upsert：并发首登只建一条（casUsername 唯一约束），不报冲突
+    const user = await this.prisma.user.upsert({
+      where: { casUsername: info.username },
+      create: {
+        username: info.username,
+        displayName: info.name,
+        passwordHash: crypto.randomBytes(16).toString('hex'), // 随机不可用哈希,不能密码登录
+        role: this.resolveRole(info.username),
+        casUsername: info.username,
+      },
+      update: updateData,
+    });
+
+    if (!user.isActive) {
+      throw new UnauthorizedException({ error: '账号已停用，请联系管理员', code: 'USER_DISABLED' });
+    }
+
+    const tokens = await this.issueTokens(user, CAS);
+    await this.prisma.loginAudit.create({ data: { userId: user.id, ip: ip ?? null } });
+    return { ...tokens, user: this.publicUser(user) };
+  }
+
   /** 原子递增失败次数，达阈值则锁定（Prisma increment 防竞态） */
   private async registerFailedAttempt(userId: string) {
     const updated = await this.prisma.user.update({
@@ -156,11 +285,17 @@ export class AuthService {
       include: { user: true },
     });
 
+    // T6 会话上限：originalExpiresAt 链绝对过期（旋转不重置）；CAS 强制环境拒 password 会话（切换吊销）
+    const withinChainCap = record?.originalExpiresAt ? new Date() < record.originalExpiresAt : true;
+    const authAllowed = record ? !(this.casEnforced && record.authMethod === PASSWORD) : true;
+
     const valid =
       record &&
       !record.isUsed &&
       !record.isRevoked &&
       record.expiresAt > new Date() &&
+      withinChainCap &&
+      authAllowed &&
       record.tokenHash === this.hashToken(token) &&
       record.user.isActive;
 
@@ -173,7 +308,12 @@ export class AuthService {
     });
     if (count === 0) throw invalid();
 
-    return this.issueTokens(record.user);
+    // 旋转继承 authMethod 与链上限（不重置 originalExpiresAt）
+    return this.issueTokens(
+      record.user,
+      (record.authMethod as AuthMethod) || PASSWORD,
+      record.originalExpiresAt ?? undefined,
+    );
   }
 
   /** 退出：撤销 refreshToken */

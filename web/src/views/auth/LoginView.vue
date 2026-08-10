@@ -91,7 +91,42 @@
             <p>登录您的法务工作空间</p>
           </div>
 
+          <transition name="fade">
+            <div
+              v-if="errorMsg"
+              class="error-banner"
+              role="alert"
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+              ><circle
+                cx="12"
+                cy="12"
+                r="9"
+              /><line
+                x1="12"
+                y1="8"
+                x2="12"
+                y2="12"
+              /><line
+                x1="12"
+                y1="16"
+                x2="12.01"
+                y2="16"
+              /></svg>
+              <span>{{ errorMsg }}</span>
+            </div>
+          </transition>
+
+          <!-- 密码登录：仅本地开发(CAS_BYPASS/旁路)；生产/预发只走 CAS -->
           <form
+            v-if="showPasswordForm"
             class="login-form"
             @submit.prevent="handleLogin"
           >
@@ -117,39 +152,6 @@
               >
             </div>
 
-            <transition name="fade">
-              <div
-                v-if="errorMsg"
-                class="error-banner"
-                role="alert"
-              >
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                ><circle
-                  cx="12"
-                  cy="12"
-                  r="9"
-                /><line
-                  x1="12"
-                  y1="8"
-                  x2="12"
-                  y2="12"
-                /><line
-                  x1="12"
-                  y1="16"
-                  x2="12.01"
-                  y2="16"
-                /></svg>
-                <span>{{ errorMsg }}</span>
-              </div>
-            </transition>
-
             <button
               type="submit"
               class="btn-primary login-btn"
@@ -163,7 +165,20 @@
             </button>
           </form>
 
-          <p class="footer-note">
+          <div v-if="showPasswordForm" class="divider">或</div>
+
+          <!-- CAS 统一登录（T3）：跳 CAS → 回跳带 ?ticket= → 登录页兑换 -->
+          <button
+            type="button"
+            class="btn-cas"
+            :disabled="casBusy"
+            @click="handleCasLogin"
+          >
+            <span v-if="casBusy" class="spinner" />
+            {{ casBusy ? '正在登录…' : '使用公司账号登录' }}
+          </button>
+
+          <p v-if="showPasswordForm" class="footer-note">
             种子账号：admin / legal_bp / business
           </p>
         </div>
@@ -173,7 +188,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { RequestError } from '../../api/client'
@@ -185,7 +200,10 @@ const auth = useAuthStore()
 
 const form = reactive({ username: '', password: '' })
 const loading = ref(false)
+const casBusy = ref(false)
 const errorMsg = ref('')
+// 密码登录仅本地开发(旁路)；任何构建产物(预发/生产)只走 CAS
+const showPasswordForm = import.meta.env.DEV
 
 const validate = () => {
   if (!form.username.trim()) { errorMsg.value = '请输入用户名'; return false }
@@ -207,6 +225,39 @@ async function handleLogin() {
   } finally {
     loading.value = false
   }
+}
+
+/** CAS 回调兑换：?ticket= → 调 cas-login → 存 token → 跳首页；先清 URL 防 ticket 泄露 */
+async function redeemCasTicket(ticket: string) {
+  history.replaceState({}, '', route.path) // 去掉 ?ticket=（防历史/截图/代理泄露）
+  casBusy.value = true
+  errorMsg.value = ''
+  try {
+    const user = await auth.casLogin(ticket)
+    const redirect = (route.query.redirect as string) || HOME_BY_ROLE[user.role as Role]
+    await router.replace(redirect)
+  } catch (error) {
+    if (error instanceof RequestError) {
+      errorMsg.value = error.payload.code === 'CAS_UNAVAILABLE'
+        ? '认证服务暂不可用，请稍后重试'
+        : '登录已失效，请重新登录'
+    } else {
+      errorMsg.value = '登录失败，请稍后再试'
+    }
+  } finally {
+    casBusy.value = false
+  }
+}
+
+onMounted(() => {
+  const ticket = route.query.ticket
+  if (typeof ticket === 'string' && ticket) void redeemCasTicket(ticket)
+})
+
+/** 使用公司账号登录：跳 CAS（门户/项目认证入口,由 VITE_CAS_LOGIN_URL 配置） */
+function handleCasLogin() {
+  const url = import.meta.env.VITE_CAS_LOGIN_URL || 'https://cas-pre.100credit.cn/'
+  window.location.href = url
 }
 </script>
 
@@ -293,6 +344,30 @@ async function handleLogin() {
   font-size: 13px; font-weight: 590; color: #1d1d1f; letter-spacing: -0.01em;
 }
 .login-btn { width: 100%; margin-top: 8px; height: 46px; font-size: 16px; }
+
+/* CAS 登录（T3） */
+.divider {
+  margin: 18px 0; text-align: center; position: relative;
+  color: #aeaeb2; font-size: 12px;
+}
+.divider::before,
+.divider::after {
+  content: ""; position: absolute; top: 50%; width: 38%;
+  height: 1px; background: #e5e5ea;
+}
+.divider::before { left: 0; }
+.divider::after { right: 0; }
+
+.btn-cas {
+  width: 100%; height: 46px; margin-top: 8px;
+  border: 1px solid #d2d2d7; border-radius: 12px;
+  background: #fff; color: #1d1d1f;
+  font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+  cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+  transition: border-color 0.2s, background 0.2s;
+}
+.btn-cas:hover:not(:disabled) { border-color: #2563eb; background: #f5f7ff; }
+.btn-cas:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .error-banner {
   margin-bottom: 16px; padding: 10px 14px;

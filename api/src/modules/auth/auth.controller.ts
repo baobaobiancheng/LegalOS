@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -13,6 +14,7 @@ import { Request, Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { AuthService } from './auth.service';
+import { CasLoginDto } from './dto/cas-login.dto';
 import { LoginDto } from './dto/login.dto';
 import { PublicUserDto } from './dto/token-response.dto';
 
@@ -37,12 +39,28 @@ export class AuthController {
     res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
   }
 
-  /** 登录 — 每 IP 5 次/分钟速率限制 */
+  /** 登录 — 每 IP 5 次/分钟速率限制；CAS 强制环境(CAS_ENFORCED)密码登录 403 */
   @Public()
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('login')
   async login(@Body() dto: LoginDto, @Req() req: Request, @Res() res: Response) {
+    if (this.auth.casEnforced) {
+      throw new ForbiddenException({
+        error: '已切换为 CAS 登录，请使用公司账号',
+        code: 'PASSWORD_LOGIN_DISABLED',
+      });
+    }
     const { accessToken, refreshToken, user } = await this.auth.login(dto, req.ip);
+    this.setRefreshCookie(res, refreshToken);
+    return res.json({ accessToken, user });
+  }
+
+  /** CAS 登录 — 前端收 ?ticket= 后调此（T3）；ticket 一次性,无效/过期→401 */
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('cas-login')
+  async casLogin(@Body() dto: CasLoginDto, @Req() req: Request, @Res() res: Response) {
+    const { accessToken, refreshToken, user } = await this.auth.casLogin(dto, req.ip);
     this.setRefreshCookie(res, refreshToken);
     return res.json({ accessToken, user });
   }
