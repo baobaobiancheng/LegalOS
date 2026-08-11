@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ForbiddenException,
   ConflictException,
+  BadRequestException,
   Logger,
 } from '@nestjs/common';
 import { Inject } from '@nestjs/common';
@@ -119,7 +120,7 @@ export class ProjectService {
     );
 
     // 3. 事务创建（幂等由 use case 处理：同一幂等键返回旧工单前校验创建者一致）
-    const { project, created } = await this.createProjectUseCase.execute({
+    const { project } = await this.createProjectUseCase.execute({
       kind: dto.kind,
       title: dto.title,
       input: dto.input,
@@ -153,13 +154,8 @@ export class ProjectService {
       enqueueDingtalkGroup: route === 'legalbp',
     });
 
-    // 4. P2 + llm 路由：异步触发 AI 答复（不阻塞响应；ChildProcess 错误由 on('error') 处理）
-    if (route === 'llm' && created) {
-      this.triggerAIResponse(project.id, dto.input).catch((e) =>
-        this.logger.error(`AI 触发失败：${e}`),
-      );
-    }
-
+    // 4. 首条消息已由建单落库；不再在此自动触发 AI —— 前端随后用 firstReply=true 启动首轮回答，
+    //    避免「同一问题触发两次 AI、存两条用户消息」（review 2026-08-11 P0 双重提交）。
     return this.formatProject(project);
   }
 
@@ -361,6 +357,22 @@ export class ProjectService {
     signal?: AbortSignal,
   ): Promise<{ message: any; stream?: ChildProcess; route: string }> {
     const role = actor.role === 'business' ? 'user' : 'legal';
+
+    // 0. 首轮回答（review 2026-08-11 P0）：首条用户消息已在建单时落库，
+    //    这里只启动首轮 AI 回答，不重复写消息、不重复风险评估。
+    if (dto.firstReply) {
+      const project = await this.prisma.project.findUnique({ where: { id: projectId } });
+      if (!project) throw new NotFoundException('工单不存在');
+      if (project.route !== 'llm') {
+        return { message: null, route: project.route };
+      }
+      const first = await this.prisma.projectMessage.findFirst({
+        where: { projectId, role: 'user' },
+        orderBy: { createdAt: 'asc' },
+      });
+      if (!first) throw new BadRequestException('工单没有首条消息');
+      return { message: first, route: 'llm', stream: await this.triggerAIResponse(projectId, first.text, signal) };
+    }
 
     // 1. 锁定工单后鉴权并写消息。MySQL 生产路径使用 FOR UPDATE，避免
     // 检查 assignment 后到 INSERT 之间被转派/撤销；全部本地写入同事务。
@@ -565,6 +577,11 @@ export class ProjectService {
 列出需要进一步确认的事实或信息（如有）。如果信息足够，写"无，以上判断基于现有信息可执行"。
 
 ## Rules
+- 不要自我介绍、不要寒暄，直接回答用户问题
+- 不要重复或复述用户的问题原文
+- 只输出一份四段式回答，不要针对同一问题输出多份回答
+- 若回答接近长度上限，主动收束为简洁结论，不要中断在半句话
+- 免责声明只在答复末尾出现一次
 - 不引用具体法条号（除非用户追问或所选技能明确要求援引）
 - 只说你能确定的事，不确定的事项放在"需补充确认"
 - 如果问题超出法务范围（如税务、财务），明确告知并建议联系对应部门

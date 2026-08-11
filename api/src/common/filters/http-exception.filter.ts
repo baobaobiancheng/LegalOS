@@ -30,11 +30,12 @@ export class HttpExceptionFilter implements ExceptionFilter {
           ? (payload as Record<string, unknown>)
           : { error: String(payload) };
 
-      // class-validator 校验失败：message 是字符串数组
+      // class-validator 校验失败：message 是字符串数组 → 优先展示具体原因，
+      // 否则只显示「Bad Request」无法定位（review 2026-08-11 P0 短推荐问题 400）
       const messages = body.message;
       const error =
-        body.error ??
         (Array.isArray(messages) ? messages.join('；') : messages) ??
+        body.error ??
         '请求失败';
 
       return response.status(statusCode).json({

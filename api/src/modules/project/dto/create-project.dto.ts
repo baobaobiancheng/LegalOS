@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsOptional, IsIn, MinLength, MaxLength } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsIn, IsBoolean, MinLength, MaxLength } from 'class-validator';
 import { ProjectKind } from '@prisma/client';
 
 export class CreateProjectDto {
@@ -15,9 +15,9 @@ export class CreateProjectDto {
 
   @IsString()
   @IsNotEmpty()
-  @MinLength(10)
+  @MinLength(5)
   @MaxLength(5000)
-  input: string; // 用户第一条消息内容
+  input: string; // 用户第一条消息内容（咨询问题,review 2026-08-11 短推荐问题 10→5）
 
   @IsOptional()
   @IsString()
@@ -54,6 +54,12 @@ export class CreateProjectMessageDto {
   @MaxLength(5000)
   text: string;
   // 消息 role 由服务端根据 actor 派生（P1-01 5.3.6）：不允许客户端伪造 assistant/legal
+
+  // 首轮回答（review 2026-08-11 P0）：建单时首条用户消息已落库，此标记让 /messages
+  // 只启动首轮 AI 回答，不再重复写入用户消息、不再重复风险评估。
+  @IsOptional()
+  @IsBoolean()
+  firstReply?: boolean;
 }
 
 export class ReplyProjectDto {

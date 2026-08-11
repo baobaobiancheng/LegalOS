@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { useAuthStore } from '../../stores/auth'
 import { request, RequestError } from '../../api/client'
 import { requestStreamOrJson } from '../../api/sse'
@@ -27,6 +27,18 @@ const msgContainer = ref<HTMLElement | null>(null)
 // 思考过程（2026-08-11 app-server 双路流）：当前 AI 回复的推理增量,可折叠
 const aiThinking = ref('')
 const showThinking = ref(true)
+const thinkingBox = ref<HTMLElement | null>(null)
+/** 最后一条用户消息下标：思考框紧跟其下、每次回答仅一个框（review 2026-08-11 P1） */
+const lastUserMsgIndex = computed(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    if (messages.value[i]?.role === 'user') return i
+  }
+  return -1
+})
+const scrollThinkingBox = () => nextTick(() => {
+  const el = thinkingBox.value
+  if (el) el.scrollTop = el.scrollHeight
+})
 
 // 技能选择（2026-08-04 技能库模块）：默认兜底"通用法务咨询"（skillId=null 不注入）
 // 交互（frontend-design 重设计）：欢迎页领域卡片选择（对话方向感），对话开始后不再显示
@@ -142,6 +154,8 @@ const sendSuggested = (q: string) => {
 const handleSend = async (text: string, files: AttachedFile[]) => {
   const fullInput = buildFullInput(text, files)
   const displayText = buildDisplayText(text, files)
+  // 首条消息：建单已落库,后续 /messages 只启动首轮回答(firstReply=true,不重复写消息/评估)
+  const firstReply = !projectId.value
 
   sending.value = true
   lastError.value = null
@@ -187,15 +201,22 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
       let aiMsg: any | undefined
       const data = await requestStreamOrJson<{ route?: string; done?: boolean; error?: boolean; text?: string; thinking?: string }>(`/projects/${projectId.value}/messages`, {
         method: 'POST',
-        body: { text: fullInput, role: 'user' },
+        body: { text: fullInput, role: 'user', firstReply },
       }, (d) => {
-        // 思考过程独立流（app-server 双路）：增量累积,不混入答案
-        if (d.thinking) aiThinking.value += String(d.thinking)
+        // 思考过程独立流（app-server 双路）：增量累积,不混入答案；框内自动滚到底
+        if (d.thinking) {
+          aiThinking.value += String(d.thinking)
+          scrollThinkingBox()
+        }
         if (d.text || d.error) {
           aiMsg ??= { id: 'streaming', role: 'assistant', text: '' }
           if (messages.value[messages.value.length - 1] !== aiMsg) messages.value.push(aiMsg)
         }
-        if (d.text) { fullText += String(d.text); aiMsg!.text = fullText; scrollBottom() }
+        if (d.text) {
+          // 正式答案开始 → 自动折叠思考框（仍保持单框,不新增）
+          if (!aiMsg!.text && showThinking.value) showThinking.value = false
+          fullText += String(d.text); aiMsg!.text = fullText; scrollBottom()
+        }
         if (d.error) aiMsg!.text = '⚠️ AI 答复生成失败，已通知法务BP处理'
       })
       if (data?.route === 'legalbp') {
@@ -358,23 +379,6 @@ const handleUpgrade = async () => {
       ref="msgContainer"
       class="msg-scroll"
     >
-      <div
-        v-if="expectingAI && aiThinking"
-        class="thinking-panel"
-      >
-        <button
-          class="thinking-toggle"
-          @click="showThinking = !showThinking"
-        >
-          {{ showThinking ? '▾' : '▸' }} 思考过程
-        </button>
-        <div
-          v-if="showThinking"
-          class="thinking-body"
-        >
-          {{ aiThinking }}
-        </div>
-      </div>
       <div class="msg-thread">
         <template
           v-for="(m, i) in messages"
@@ -436,6 +440,25 @@ const handleUpgrade = async () => {
               >
                 {{ upgrading ? '升级中…' : '↑ 升级人工处理' }}
               </button>
+            </div>
+          </div>
+          <!-- 思考过程：紧跟最后一条用户消息下方,每次回答仅一个框,框内自动滚动 -->
+          <div
+            v-if="i === lastUserMsgIndex && expectingAI && aiThinking"
+            class="thinking-panel"
+          >
+            <button
+              class="thinking-toggle"
+              @click="showThinking = !showThinking"
+            >
+              {{ showThinking ? '▾' : '▸' }} 思考过程
+            </button>
+            <div
+              v-if="showThinking"
+              ref="thinkingBox"
+              class="thinking-body"
+            >
+              {{ aiThinking }}
             </div>
           </div>
         </template>
@@ -572,9 +595,9 @@ const handleUpgrade = async () => {
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 .chat-content { max-width: 860px; padding: 0; }
 .msg-scroll { padding: 24px 32px 8px; }
-.thinking-panel { margin: 0 0 14px; border: 1px solid rgba(0,113,227,0.14); background: rgba(0,113,227,0.04); border-radius: 12px; overflow: hidden; }
+.thinking-panel { margin: 2px 0 12px 52px; border: 1px solid rgba(0,113,227,0.14); background: rgba(0,113,227,0.04); border-radius: 12px; overflow: hidden; }
 .thinking-toggle { display: block; width: 100%; text-align: left; font-size: 12px; font-weight: 600; color: var(--blue); background: none; border: none; padding: 8px 14px; cursor: pointer; }
-.thinking-body { padding: 0 14px 12px; font-size: 12px; line-height: 1.7; color: var(--text-secondary); white-space: pre-wrap; }
+.thinking-body { padding: 0 14px 12px; font-size: 12px; line-height: 1.7; color: var(--text-secondary); white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
 .ai-disclaimer { margin-top: 4px; font-size: 10px; color: var(--text-tertiary); padding-left: 4px; }
 .file-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .file-tag { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 8px; background: rgba(0,113,227,0.06); font-size: 11px; }

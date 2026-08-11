@@ -5,7 +5,7 @@ import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import { existsSync, mkdirSync, rmSync, rmdirSync } from 'fs';
 import { join, sep, dirname } from 'path';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import {
   CodexExecutionQueueService,
   CodexExecutionCancelledError,
@@ -282,15 +282,26 @@ export class CodexAppServerService {
 
     let threadId = '';
     let turnId = '';
+    // 诊断：确认网关 delta 是「增量」还是「截至当前的累计文本」(review 2026-08-11 P1)
+    let contentDeltaCount = 0;
     const client = new AppServerClient(child, (method, params) => {
       switch (method) {
         case 'item/reasoning/summaryTextDelta':
         case 'item/reasoning/textDelta':
           if (params?.delta) thinking.write(params.delta);
           break;
-        case 'item/agentMessage/delta':
-          if (params?.delta) stdout.write(params.delta);
+        case 'item/agentMessage/delta': {
+          if (params?.delta) {
+            if (contentDeltaCount < 3) {
+              this.logger.debug(
+                `app-server agentMessage delta#${contentDeltaCount}: len=${params.delta.length} sha256=${createHash('sha256').update(String(params.delta)).digest('hex').slice(0, 8)}`,
+              );
+            }
+            contentDeltaCount++;
+            stdout.write(params.delta);
+          }
           break;
+        }
         case 'turn/completed': {
           const status: string | undefined = params?.turn?.status;
           turnExitCode = status === 'completed' ? 0 : 1;
