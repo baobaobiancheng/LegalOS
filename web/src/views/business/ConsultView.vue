@@ -36,8 +36,10 @@ const lastUserMsgIndex = computed(() => {
   return -1
 })
 const scrollThinkingBox = () => nextTick(() => {
-  const el = thinkingBox.value
-  if (el) el.scrollTop = el.scrollHeight
+  requestAnimationFrame(() => {
+    const el = thinkingBox.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
 })
 
 // 技能选择（2026-08-04 技能库模块）：默认兜底"通用法务咨询"（skillId=null 不注入）
@@ -152,6 +154,8 @@ const sendSuggested = (q: string) => {
 }
 
 const handleSend = async (text: string, files: AttachedFile[]) => {
+  // 防重复点击（review 2026-08-11）：发送/思考/恢复期间忽略再次提交（后端幂等是最终保障）
+  if (sending.value || expectingAI.value || restoring.value) return
   const fullInput = buildFullInput(text, files)
   const displayText = buildDisplayText(text, files)
   // 首条消息：建单已落库,后续 /messages 只启动首轮回答(firstReply=true,不重复写消息/评估)
@@ -199,7 +203,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
     try {
       let fullText = ''
       let aiMsg: any | undefined
-      const data = await requestStreamOrJson<{ route?: string; done?: boolean; error?: boolean; text?: string; thinking?: string }>(`/projects/${projectId.value}/messages`, {
+      const data = await requestStreamOrJson<{ route?: string; done?: boolean; error?: boolean; text?: string; thinking?: string; finalText?: string; answerItemId?: string }>(`/projects/${projectId.value}/messages`, {
         method: 'POST',
         body: { text: fullInput, role: 'user', firstReply },
       }, (d) => {
@@ -208,14 +212,18 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
           aiThinking.value += String(d.thinking)
           scrollThinkingBox()
         }
-        if (d.text || d.error) {
+        if (d.text || d.done || d.error) {
           aiMsg ??= { id: 'streaming', role: 'assistant', text: '' }
           if (messages.value[messages.value.length - 1] !== aiMsg) messages.value.push(aiMsg)
         }
         if (d.text) {
-          // 正式答案开始 → 自动折叠思考框（仍保持单框,不新增）
-          if (!aiMsg!.text && showThinking.value) showThinking.value = false
           fullText += String(d.text); aiMsg!.text = fullText; scrollBottom()
+        }
+        // done.finalText 是权威快照：赋值替换,绝不追加（review 2026-08-11 P1 多 item 拼接）
+        if (d.done && typeof d.finalText === 'string') {
+          fullText = d.finalText
+          aiMsg!.text = d.finalText
+          scrollBottom()
         }
         if (d.error) aiMsg!.text = '⚠️ AI 答复生成失败，已通知法务BP处理'
       })
@@ -597,7 +605,7 @@ const handleUpgrade = async () => {
 .msg-scroll { padding: 24px 32px 8px; }
 .thinking-panel { margin: 2px 0 12px 52px; border: 1px solid rgba(0,113,227,0.14); background: rgba(0,113,227,0.04); border-radius: 12px; overflow: hidden; }
 .thinking-toggle { display: block; width: 100%; text-align: left; font-size: 12px; font-weight: 600; color: var(--blue); background: none; border: none; padding: 8px 14px; cursor: pointer; }
-.thinking-body { padding: 0 14px 12px; font-size: 12px; line-height: 1.7; color: var(--text-secondary); white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
+.thinking-body { padding: 0 14px 12px; font-size: 12px; line-height: 1.7; color: var(--text-secondary); white-space: pre-wrap; height: 180px; overflow-y: auto; overflow-anchor: none; }
 .ai-disclaimer { margin-top: 4px; font-size: 10px; color: var(--text-tertiary); padding-left: 4px; }
 .file-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .file-tag { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 8px; background: rgba(0,113,227,0.06); font-size: 11px; }

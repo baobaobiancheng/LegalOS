@@ -282,35 +282,121 @@ export class CodexAppServerService {
 
     let threadId = '';
     let turnId = '';
-    // 诊断：确认网关 delta 是「增量」还是「截至当前的累计文本」(review 2026-08-11 P1)
-    let contentDeltaCount = 0;
+    // ── item 感知组装（review 2026-08-11 P1）：一个 turn 可能有多个 agentMessage item ──
+    interface AgentItem {
+      phase: string | null; // 'commentary' | 'final_answer' | null
+      text: string;
+      completed: boolean;
+      started: boolean;
+    }
+    const agentItems = new Map<string, AgentItem>();
+    let answerItemId: string | null = null; // 选定的 final_answer item
+    let agentItemCount = 0;
+    let finalAnswerText = '';
+    // 诊断（一）：定位重复是「多 item 拼接」还是「累计快照误当增量」
+    const sha8 = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 8);
+    const diag = (msg: string) =>
+      this.logger.debug(`[app-server diag] turn=${turnId.slice(0, 8) || '-'} ${msg}`);
+
+    const getItem = (itemId: string): AgentItem => {
+      let it = agentItems.get(itemId);
+      if (!it) {
+        it = { phase: null, text: '', completed: false, started: false };
+        agentItems.set(itemId, it);
+      }
+      return it;
+    };
+
     const client = new AppServerClient(child, (method, params) => {
       switch (method) {
         case 'item/reasoning/summaryTextDelta':
         case 'item/reasoning/textDelta':
           if (params?.delta) thinking.write(params.delta);
           break;
-        case 'item/agentMessage/delta': {
-          if (params?.delta) {
-            if (contentDeltaCount < 3) {
-              this.logger.debug(
-                `app-server agentMessage delta#${contentDeltaCount}: len=${params.delta.length} sha256=${createHash('sha256').update(String(params.delta)).digest('hex').slice(0, 8)}`,
-              );
+
+        case 'item/started': {
+          const item = params?.item;
+          if (item?.type === 'agentMessage') {
+            const it = getItem(item.id);
+            it.started = true;
+            it.phase = item.phase ?? null;
+            it.text = item.text ?? '';
+            agentItemCount++;
+            if (item.phase === 'final_answer') {
+              answerItemId = item.id;
+              finalAnswerText = it.text;
             }
-            contentDeltaCount++;
-            stdout.write(params.delta);
+            diag(`item/started id=${item.id.slice(0, 8)} phase=${it.phase} count=${agentItemCount}`);
           }
           break;
         }
+
+        case 'item/agentMessage/delta': {
+          const { itemId, delta } = params ?? {};
+          if (!itemId || typeof delta !== 'string') break;
+          const it = getItem(itemId);
+          it.text += delta;
+          diag(`delta item=${itemId.slice(0, 8)} phase=${it.phase} add=${delta.length} acc=${it.text.length} sha8=${sha8(delta)}`);
+          if (it.phase === 'commentary') {
+            thinking.write(delta);
+          } else if (it.phase === 'final_answer') {
+            if (answerItemId === itemId) {
+              stdout.write(delta);
+            } else {
+              this.logger.warn(
+                `第二个 final_answer item ${itemId.slice(0, 8)}（首个 ${answerItemId?.slice(0, 8) ?? '-'}），丢弃增量`,
+              );
+            }
+          } else {
+            // phase=null：缓冲，不在流式中展示（final 由 turn/completed 选定）
+          }
+          break;
+        }
+
+        case 'item/completed': {
+          const item = params?.item;
+          if (item?.type === 'agentMessage') {
+            const it = getItem(item.id);
+            it.completed = true;
+            // item.text 是该 item 权威最终文本（流式累计可能被压缩/修正）
+            if (typeof item.text === 'string') it.text = item.text;
+            if (it.phase === 'final_answer' && answerItemId === item.id) {
+              finalAnswerText = it.text;
+            }
+            diag(`item/completed id=${item.id.slice(0, 8)} phase=${it.phase} len=${it.text.length} sha8=${sha8(it.text)}`);
+          }
+          break;
+        }
+
         case 'turn/completed': {
           const status: string | undefined = params?.turn?.status;
           turnExitCode = status === 'completed' ? 0 : 1;
           if (status !== 'completed') {
             this.logger.warn(`app-server turn 状态=${status ?? '未知'}，按失败处理`);
           }
+          // 选最终答案：绝不拼接多个 agentMessage item
+          let final = '';
+          if (answerItemId) {
+            final = agentItems.get(answerItemId)?.text ?? '';
+          } else {
+            let last: AgentItem | null = null;
+            for (const it of agentItems.values()) if (it.completed) last = it;
+            final = last?.text ?? '';
+          }
+          if (final && finalAnswerText && final !== finalAnswerText) {
+            this.logger.warn(
+              `流式累计与 completed 权威文本不一致（${final.length} vs ${finalAnswerText.length}），以 completed 为准`,
+            );
+          }
+          final = final || finalAnswerText;
+          // 权威快照交给 SSE done 事件与落库（前端用赋值替换,不再 ++）
+          stream.__finalText = final;
+          stream.__answerItemId = answerItemId;
+          diag(`turn/completed agentItemCount=${agentItemCount} finalLen=${final.length} sha8=${sha8(final)}`);
           shutdown();
           break;
         }
+
         case 'error':
           this.logger.error(`app-server error 通知：${params?.error ?? JSON.stringify(params)}`);
           turnExitCode = 1;

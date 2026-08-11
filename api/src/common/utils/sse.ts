@@ -61,7 +61,13 @@ export function sendSSE(
     }
     if (code === 0) {
       ended = true;
-      res.write(`data: ${JSON.stringify({ done: true, ...donePayload })}\n\n`);
+      // finalText 是 item 感知组装后的权威快照：前端必须赋值替换，不能继续追加
+      res.write(`data: ${JSON.stringify({
+        done: true,
+        finalText: (stream as any).__finalText ?? undefined,
+        answerItemId: (stream as any).__answerItemId ?? undefined,
+        ...donePayload,
+      })}\n\n`);
     } else {
       ended = true;
       res.write(`data: ${JSON.stringify({ error: true, message: 'AI 答复生成失败' })}\n\n`);

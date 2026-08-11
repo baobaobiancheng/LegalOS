@@ -358,8 +358,8 @@ export class ProjectService {
   ): Promise<{ message: any; stream?: ChildProcess; route: string }> {
     const role = actor.role === 'business' ? 'user' : 'legal';
 
-    // 0. 首轮回答（review 2026-08-11 P0）：首条用户消息已在建单时落库，
-    //    这里只启动首轮 AI 回答，不重复写消息、不重复风险评估。
+    // 0. 首轮回答（review 2026-08-11 P0/P1）：首条消息已在建单时落库。
+    //    只启动首轮 AI 回答；ConsultationRun(userMessageId 唯一) 兜并发幂等。
     if (dto.firstReply) {
       const project = await this.prisma.project.findUnique({ where: { id: projectId } });
       if (!project) throw new NotFoundException('工单不存在');
@@ -371,7 +371,38 @@ export class ProjectService {
         orderBy: { createdAt: 'asc' },
       });
       if (!first) throw new BadRequestException('工单没有首条消息');
-      return { message: first, route: 'llm', stream: await this.triggerAIResponse(projectId, first.text, signal) };
+
+      // 幂等：一条 userMessageId 最多一个生成任务
+      const existingRun = await this.prisma.consultationRun.findUnique({
+        where: { userMessageId: first.id },
+      });
+      if (existingRun?.status === 'succeeded') {
+        const answer = existingRun.answerMessageId
+          ? await this.prisma.projectMessage.findUnique({ where: { id: existingRun.answerMessageId } })
+          : null;
+        if (answer) return { message: answer, route: 'llm', stream: undefined };
+      }
+      if (existingRun && (existingRun.status === 'running' || existingRun.status === 'queued')) {
+        return { message: first, route: 'llm', stream: undefined }; // 已在跑,不再启动第二个
+      }
+
+      // 原子认领：唯一约束兜并发,只有一个请求能创建成功
+      let run;
+      try {
+        run = await this.prisma.consultationRun.create({
+          data: { projectId, userMessageId: first.id, status: 'running' },
+        });
+      } catch (e: any) {
+        if (e?.code === 'P2002') {
+          return { message: first, route: 'llm', stream: undefined }; // 并发方已建 run
+        }
+        throw e;
+      }
+      return {
+        message: first,
+        route: 'llm',
+        stream: await this.triggerAIResponse(projectId, first.text, signal, run.id),
+      };
     }
 
     // 1. 锁定工单后鉴权并写消息。MySQL 生产路径使用 FOR UPDATE，避免
@@ -485,6 +516,7 @@ export class ProjectService {
     projectId: string,
     userQuery: string,
     signal?: AbortSignal,
+    runId?: string,
   ): Promise<any> {
     const project = await this.prisma.project
       .findUnique({
@@ -513,20 +545,38 @@ export class ProjectService {
     child.on('close', async (code) => {
       // 连接断开主动取消 → 不写失败状态（刷新 ≠ 生成失败）
       if ((child as any).__cancelled) return;
-      if (code === 0 && fullText.trim()) {
+      // 权威文本优先用 app-server 选定的 finalText（item 感知组装），流式累计仅兜底
+      const finalText = String((child as any).__finalText ?? fullText).trim();
+      if (code === 0 && finalText) {
         try {
-          await this.prisma.$transaction([
+          const [msg] = await this.prisma.$transaction([
             this.prisma.projectMessage.create({
-              data: { projectId, role: 'assistant', text: fullText.trim() },
+              data: { projectId, role: 'assistant', text: finalText },
             }),
             this.prisma.project.update({
               where: { id: projectId },
-              data: { status: '已回传', result: fullText.trim() },
+              data: { status: '已回传', result: finalText },
             }),
           ]);
+          if (runId) {
+            await this.prisma.consultationRun
+              .update({
+                where: { id: runId },
+                data: { status: 'succeeded', answerMessageId: msg.id, completedAt: new Date() },
+              })
+              .catch(() => undefined);
+          }
           await this.addEvent(projectId, this.formatTime() + ' · AI 答复已完成');
         } catch (err) {
           this.logger.error(`AI 答复落库失败：${err}`);
+          if (runId) {
+            await this.prisma.consultationRun
+              .update({
+                where: { id: runId },
+                data: { status: 'failed', errorMessage: String(err).slice(0, 500), completedAt: new Date() },
+              })
+              .catch(() => undefined);
+          }
         }
       } else {
         this.logger.error(`Codex 进程异常退出，code=${code}`);
@@ -536,6 +586,14 @@ export class ProjectService {
             data: { status: '待处理', isFailed: true },
           });
           await this.addEvent(projectId, this.formatTime() + ' · AI 答复生成失败，已转人工处理');
+          if (runId) {
+            await this.prisma.consultationRun
+              .update({
+                where: { id: runId },
+                data: { status: 'failed', errorMessage: `code=${code}`, completedAt: new Date() },
+              })
+              .catch(() => undefined);
+          }
         } catch (err) {
           this.logger.error(`失败状态更新失败：${err}`);
         }
@@ -550,6 +608,14 @@ export class ProjectService {
           data: { status: '待处理', isFailed: true },
         });
         await this.addEvent(projectId, this.formatTime() + ' · AI 服务不可用，已转人工处理');
+        if (runId) {
+          await this.prisma.consultationRun
+            .update({
+              where: { id: runId },
+              data: { status: 'failed', errorMessage: err.message.slice(0, 500), completedAt: new Date() },
+            })
+            .catch(() => undefined);
+        }
       } catch (dbErr) {
         this.logger.error(`失败状态更新失败：${dbErr}`);
       }

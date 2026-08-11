@@ -62,11 +62,12 @@ describe('首轮咨询链路（双重提交回归）', () => {
     prisma = {
       skill: { findFirst: vi.fn() },
       project: { create: vi.fn(), update: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }), findUnique: vi.fn() },
-      projectMessage: { create: vi.fn(), findFirst: vi.fn() },
+      projectMessage: { create: vi.fn(), findFirst: vi.fn(), findUnique: vi.fn() },
       projectEvent: { create: vi.fn() },
       outboxEvent: { create: vi.fn() },
       bpDomainMap: { findMany: vi.fn(), upsert: vi.fn(), deleteMany: vi.fn() },
       user: { findUnique: vi.fn(), findFirst: vi.fn() },
+      consultationRun: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
     };
     makeTransaction(prisma);
     risk = { assess: vi.fn() };
@@ -104,6 +105,8 @@ describe('首轮咨询链路（双重提交回归）', () => {
 
   it('createMessage(firstReply=true) 不重复写用户消息,只启动一次 AI 流', async () => {
     prisma.projectMessage.findFirst.mockResolvedValue({ id: 'm1', role: 'user', text: '这是首条消息' });
+    prisma.consultationRun.findUnique.mockResolvedValue(null);
+    prisma.consultationRun.create.mockResolvedValue({ id: 'run-1', status: 'running' });
 
     const result = await service.createMessage(
       'p-1',
@@ -115,7 +118,45 @@ describe('首轮咨询链路（双重提交回归）', () => {
     expect(risk.assess).not.toHaveBeenCalled(); // 不重复风险评估
     expect(codex.executeStream).toHaveBeenCalledTimes(1); // 只启动一次 AI
     expect(codex.executeStream.mock.calls[0][0]).toContain('这是首条消息'); // 用首条消息作 prompt
+    expect(prisma.consultationRun.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ userMessageId: 'm1', status: 'running' }) }),
+    );
     expect(result.route).toBe('llm');
+  });
+
+  it('两个并发 firstReply 只启动一次模型(ConsultationRun 唯一约束兜底)', async () => {
+    prisma.projectMessage.findFirst.mockResolvedValue({ id: 'm1', role: 'user', text: '这是首条消息' });
+    prisma.consultationRun.findUnique.mockResolvedValue(null);
+    // 第一个 create 成功,第二个撞 userMessageId 唯一约束
+    prisma.consultationRun.create
+      .mockResolvedValueOnce({ id: 'run-1', status: 'running' })
+      .mockRejectedValueOnce({ code: 'P2002' });
+
+    await Promise.all([
+      service.createMessage('p-1', { text: '这是首条消息', firstReply: true }, { id: 'u-biz', role: 'business' }),
+      service.createMessage('p-1', { text: '这是首条消息', firstReply: true }, { id: 'u-biz', role: 'business' }),
+    ]);
+
+    expect(codex.executeStream).toHaveBeenCalledTimes(1); // 只有一个请求获得执行权
+    // 两个请求都尝试认领(create),但唯一约束只让一个成功,另一个 P2002 → 库里只有一条 run
+    expect(prisma.consultationRun.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('firstReply 已 succeeded 时返回已有答案,不再启动模型', async () => {
+    prisma.projectMessage.findFirst.mockResolvedValue({ id: 'm1', role: 'user', text: '这是首条消息' });
+    prisma.projectMessage.findUnique.mockResolvedValue({ id: 'a1', role: 'assistant', text: '已有答案' });
+    prisma.consultationRun.findUnique.mockResolvedValue({
+      id: 'run-1', status: 'succeeded', answerMessageId: 'a1',
+    });
+
+    const result = await service.createMessage(
+      'p-1',
+      { text: '这是首条消息', firstReply: true },
+      { id: 'u-biz', role: 'business' },
+    );
+
+    expect(codex.executeStream).not.toHaveBeenCalled();
+    expect(result.message).toMatchObject({ id: 'a1', text: '已有答案' });
   });
 
   it('createMessage(普通追问) 仍写消息 + 触发 AI（一次）', async () => {

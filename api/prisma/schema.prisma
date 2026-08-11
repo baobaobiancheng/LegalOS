@@ -366,6 +366,24 @@ model RiskAssessmentLog {
   @@map("risk_assessment_logs")
 }
 
+// 咨询回答运行（2026-08-11）：一条用户消息最多一个生成任务（userMessageId 唯一），
+// 防 firstReply 重复调用启动多个 AI / 重复落库答案。
+model ConsultationRun {
+  id              String   @id @default(uuid())
+  projectId       String   @map("project_id")
+  userMessageId   String   @unique @map("user_message_id")
+  status          String   @default("running") @db.VarChar(16) // queued/running/succeeded/failed/cancelled
+  answerMessageId String?  @map("answer_message_id")
+  errorMessage    String?  @map("error_message") @db.Text
+  startedAt       DateTime @default(now()) @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@index([projectId])
+  @@map("consultation_runs")
+}
+
 // 合同附件（本地磁盘文件，DB 只存元数据）
 // kind 仅 revised | final：草稿走前端 markdown→docx（DownloadMenu），不落盘
 model ContractFile {
