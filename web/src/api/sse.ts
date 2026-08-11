@@ -111,6 +111,16 @@ const consumeSseResponse = async <T extends SseEvent>(response: Response, onEven
     reader.releaseLock()
   }
 
+  // reader.cancel() 后 read() 通常以 done 正常结束而非抛错,此处兜底判空闲超时
+  if (idleTimedOut) {
+    throw reportSseError(new RequestError({
+      error: '请求超时，请重试',
+      code: 'REQUEST_TIMEOUT',
+      statusCode: response.status,
+      ...(requestId ? { requestId } : {}),
+    }))
+  }
+
   if (!terminalEvent) {
     throw reportSseError(new RequestError({
       error: '流式连接意外结束，请重试',

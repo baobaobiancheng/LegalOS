@@ -55,7 +55,12 @@ const saveSession = () => {
 }
 const clearSession = () => localStorage.removeItem(SESSION_KEY)
 
+// 会话代次：新建会话/过期恢复响应不覆盖当前状态（review 2026-08-11 竞态防护）
+let sessionGen = 0
+const restoring = ref(false)
+
 const startNewSession = () => {
+  sessionGen++
   clearSession()
   projectId.value = ''
   projectRoute.value = ''
@@ -65,14 +70,17 @@ const startNewSession = () => {
   scrollBottom()
 }
 
-/** 切页回来恢复上次咨询会话：拉取工单 + 重建消息时间线 */
+/** 切页回来恢复上次咨询会话：拉取工单 + 重建消息时间线（期间禁用输入,防跨工单消息混合） */
 const restoreSession = async () => {
+  const gen = sessionGen
+  restoring.value = true
   try {
     const raw = localStorage.getItem(SESSION_KEY)
     if (!raw) return
     const saved = JSON.parse(raw) as { projectId?: string }
     if (!saved?.projectId) return
     const data = await request<ProjectDetail>(`/projects/${saved.projectId}`)
+    if (gen !== sessionGen) return // 恢复期间已新建会话 → 丢弃过期响应
     projectId.value = data.id
     projectRoute.value = data.route
     upgraded.value = data.route === 'legalbp'
@@ -82,8 +90,15 @@ const restoreSession = async () => {
     tl.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
     messages.value = tl
     scrollBottom()
-  } catch {
-    clearSession() // 会话失效（删除/无权限）→ 回到欢迎页
+  } catch (error) {
+    if (gen !== sessionGen) return
+    // 仅数据损坏/403/404 才清会话；网络错误/5xx 保留 key（下次刷新可重试）
+    const isReqErr = error instanceof RequestError
+    const status = isReqErr ? error.payload.statusCode : undefined
+    if (!isReqErr || status === 403 || status === 404) clearSession()
+    else lastError.value = isReqErr ? error : new RequestError({ error: '会话恢复失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  } finally {
+    if (gen === sessionGen) restoring.value = false
   }
 }
 
@@ -245,6 +260,7 @@ const handleUpgrade = async () => {
       <button
         v-if="projectId"
         class="tb-new-btn"
+        :disabled="sending || expectingAI"
         @click="startNewSession"
       >
         ＋ 新建会话
@@ -428,7 +444,7 @@ const handleUpgrade = async () => {
 
     <ChatInputBar
       v-if="!upgraded"
-      :disabled="sending"
+      :disabled="sending || restoring"
       @send="handleSend"
     />
     <ErrorState
