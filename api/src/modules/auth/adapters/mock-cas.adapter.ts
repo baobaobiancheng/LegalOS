@@ -21,4 +21,19 @@ export class MockCasAdapter implements CasAdapter {
       roleCode: 'common',
     };
   }
+
+  /** mock 账号密码登录：空密码视为无效,否则返回固定用户（本地联调） */
+  async loginWithPassword(username: string, password: string): Promise<CasUserInfo> {
+    if (!username || !password) {
+      throw new CasAuthError(CasAuthErrorType.INVALID_CREDENTIALS, 'mock 账号或密码错误');
+    }
+    return {
+      username,
+      name: `Mock ${username}`,
+      email: `${username}@brgroup.com`,
+      deptName: '研发部',
+      projectCode: 'legalos',
+      roleCode: 'common',
+    };
+  }
 }

@@ -124,19 +124,18 @@
             </div>
           </transition>
 
-          <!-- 密码登录：仅本地开发(CAS_BYPASS/旁路)；生产/预发只走 CAS -->
+          <!-- 公司账号登录（CAS 方式一；生产/预发唯一入口） -->
           <form
-            v-if="showPasswordForm"
             class="login-form"
-            @submit.prevent="handleLogin"
+            @submit.prevent="handleCasLogin"
           >
             <div class="field">
-              <label>用户名</label>
+              <label>公司账号</label>
               <input
                 v-model="form.username"
                 class="input-apple"
-                placeholder="请输入用户名"
-                maxlength="64"
+                placeholder="请输入公司 CAS 账号"
+                maxlength="128"
                 autocomplete="username"
               >
             </div>
@@ -165,22 +164,43 @@
             </button>
           </form>
 
-          <div v-if="showPasswordForm" class="divider">或</div>
-
-          <!-- CAS 统一登录（T3）：跳 CAS → 回跳带 ?ticket= → 登录页兑换 -->
-          <button
-            type="button"
-            class="btn-cas"
-            :disabled="casBusy"
-            @click="handleCasLogin"
-          >
-            <span v-if="casBusy" class="spinner" />
-            {{ casBusy ? '正在登录…' : '使用公司账号登录' }}
-          </button>
-
-          <p v-if="showPasswordForm" class="footer-note">
-            种子账号：admin / legal_bp / business
-          </p>
+          <!-- 本地开发：种子账号测试三端（仅 dev，生产构建隐藏） -->
+          <template v-if="showLocalDev">
+            <div class="divider">本地测试账号</div>
+            <form
+              class="login-form"
+              @submit.prevent="handleLocalLogin"
+            >
+              <div class="field">
+                <label>本地账号</label>
+                <input
+                  v-model="localForm.username"
+                  class="input-apple"
+                  placeholder="admin / legal_bp / business"
+                  maxlength="64"
+                >
+              </div>
+              <div class="field">
+                <label>密码</label>
+                <input
+                  v-model="localForm.password"
+                  class="input-apple"
+                  type="password"
+                  placeholder="本地种子密码"
+                  maxlength="128"
+                >
+              </div>
+              <button
+                type="submit"
+                class="btn-cas"
+                :disabled="localLoading"
+              >
+                <span v-if="localLoading" class="spinner" />
+                {{ localLoading ? '登录中…' : '本地登录' }}
+              </button>
+            </form>
+            <p class="footer-note">本地种子：admin / legal_bp / business</p>
+          </template>
         </div>
       </div>
     </div>
@@ -188,7 +208,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { RequestError } from '../../api/client'
@@ -199,26 +219,29 @@ const route = useRoute()
 const auth = useAuthStore()
 
 const form = reactive({ username: '', password: '' })
+const localForm = reactive({ username: '', password: '' })
 const loading = ref(false)
-const casBusy = ref(false)
+const localLoading = ref(false)
 const errorMsg = ref('')
-// 密码登录仅本地开发(旁路)；任何构建产物(预发/生产)只走 CAS
-const showPasswordForm = import.meta.env.DEV
+// 本地测试账号(种子 admin/legal_bp/business)仅 dev 显示；生产/预发只走 CAS 表单
+const showLocalDev = import.meta.env.DEV
 
-const validate = () => {
-  if (!form.username.trim()) { errorMsg.value = '请输入用户名'; return false }
-  if (!form.password.trim()) { errorMsg.value = '请输入密码'; return false }
-  return true
+const goHome = (user: { role: Role }) => {
+  const redirect = (route.query.redirect as string) || HOME_BY_ROLE[user.role]
+  return router.replace(redirect)
 }
 
-async function handleLogin() {
-  if (!validate()) return
+/** 公司账号登录（CAS 方式一：账号密码 → 后端换 ticket → validate → 登录） */
+async function handleCasLogin() {
+  if (!form.username.trim() || !form.password) {
+    errorMsg.value = '请输入公司账号和密码'
+    return
+  }
   loading.value = true
   errorMsg.value = ''
   try {
-    const user = await auth.login(form.username, form.password)
-    const redirect = (route.query.redirect as string) || HOME_BY_ROLE[user.role as Role]
-    await router.replace(redirect)
+    const user = await auth.casLogin(form.username.trim(), form.password)
+    await goHome(user)
   } catch (error) {
     if (error instanceof RequestError) errorMsg.value = error.payload.error
     else errorMsg.value = '登录失败，请稍后再试'
@@ -227,37 +250,23 @@ async function handleLogin() {
   }
 }
 
-/** CAS 回调兑换：?ticket= → 调 cas-login → 存 token → 跳首页；先清 URL 防 ticket 泄露 */
-async function redeemCasTicket(ticket: string) {
-  history.replaceState({}, '', route.path) // 去掉 ?ticket=（防历史/截图/代理泄露）
-  casBusy.value = true
+/** 本地测试登录（仅 dev：种子账号测试三端） */
+async function handleLocalLogin() {
+  if (!localForm.username.trim() || !localForm.password) {
+    errorMsg.value = '请输入本地账号和密码'
+    return
+  }
+  localLoading.value = true
   errorMsg.value = ''
   try {
-    const user = await auth.casLogin(ticket)
-    const redirect = (route.query.redirect as string) || HOME_BY_ROLE[user.role as Role]
-    await router.replace(redirect)
+    const user = await auth.login(localForm.username.trim(), localForm.password)
+    await goHome(user)
   } catch (error) {
-    if (error instanceof RequestError) {
-      errorMsg.value = error.payload.code === 'CAS_UNAVAILABLE'
-        ? '认证服务暂不可用，请稍后重试'
-        : '登录已失效，请重新登录'
-    } else {
-      errorMsg.value = '登录失败，请稍后再试'
-    }
+    if (error instanceof RequestError) errorMsg.value = error.payload.error
+    else errorMsg.value = '登录失败，请稍后再试'
   } finally {
-    casBusy.value = false
+    localLoading.value = false
   }
-}
-
-onMounted(() => {
-  const ticket = route.query.ticket
-  if (typeof ticket === 'string' && ticket) void redeemCasTicket(ticket)
-})
-
-/** 使用公司账号登录：跳 CAS（门户/项目认证入口,由 VITE_CAS_LOGIN_URL 配置） */
-function handleCasLogin() {
-  const url = import.meta.env.VITE_CAS_LOGIN_URL || 'https://cas-pre.100credit.cn/'
-  window.location.href = url
 }
 </script>
 

@@ -8,9 +8,10 @@ import {
 } from '../src/modules/auth/adapters/cas-adapter.interface';
 
 /**
- * CAS 登录（T3）单测：
- * - 自动建号(upsert 并发安全) / 领域角色平台自管(admin 名单+预映射) / inactive 拒绝
- * - 错误码：ticket 无效→401 / CAS 不可达→503
+ * CAS 登录（T3 修订）单测：
+ * - 账号密码登录（方式一）→ upsert 并发安全
+ * - 角色组织架构驱动：个人映射(CAS_ROLE_MAP) > 部门映射(CAS_DEPT_MAP,deptName) > 默认 business
+ * - inactive 拒绝 / 错误码（账号密码错→401 / CAS 不可达→503）
  * - refresh 链上限(T5)：authMethod 继承 + originalExpiresAt 封顶 + 强制环境拒 password
  */
 
@@ -29,8 +30,8 @@ const cfg = (over: Record<string, string> = {}) => {
     REFRESH_TOKEN_TTL_MS: '86400000',
     SESSION_CAP_MS: '604800000',
     CAS_ENFORCED: 'false',
-    CAS_ADMIN_USERNAMES: '',
     CAS_ROLE_MAP: '',
+    CAS_DEPT_MAP: '',
   };
   return { get: (k: string) => ({ ...base, ...over })[k] ?? undefined };
 };
@@ -45,104 +46,102 @@ function makeService(over: { config?: ReturnType<typeof cfg> } = {}) {
     signAsync: vi.fn().mockResolvedValue('signed-token'),
     verifyAsync: vi.fn().mockResolvedValue({ sub: 'u-1', jti: 'j1', type: 'refresh' }),
   };
-  const cas = { validateTicket: vi.fn() };
+  const cas = { loginWithPassword: vi.fn(), validateTicket: vi.fn() };
   const service = new AuthService(prisma as any, jwt as any, over.config ?? cfg() as any, cas as any);
   return { service, prisma, jwt, cas };
 }
 
-describe('AuthService.casLogin', () => {
+describe('AuthService.casLogin（账号密码/方式一）', () => {
   let ctx: ReturnType<typeof makeService>;
 
   beforeEach(() => {
     ctx = makeService();
-    ctx.cas.validateTicket.mockResolvedValue({
+    ctx.cas.loginWithPassword.mockResolvedValue({
       username: 'zhenghe.bao',
       name: '包正和',
       email: 'zhenghe.bao@brgroup.com',
+      deptName: '研发部',
       projectCode: 'legalos',
     });
     ctx.prisma.user.findUnique.mockResolvedValue(null);
     ctx.prisma.user.upsert.mockResolvedValue(mockUser());
   });
 
-  it('新用户自动建号：username=casUsername + 随机不可用哈希 + 默认 business + authMethod=cas', async () => {
-    await ctx.service.casLogin({ ticket: 'ticket-abc' }, '1.2.3.4');
+  it('账号密码登录：调 loginWithPassword + upsert 建号 + authMethod=cas + 默认 business', async () => {
+    await ctx.service.casLogin({ username: 'zhenghe.bao', password: 'pw-123' }, '1.2.3.4');
+    expect(ctx.cas.loginWithPassword).toHaveBeenCalledWith('zhenghe.bao', 'pw-123');
     const create = ctx.prisma.user.upsert.mock.calls[0][0];
     expect(create.where).toEqual({ casUsername: 'zhenghe.bao' });
     expect(create.create.username).toBe('zhenghe.bao');
-    expect(create.create.casUsername).toBe('zhenghe.bao');
-    expect(create.create.role).toBe('business');
+    expect(create.create.role).toBe('business'); // 默认
     expect(create.create.passwordHash).not.toBe(''); // 随机不可用哈希
-    // refresh 落库带 authMethod=cas
     const rt = ctx.prisma.refreshToken.create.mock.calls[0][0].data;
     expect(rt.authMethod).toBe('cas');
-    expect(rt.originalExpiresAt).toBeInstanceOf(Date);
     expect(ctx.prisma.loginAudit.create).toHaveBeenCalled();
   });
 
-  it('CAS_ADMIN_USERNAMES 命中 → admin(create 与 update 都升级,不降级)', async () => {
-    ctx = makeService({ config: cfg({ CAS_ADMIN_USERNAMES: 'zhenghe.bao' }) });
-    ctx.cas.validateTicket.mockResolvedValue({ username: 'zhenghe.bao', name: '包正和' });
+  it('个人映射 CAS_ROLE_MAP 命中 → admin/legal_lead（优先级最高）', async () => {
+    ctx = makeService({ config: cfg({ CAS_ROLE_MAP: 'zhenghe.bao:admin,junfang.zhao:legal_lead' }) });
+    ctx.cas.loginWithPassword.mockResolvedValue({ username: 'junfang.zhao', name: '赵俊芳', deptName: '法务部' });
     ctx.prisma.user.findUnique.mockResolvedValue(null);
-    ctx.prisma.user.upsert.mockResolvedValue(mockUser({ role: 'admin' }));
-    await ctx.service.casLogin({ ticket: 't' });
-
+    ctx.prisma.user.upsert.mockResolvedValue(mockUser({ username: 'junfang.zhao', role: 'legal_lead' }));
+    await ctx.service.casLogin({ username: 'junfang.zhao', password: 'pw' });
     const { create, update } = ctx.prisma.user.upsert.mock.calls[0][0];
-    expect(create.role).toBe('admin');
-    expect(update.role).toBe('admin');
+    expect(create.role).toBe('legal_lead'); // 赵俊芳 → 法务管理员
+    expect(update.role).toBe('legal_lead');
   });
 
-  it('CAS_ROLE_MAP 预映射 → 领域角色', async () => {
-    ctx = makeService({ config: cfg({ CAS_ROLE_MAP: 'yuxin.peng:legal_bp' }) });
-    ctx.cas.validateTicket.mockResolvedValue({ username: 'yuxin.peng', name: '彭宇欣' });
+  it('部门映射 CAS_DEPT_MAP 命中 → 法务部 → legal_bp（组织架构驱动）', async () => {
+    ctx = makeService({ config: cfg({ CAS_DEPT_MAP: '法务部:legal_bp' }) });
+    ctx.cas.loginWithPassword.mockResolvedValue({ username: 'yuxin.peng', name: '彭宇欣', deptName: '法务部' });
     ctx.prisma.user.findUnique.mockResolvedValue(null);
     ctx.prisma.user.upsert.mockResolvedValue(mockUser({ username: 'yuxin.peng', role: 'legal_bp' }));
-    await ctx.service.casLogin({ ticket: 't' });
+    await ctx.service.casLogin({ username: 'yuxin.peng', password: 'pw' });
     expect(ctx.prisma.user.upsert.mock.calls[0][0].create.role).toBe('legal_bp');
   });
 
-  it('已存在用户不降级：admin 名单未命中时 update 不写 role', async () => {
-    ctx.prisma.user.findUnique.mockResolvedValue(mockUser({ role: 'legal_bp' }));
-    await ctx.service.casLogin({ ticket: 't' });
-    const { update } = ctx.prisma.user.upsert.mock.calls[0][0];
-    expect(update.role).toBeUndefined(); // 不降级
-    expect(update.displayName).toBe('包正和');
+  it('个人映射优先于部门映射', async () => {
+    ctx = makeService({ config: cfg({ CAS_ROLE_MAP: 'junfang.zhao:legal_lead', CAS_DEPT_MAP: '法务部:legal_bp' }) });
+    ctx.cas.loginWithPassword.mockResolvedValue({ username: 'junfang.zhao', name: '赵俊芳', deptName: '法务部' });
+    ctx.prisma.user.findUnique.mockResolvedValue(null);
+    ctx.prisma.user.upsert.mockResolvedValue(mockUser({ username: 'junfang.zhao', role: 'legal_lead' }));
+    await ctx.service.casLogin({ username: 'junfang.zhao', password: 'pw' });
+    expect(ctx.prisma.user.upsert.mock.calls[0][0].create.role).toBe('legal_lead'); // 个人赢
   });
 
   it('inactive 用户显式拒绝(401 USER_DISABLED),不 upsert', async () => {
     ctx.prisma.user.findUnique.mockResolvedValue(mockUser({ isActive: false }));
-    await expect(ctx.service.casLogin({ ticket: 't' })).rejects.toMatchObject({
+    await expect(ctx.service.casLogin({ username: 'zhenghe.bao', password: 'pw' })).rejects.toMatchObject({
       status: 401,
       response: { code: 'USER_DISABLED' },
     });
     expect(ctx.prisma.user.upsert).not.toHaveBeenCalled();
   });
 
-  it('ticket 无效/过期 → 401 INVALID_CAS_TICKET', async () => {
-    ctx.cas.validateTicket.mockRejectedValue(
-      new CasAuthError(CasAuthErrorType.INVALID_TICKET, 'ticket 已使用'),
+  it('账号或密码错误 → 401 INVALID_CAS_CREDENTIALS', async () => {
+    ctx.cas.loginWithPassword.mockRejectedValue(
+      new CasAuthError(CasAuthErrorType.INVALID_CREDENTIALS, '账号或密码错误'),
     );
-    await expect(ctx.service.casLogin({ ticket: 'bad' })).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
+    await expect(ctx.service.casLogin({ username: 'x', password: 'y' })).rejects.toMatchObject({
+      status: 401,
+      response: { code: 'INVALID_CAS_CREDENTIALS' },
+    });
   });
 
   it('CAS 不可达/超时 → 503 CAS_UNAVAILABLE(不重试)', async () => {
-    ctx.cas.validateTicket.mockRejectedValue(
+    ctx.cas.loginWithPassword.mockRejectedValue(
       new CasAuthError(CasAuthErrorType.CAS_UNAVAILABLE, 'timeout'),
     );
-    await expect(ctx.service.casLogin({ ticket: 't' })).rejects.toBeInstanceOf(
+    await expect(ctx.service.casLogin({ username: 'x', password: 'y' })).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
   });
 
   it('并发首登不冲突：findUnique 双 null 后 upsert 只建一条(唯一约束兜底)', async () => {
-    // 两次并发都走 upsert；Prisma upsert 由 casUsername 唯一约束保证只一条
-    const p1 = ctx.service.casLogin({ ticket: 't1' });
-    const p2 = ctx.service.casLogin({ ticket: 't2' });
+    const p1 = ctx.service.casLogin({ username: 'zhenghe.bao', password: 'a' });
+    const p2 = ctx.service.casLogin({ username: 'zhenghe.bao', password: 'b' });
     await Promise.all([p1, p2]);
     expect(ctx.prisma.user.upsert).toHaveBeenCalledTimes(2);
-    // 两次 upsert 的 where 都是同一 casUsername
     const wheres = ctx.prisma.user.upsert.mock.calls.map((c: any) => c[0].where);
     expect(wheres[0]).toEqual({ casUsername: 'zhenghe.bao' });
   });

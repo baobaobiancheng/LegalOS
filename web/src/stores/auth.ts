@@ -21,11 +21,11 @@ export const useAuthStore = defineStore('auth', () => {
     return data.user
   }
 
-  /** CAS 登录（T3）：前端收 ?ticket= 后调 /auth/cas-login 兑换 */
-  async function casLogin(ticket: string) {
+  /** CAS 登录（T3 修订）：登录页账号密码 → 后端走 CAS 方式一校验 */
+  async function casLogin(username: string, password: string) {
     const data = await request<{ accessToken: string; user: User }>('/auth/cas-login', {
       method: 'POST',
-      body: { ticket },
+      body: { username, password },
     })
     setAccessToken(data.accessToken)
     user.value = data.user

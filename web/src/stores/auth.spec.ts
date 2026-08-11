@@ -22,11 +22,11 @@ describe('auth store casLogin（T3）', () => {
       user: { id: 'u1', username: 'zhenghe.bao', role: 'business', displayName: '包正和' },
     })
     const store = useAuthStore()
-    const user = await store.casLogin('ticket-abc')
+    const user = await store.casLogin('zhenghe.bao', 'pw-123')
 
     expect(request).toHaveBeenCalledWith('/auth/cas-login', {
       method: 'POST',
-      body: { ticket: 'ticket-abc' },
+      body: { username: 'zhenghe.bao', password: 'pw-123' },
     })
     expect(setAccessToken).toHaveBeenCalledWith('at-1')
     expect(user.role).toBe('business')

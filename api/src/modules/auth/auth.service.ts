@@ -150,16 +150,7 @@ export class AuthService {
     return { ...tokens, user: this.publicUser(user) };
   }
 
-  /** 是否 CAS_ADMIN_USERNAMES 名单成员（一期 admin 引导,设计 T4） */
-  private isCasAdmin(casUsername: string): boolean {
-    const list = (this.config.get<string>('CAS_ADMIN_USERNAMES') || '')
-      .split(',')
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean);
-    return list.includes(casUsername.trim().toLowerCase());
-  }
-
-  /** CAS_ROLE_MAP：'user:role,user2:role2'（一期供给 legal_bp/legal_lead 等,设计 T4） */
+  /** CAS_ROLE_MAP 个人映射：'user:role,user2:role2'（如 junfang.zhao:legal_lead、zhenghe.bao:admin） */
   private casRoleMap(): Record<string, Role> {
     const raw = this.config.get<string>('CAS_ROLE_MAP') || '';
     const map: Record<string, Role> = {};
@@ -175,25 +166,51 @@ export class AuthService {
     return map;
   }
 
-  /** 领域角色解析：CAS 只认证身份,领域角色平台自管（P2）；admin 名单 > 预映射 > 默认 business */
-  private resolveRole(casUsername: string): Role {
-    if (this.isCasAdmin(casUsername)) return 'admin';
-    return this.casRoleMap()[casUsername.trim().toLowerCase()] ?? 'business';
+  /** CAS_DEPT_MAP 部门映射：'法务部:legal_bp,部门2:role2'（组织架构驱动） */
+  private casDeptMap(): Record<string, Role> {
+    const raw = this.config.get<string>('CAS_DEPT_MAP') || '';
+    const map: Record<string, Role> = {};
+    for (const pair of raw.split(',')) {
+      const [dept, role] = pair.split(':').map((s) => s.trim());
+      if (
+        dept &&
+        (role === 'admin' || role === 'legal_bp' || role === 'legal_lead' || role === 'business')
+      ) {
+        map[dept] = role as Role;
+      }
+    }
+    return map;
+  }
+
+  /** 领域角色解析（组织架构驱动,登录时重新派生）：个人映射 > 部门映射(deptName) > 默认 business */
+  private resolveRole(casUsername: string, deptName?: string): Role {
+    const personal = this.casRoleMap()[casUsername.trim().toLowerCase()];
+    if (personal) return personal;
+    const dept = this.casDeptMap()[(deptName || '').trim()];
+    if (dept) return dept;
+    return 'business';
   }
 
   /**
-   * CAS 登录（T3）：validate → 按 casUsername 找/建(upsert 并发安全) → 领域角色平台自管 → 发 JWT。
-   * 错误码：ticket 无效→401；CAS 不可达/超时→503(不重试,防消费一次性 ticket)；BYPASS 生产误开→启动时拒。
+   * CAS 登录（T3 修订）：登录页账号密码 → 方式一(/api/login 换 ticket → validate) → upsert → JWT。
+   * 角色组织架构驱动：个人映射(CAS_ROLE_MAP) > 部门映射(CAS_DEPT_MAP,deptName) > 默认 business。
+   * 错误码：账号/密码错或无权限→401；CAS 不可达/超时→503(不重试)。
    */
   async casLogin(dto: CasLoginDto, ip?: string) {
     let info: CasUserInfo;
     try {
-      info = await this.cas.validateTicket(dto.ticket);
+      info = await this.cas.loginWithPassword(dto.username, dto.password);
     } catch (e) {
       if (e instanceof CasAuthError) {
+        if (e.type === CasAuthErrorType.INVALID_CREDENTIALS) {
+          throw new UnauthorizedException({
+            error: '账号或密码错误，或未开通项目权限',
+            code: 'INVALID_CAS_CREDENTIALS',
+          });
+        }
         if (e.type === CasAuthErrorType.INVALID_TICKET) {
           throw new UnauthorizedException({
-            error: '登录已失效，请重新登录',
+            error: '登录已失效，请重试',
             code: 'INVALID_CAS_TICKET',
           });
         }
@@ -208,7 +225,7 @@ export class AuthService {
     if (!info.username) {
       throw new UnauthorizedException({
         error: '认证返回缺少用户标识',
-        code: 'INVALID_CAS_TICKET',
+        code: 'INVALID_CAS_CREDENTIALS',
       });
     }
 
@@ -218,9 +235,8 @@ export class AuthService {
       throw new UnauthorizedException({ error: '账号已停用，请联系管理员', code: 'USER_DISABLED' });
     }
 
-    const isAdmin = this.isCasAdmin(info.username);
-    const updateData: { displayName: string; role?: Role } = { displayName: info.name };
-    if (isAdmin) updateData.role = 'admin'; // admin 名单命中→升级,不降级
+    // 组织架构驱动：每次登录重新派生角色（个人映射 > 部门映射 > business）
+    const role = this.resolveRole(info.username, info.deptName);
 
     // upsert：并发首登只建一条（casUsername 唯一约束），不报冲突
     const user = await this.prisma.user.upsert({
@@ -229,10 +245,10 @@ export class AuthService {
         username: info.username,
         displayName: info.name,
         passwordHash: crypto.randomBytes(16).toString('hex'), // 随机不可用哈希,不能密码登录
-        role: this.resolveRole(info.username),
+        role,
         casUsername: info.username,
       },
-      update: updateData,
+      update: { displayName: info.name, role },
     });
 
     if (!user.isActive) {
