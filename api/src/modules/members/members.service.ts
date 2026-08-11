@@ -6,6 +6,8 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { Inject } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Role } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   DINGTALK_ADAPTER,
@@ -31,7 +33,21 @@ export class MembersService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(DINGTALK_ADAPTER) private readonly dingtalk: DingTalkAdapter,
+    private readonly config: ConfigService,
   ) {}
+
+  /** 部门→领域角色（用户决策 A：角色以钉钉组织架构为准，2026-08-11） */
+  private deptRole(dept?: string): Role | undefined {
+    if (!dept) return undefined;
+    const raw = this.config.get<string>('CAS_DEPT_MAP') || '';
+    for (const pair of raw.split(',')) {
+      const [d, r] = pair.split(':').map((s) => s.trim());
+      if (d === dept && (r === 'legal_bp' || r === 'legal_lead' || r === 'admin' || r === 'business')) {
+        return r as Role;
+      }
+    }
+    return undefined;
+  }
 
   /**
    * 一键同步（P1-07/08）：拉全量（结构化结果，不完整抛 DingTalkSyncIncompleteError）→
@@ -239,12 +255,15 @@ export class MembersService {
       }
       const contact = snapshot[0];
       if (boundContactIds.has(contact.userId)) continue; // 已被他人绑定
+      // 组织架构权威(用户决策 A)：部门 + 角色一起按钉钉部门设置
+      const role = this.deptRole(contact.department);
       await tx.user.update({
         where: { id: users[0].id },
         data: {
           dingtalkUserId: contact.userId,
           dingtalkPhone: contact.mobile ?? null,
-          department: contact.department, // 组织架构部门(2026-08-11);ContactInfo.department 本身 optional,无需 ?? undefined
+          department: contact.department,
+          ...(role ? { role } : {}), // CAS_DEPT_MAP 命中则同步角色
         },
       });
       autoBound++;

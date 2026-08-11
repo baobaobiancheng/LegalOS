@@ -235,36 +235,35 @@ export class AuthService {
       throw new UnauthorizedException({ error: '账号已停用，请联系管理员', code: 'USER_DISABLED' });
     }
 
-    // 组织架构驱动：每次登录重新派生角色（个人映射 > 部门映射 > business）
-    const role = this.resolveRole(info.username, info.deptName);
-
-    // upsert：并发首登只建一条（casUsername 唯一约束），不报冲突
-    // department 仅当 CAS 返回 deptName 时写入；缺省不更新，避免覆盖钉钉同步的部门（review 2026-08-11 P1）
-    const casDept = info.deptName ?? null;
+    // 用户决策 A(2026-08-11)：角色以钉钉组织架构为准，不由 CAS deptName 决定
+    // （预发实测彭宇欣 deptName=研发部，与真实法务组织不符）
+    // upsert：create 默认 business + 不写 department（等钉钉同步填充真实部门）；
+    //        update 只刷 displayName，不覆盖 role/department（钉钉为准）
     const user = await this.prisma.user.upsert({
       where: { casUsername: info.username },
       create: {
         username: info.username,
         displayName: info.name,
         passwordHash: crypto.randomBytes(16).toString('hex'), // 随机不可用哈希,不能密码登录
-        role,
+        role: 'business',
         casUsername: info.username,
-        department: casDept,
       },
-      update: {
-        displayName: info.name,
-        role,
-        ...(casDept ? { department: casDept } : {}), // 缺省不覆盖已有部门
-      },
+      update: { displayName: info.name },
     });
 
     if (!user.isActive) {
       throw new UnauthorizedException({ error: '账号已停用，请联系管理员', code: 'USER_DISABLED' });
     }
 
+    // 角色按 User.department（钉钉部门）解析：个人映射 > 部门映射 > business；与现有不同则更新
+    const role = this.resolveRole(info.username, user.department ?? undefined);
+    if (role !== user.role) {
+      await this.prisma.user.update({ where: { id: user.id }, data: { role } });
+    }
+
     const tokens = await this.issueTokens(user, CAS);
     await this.prisma.loginAudit.create({ data: { userId: user.id, ip: ip ?? null } });
-    return { ...tokens, user: this.publicUser(user) };
+    return { ...tokens, user: this.publicUser({ ...user, role }) };
   }
 
   /** 原子递增失败次数，达阈值则锁定（Prisma increment 防竞态） */

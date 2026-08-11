@@ -38,7 +38,7 @@ const cfg = (over: Record<string, string> = {}) => {
 
 function makeService(over: { config?: ReturnType<typeof cfg> } = {}) {
   const prisma = {
-    user: { findUnique: vi.fn(), upsert: vi.fn() },
+    user: { findUnique: vi.fn(), upsert: vi.fn(), update: vi.fn().mockImplementation((x: any) => Promise.resolve(x.data)) },
     refreshToken: { create: vi.fn().mockResolvedValue({}), findUnique: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     loginAudit: { create: vi.fn().mockResolvedValue({}) },
   };
@@ -67,46 +67,50 @@ describe('AuthService.casLogin（账号密码/方式一）', () => {
     ctx.prisma.user.upsert.mockResolvedValue(mockUser());
   });
 
-  it('账号密码登录：调 loginWithPassword + upsert 建号 + authMethod=cas + 默认 business', async () => {
+  it('账号密码登录：调 loginWithPassword + upsert 建号(business) + authMethod=cas；默认无角色变更', async () => {
     await ctx.service.casLogin({ username: 'zhenghe.bao', password: 'pw-123' }, '1.2.3.4');
     expect(ctx.cas.loginWithPassword).toHaveBeenCalledWith('zhenghe.bao', 'pw-123');
     const create = ctx.prisma.user.upsert.mock.calls[0][0];
     expect(create.where).toEqual({ casUsername: 'zhenghe.bao' });
     expect(create.create.username).toBe('zhenghe.bao');
-    expect(create.create.role).toBe('business'); // 默认
+    expect(create.create.role).toBe('business'); // 初始默认
     expect(create.create.passwordHash).not.toBe(''); // 随机不可用哈希
+    expect(ctx.prisma.user.update).not.toHaveBeenCalled(); // 默认 business,无需变更
     const rt = ctx.prisma.refreshToken.create.mock.calls[0][0].data;
     expect(rt.authMethod).toBe('cas');
     expect(ctx.prisma.loginAudit.create).toHaveBeenCalled();
   });
 
-  it('个人映射 CAS_ROLE_MAP 命中 → admin/legal_lead（优先级最高）', async () => {
-    ctx = makeService({ config: cfg({ CAS_ROLE_MAP: 'zhenghe.bao:admin,junfang.zhao:legal_lead' }) });
-    ctx.cas.loginWithPassword.mockResolvedValue({ username: 'junfang.zhao', name: '赵俊芳', deptName: '法务部' });
+  it('个人映射 CAS_ROLE_MAP 命中 → 建号后升级 legal_lead（赵俊芳→法务管理员）', async () => {
+    ctx = makeService({ config: cfg({ CAS_ROLE_MAP: 'junfang.zhao:legal_lead' }) });
+    ctx.cas.loginWithPassword.mockResolvedValue({ username: 'junfang.zhao', name: '赵俊芳' });
     ctx.prisma.user.findUnique.mockResolvedValue(null);
-    ctx.prisma.user.upsert.mockResolvedValue(mockUser({ username: 'junfang.zhao', role: 'legal_lead' }));
-    await ctx.service.casLogin({ username: 'junfang.zhao', password: 'pw' });
-    const { create, update } = ctx.prisma.user.upsert.mock.calls[0][0];
-    expect(create.role).toBe('legal_lead'); // 赵俊芳 → 法务管理员
-    expect(update.role).toBe('legal_lead');
+    ctx.prisma.user.upsert.mockResolvedValue(mockUser({ username: 'junfang.zhao', role: 'business' }));
+    const user = await ctx.service.casLogin({ username: 'junfang.zhao', password: 'pw' });
+    expect(ctx.prisma.user.upsert.mock.calls[0][0].create.role).toBe('business'); // 初始
+    expect(ctx.prisma.user.update).toHaveBeenCalledWith(expect.objectContaining({ data: { role: 'legal_lead' } }));
+    expect(user.user.role).toBe('legal_lead');
   });
 
-  it('部门映射 CAS_DEPT_MAP 命中 → 法务部 → legal_bp（组织架构驱动）', async () => {
+  it('部门映射 CAS_DEPT_MAP 命中(按 User.department 钉钉部门) → 法务部 → legal_bp', async () => {
     ctx = makeService({ config: cfg({ CAS_DEPT_MAP: '法务部:legal_bp' }) });
-    ctx.cas.loginWithPassword.mockResolvedValue({ username: 'yuxin.peng', name: '彭宇欣', deptName: '法务部' });
+    ctx.cas.loginWithPassword.mockResolvedValue({ username: 'yuxin.peng', name: '彭宇欣' });
     ctx.prisma.user.findUnique.mockResolvedValue(null);
-    ctx.prisma.user.upsert.mockResolvedValue(mockUser({ username: 'yuxin.peng', role: 'legal_bp' }));
-    await ctx.service.casLogin({ username: 'yuxin.peng', password: 'pw' });
-    expect(ctx.prisma.user.upsert.mock.calls[0][0].create.role).toBe('legal_bp');
+    // 存量用户已由钉钉同步写入 department=法务部
+    ctx.prisma.user.upsert.mockResolvedValue(mockUser({ username: 'yuxin.peng', role: 'business', department: '法务部' }));
+    const user = await ctx.service.casLogin({ username: 'yuxin.peng', password: 'pw' });
+    expect(ctx.prisma.user.update).toHaveBeenCalledWith(expect.objectContaining({ data: { role: 'legal_bp' } }));
+    expect(user.user.role).toBe('legal_bp');
   });
 
   it('个人映射优先于部门映射', async () => {
     ctx = makeService({ config: cfg({ CAS_ROLE_MAP: 'junfang.zhao:legal_lead', CAS_DEPT_MAP: '法务部:legal_bp' }) });
-    ctx.cas.loginWithPassword.mockResolvedValue({ username: 'junfang.zhao', name: '赵俊芳', deptName: '法务部' });
+    ctx.cas.loginWithPassword.mockResolvedValue({ username: 'junfang.zhao', name: '赵俊芳' });
     ctx.prisma.user.findUnique.mockResolvedValue(null);
-    ctx.prisma.user.upsert.mockResolvedValue(mockUser({ username: 'junfang.zhao', role: 'legal_lead' }));
-    await ctx.service.casLogin({ username: 'junfang.zhao', password: 'pw' });
-    expect(ctx.prisma.user.upsert.mock.calls[0][0].create.role).toBe('legal_lead'); // 个人赢
+    ctx.prisma.user.upsert.mockResolvedValue(mockUser({ username: 'junfang.zhao', role: 'business', department: '法务部' }));
+    const user = await ctx.service.casLogin({ username: 'junfang.zhao', password: 'pw' });
+    expect(ctx.prisma.user.update).toHaveBeenCalledWith(expect.objectContaining({ data: { role: 'legal_lead' } })); // 个人赢
+    expect(user.user.role).toBe('legal_lead');
   });
 
   it('inactive 用户显式拒绝(401 USER_DISABLED),不 upsert', async () => {
