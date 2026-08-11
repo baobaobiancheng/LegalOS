@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as crypto from 'node:crypto';
 import { CasAdapter, CasAuthError, CasAuthErrorType, CasUserInfo } from './cas-adapter.interface';
 
 /**
@@ -79,12 +80,15 @@ export class RealCasAdapter implements CasAdapter {
     const loginUrl = `${this.host}/api/login`;
     this.logger.debug(`CAS 方式一登录: ${loginUrl}（username=${username} 不打密码）`);
 
+    // 实测(2026-08-11)：/api/login 密码需 MD5 摘要（文档 12 同款，e10adc... = MD5("123456")）
+    const md5Password = crypto.createHash('md5').update(password).digest('hex');
+
     const res = await this.casFetch(loginUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         username,
-        password,
+        password: md5Password,
         projectCode: this.projectCode,
         redirectUrl: this.redirectUrl,
       }).toString(),
@@ -95,15 +99,17 @@ export class RealCasAdapter implements CasAdapter {
     const body = this.parse<{
       code?: number;
       msg?: string;
-      data?: { ticket?: string; username?: string };
+      message?: string;
+      result?: { ticket?: string; username?: string };
     }>(await res.text());
 
-    const ticket = body?.data?.ticket;
-    if (body?.code !== 200 || !ticket) {
-      // 账号密码错 / 未开通项目权限 → 401
+    // 实测(2026-08-11)：/api/login 成功 code=0，ticket 在 result.ticket；
+    // 密码需 MD5 摘要（下方 md5Password）；未开通项目权限 → 无 ticket
+    const ticket = body?.result?.ticket;
+    if (body?.code !== 0 || !ticket) {
       throw new CasAuthError(
         CasAuthErrorType.INVALID_CREDENTIALS,
-        String(body?.msg ?? '账号或密码错误，或未开通项目权限'),
+        String(body?.msg ?? body?.message ?? '账号或密码错误，或未开通项目权限'),
       );
     }
 
