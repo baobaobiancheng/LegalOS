@@ -202,6 +202,14 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
     let truncatedPage = false;
     let pageCount = 0;
 
+    // 根部门(id=1)名字显式抓一次：listsub 只返回子部门,根部门名不会被记录（review 2026-08-11）
+    try {
+      const rootRes = await this.oapi<any>('/topapi/v2/department/get', { dept_id: 1 });
+      if (rootRes.result?.name) deptNames.set(1, rootRes.result.name);
+    } catch {
+      /* 根部门名拿不到则保持 undefined */
+    }
+
     // ① 枚举部门树（BFS，有界并发）
     const visitedDepts = new Set<number>([1]);
     const deptQueue: Array<{ id: number; depth: number }> = [{ id: 1, depth: 0 }];

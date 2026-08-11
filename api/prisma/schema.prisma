@@ -143,6 +143,8 @@ model DingTalkContact {
   userId          String   @map("user_id") // 钉钉 userid
   name            String   @db.VarChar(128)
   mobile          String?  @db.VarChar(32)
+  // 部门（2026-08-11 手动绑定路径也带部门,review 修复）
+  department      String?  @db.VarChar(128)
   isActive        Boolean  @default(true) @map("is_active")
   lastSeenBatchId String?  @map("last_seen_batch_id") @db.VarChar(64)
   lastSeenAt      DateTime @default(now()) @map("last_seen_at")

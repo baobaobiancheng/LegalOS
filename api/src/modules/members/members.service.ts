@@ -159,13 +159,14 @@ export class MembersService {
     if (typeof tx.$executeRaw === 'function') {
       await tx.$executeRaw`
         INSERT INTO dingtalk_contacts
-          (id, user_id, name, mobile, is_active, last_seen_batch_id, last_seen_at, synced_at)
-        SELECT UUID(), user_id, name, mobile, TRUE, batch_id, NOW(), NOW()
+          (id, user_id, name, mobile, department, is_active, last_seen_batch_id, last_seen_at, synced_at)
+        SELECT UUID(), user_id, name, mobile, department, TRUE, batch_id, NOW(), NOW()
         FROM dingtalk_contact_staging
         WHERE batch_id = ${batchId}
         ON DUPLICATE KEY UPDATE
           name = VALUES(name),
           mobile = VALUES(mobile),
+          department = VALUES(department),
           is_active = TRUE,
           last_seen_batch_id = VALUES(last_seen_batch_id),
           last_seen_at = NOW(),
@@ -181,8 +182,8 @@ export class MembersService {
         chunk.map((c) =>
           tx.dingTalkContact.upsert({
             where: { userId: c.userId },
-            update: { name: c.name, mobile: c.mobile ?? null, isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
-            create: { userId: c.userId, name: c.name, mobile: c.mobile ?? null, isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
+            update: { name: c.name, mobile: c.mobile ?? null, department: c.department ?? null, isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
+            create: { userId: c.userId, name: c.name, mobile: c.mobile ?? null, department: c.department ?? null, isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
           }),
         ),
       );
@@ -243,7 +244,7 @@ export class MembersService {
         data: {
           dingtalkUserId: contact.userId,
           dingtalkPhone: contact.mobile ?? null,
-          department: contact.department ?? undefined, // 组织架构部门(2026-08-11)
+          department: contact.department, // 组织架构部门(2026-08-11);ContactInfo.department 本身 optional,无需 ?? undefined
         },
       });
       autoBound++;
@@ -299,7 +300,11 @@ export class MembersService {
     try {
       const updated = await this.prisma.user.update({
         where: { id: userId },
-        data: { dingtalkUserId, dingtalkPhone: contact.mobile },
+        data: {
+          dingtalkUserId,
+          dingtalkPhone: contact.mobile,
+          department: contact.department ?? undefined, // 手动绑定带部门（review 2026-08-11）
+        },
       });
       return { id: updated.id, displayName: updated.displayName, dingtalkUserId: updated.dingtalkUserId };
     } catch (e: any) {
