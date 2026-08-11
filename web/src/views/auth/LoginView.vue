@@ -166,7 +166,9 @@
 
           <!-- 本地开发：种子账号测试三端（仅 dev，生产构建隐藏） -->
           <template v-if="showLocalDev">
-            <div class="divider">本地测试账号</div>
+            <div class="divider">
+              本地测试账号
+            </div>
             <form
               class="login-form"
               @submit.prevent="handleLocalLogin"
@@ -195,11 +197,16 @@
                 class="btn-cas"
                 :disabled="localLoading"
               >
-                <span v-if="localLoading" class="spinner" />
+                <span
+                  v-if="localLoading"
+                  class="spinner"
+                />
                 {{ localLoading ? '登录中…' : '本地登录' }}
               </button>
             </form>
-            <p class="footer-note">本地种子：admin / legal_bp / business</p>
+            <p class="footer-note">
+              本地种子：admin / legal_bp / business
+            </p>
           </template>
         </div>
       </div>

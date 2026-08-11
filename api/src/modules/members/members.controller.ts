@@ -20,6 +20,12 @@ export class MembersController {
     return this.membersService.syncContacts();
   }
 
+  /** 最近一次成功同步统计（切页/刷新后恢复统计卡） */
+  @Get('last-sync')
+  async lastSync() {
+    return this.membersService.lastSync();
+  }
+
   /** 系统用户列表（含绑定状态） */
   @Get('users')
   async listUsers() {

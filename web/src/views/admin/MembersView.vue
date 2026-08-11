@@ -348,15 +348,21 @@ const bpDomains = ref<string[]>([])
 
 const loadAll = async () => {
   try {
-    const [userData, bpData, failData] = await Promise.all([
+    const [userData, bpData, failData, syncData] = await Promise.all([
       request<any>('/admin/members/users'),
       request<any>('/admin/members/bp-domains'),
       request<any>('/admin/members/failures'),
+      request<any>('/admin/members/last-sync'),
     ])
     users.value = userData.items || userData || []
     bpUsers.value = bpData.users || []
     bpDomains.value = bpData.domains || []
     failures.value = failData.noGroup ?? null
+    // 切页回来组件重建,syncResult 归 null → 从持久化批次恢复统计卡;
+    // 刚同步完(syncResult 已由 POST 结果填充,含 ambiguous)则不改,避免覆盖。
+    if (syncResult.value == null && syncData) {
+      syncResult.value = { total: syncData.total, autoBound: syncData.autoBound, ambiguous: [] }
+    }
     loadError.value = null
   } catch (error) {
     loadError.value = error instanceof RequestError

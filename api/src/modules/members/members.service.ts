@@ -134,11 +134,17 @@ export class MembersService {
           data: {
             status: 'complete',
             contactCount: stagedContacts.length,
+            autoBoundCount: binding.autoBound,
             departmentCount: result.departmentCount,
             completedAt: new Date(),
           },
         });
         return binding;
+      });
+
+      // staging 事务内已消费,清理旧批次仅留本批(防表无限膨胀,review 2026-08-11)
+      await this.prisma.dingTalkContactStaging.deleteMany({
+        where: { batchId: { not: batch.id } },
       });
 
       this.logger.log(`通讯录同步完成：${contacts.length} 人，自动绑定 ${autoBound} 人`);
@@ -161,6 +167,10 @@ export class MembersService {
             completedAt: new Date(),
           },
         })
+        .catch(() => undefined);
+      // 失败批次 staging 无消费方,清理防膨胀（review 2026-08-11）
+      await this.prisma.dingTalkContactStaging
+        .deleteMany({ where: { batchId: batch.id } })
         .catch(() => undefined);
       this.logger.error(`通讯录同步失败（批次 ${batch.id}）：${e?.message ?? e}`);
       return { complete: false, batchId: batch.id, error: String(e?.message ?? e).slice(0, 200) };
@@ -271,25 +281,55 @@ export class MembersService {
 
   /**
    * 刷新已绑定用户的部门/角色（review 2026-08-11 P1）：
-   * autoBind 只处理未绑定用户;已绑定员工调岗后,本方法按最新通讯录重算部门+角色。
+   * autoBind 只处理未绑定用户;已绑定员工调岗后,本方法按最新通讯录重算部门+角色;
+   * 联系人已移出通讯录(软失效)的用户,同步时回收部门 + 重算角色,防旧权限残留。
    */
   private async refreshBoundRoles(tx: any, stagedContacts: ContactInfo[]): Promise<void> {
-    const ids = stagedContacts.map((c) => c.userId);
-    if (!ids.length) return;
+    const stagedById = new Map(stagedContacts.map((c) => [c.userId, c]));
     const bound = (await tx.user.findMany({
-      where: { dingtalkUserId: { in: ids } },
+      where: { dingtalkUserId: { not: null } },
       select: { id: true, username: true, dingtalkUserId: true, casUsername: true, role: true },
     })) ?? [];
     for (const u of bound) {
       if (SEED_USERNAMES.has(u.username)) continue; // 种子测试账号不重算角色
-      const contact = stagedContacts.find((c) => c.userId === u.dingtalkUserId);
-      if (!contact) continue;
-      const role = this.orgRole(u.role, u.casUsername ?? contact.userId, contact.department);
-      await tx.user.update({
-        where: { id: u.id },
-        data: { department: contact.department, role },
-      });
+      const contact = u.dingtalkUserId ? stagedById.get(u.dingtalkUserId) : undefined;
+      if (contact) {
+        // 在岗/调岗：刷新部门 + 角色（admin 不降级）
+        const role = this.orgRole(u.role, u.casUsername ?? contact.userId, contact.department);
+        await tx.user.update({
+          where: { id: u.id },
+          data: { department: contact.department, role },
+        });
+      } else {
+        // 联系人已不在本批通讯录(软失效)：回收部门 + 重算角色(仅剩个人映射或 business),admin 不降级
+        const role = this.orgRole(u.role, u.casUsername ?? undefined, undefined);
+        await tx.user.update({ where: { id: u.id }, data: { department: null, role } });
+      }
     }
+  }
+
+  /**
+   * 最近一次成功同步统计（2026-08-11）：切页/刷新后前端从持久化的批次恢复统计卡，
+   * 不再只依赖内存里的同步返回值。
+   */
+  async lastSync() {
+    const batch = await this.prisma.dingTalkSyncBatch.findFirst({
+      where: { status: 'complete' },
+      orderBy: { startedAt: 'desc' },
+      select: {
+        contactCount: true,
+        autoBoundCount: true,
+        departmentCount: true,
+        completedAt: true,
+      },
+    });
+    if (!batch) return null;
+    return {
+      total: batch.contactCount,
+      autoBound: batch.autoBoundCount,
+      departmentCount: batch.departmentCount,
+      completedAt: batch.completedAt,
+    };
   }
 
   /** 系统用户列表（含钉钉绑定状态，管理端绑定表；部门 2026-08-11） */
@@ -338,8 +378,11 @@ export class MembersService {
     if (occupied) throw new ConflictException('该钉钉成员已绑定其他系统用户');
 
     try {
-      // 手动绑定也应用组织架构角色映射（review 2026-08-11 P2,admin 不降级）
-      const role = this.orgRole(user.role, user.casUsername ?? dingtalkUserId, contact.department ?? undefined);
+      // 手动绑定也应用组织架构角色映射（review 2026-08-11 P2,admin 不降级）;
+      // 种子测试账号角色固定,不参与组织映射（review 2026-08-11）
+      const role = SEED_USERNAMES.has(user.username)
+        ? user.role
+        : this.orgRole(user.role, user.casUsername ?? dingtalkUserId, contact.department ?? undefined);
       const updated = await this.prisma.user.update({
         where: { id: userId },
         data: {
@@ -362,7 +405,10 @@ export class MembersService {
   async unbind(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('系统用户不存在');
-    const role = this.orgRole(user.role, user.casUsername ?? undefined, undefined); // admin 不降级;其余只剩个人映射或 business
+    // admin 不降级;其余只剩个人映射或 business;种子测试账号角色固定（review 2026-08-11）
+    const role = SEED_USERNAMES.has(user.username)
+      ? user.role
+      : this.orgRole(user.role, user.casUsername ?? undefined, undefined);
     await this.prisma.user.update({
       where: { id: userId },
       data: { dingtalkUserId: null, dingtalkPhone: null, department: null, role },

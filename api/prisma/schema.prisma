@@ -160,6 +160,7 @@ model DingTalkSyncBatch {
   id              String            @id @default(uuid())
   status          ContactSyncStatus @default(running)
   contactCount    Int               @default(0) @map("contact_count")
+  autoBoundCount  Int               @default(0) @map("auto_bound_count")
   departmentCount Int               @default(0) @map("department_count")
   truncated       Boolean           @default(false)
   errorMessage    String?           @map("error_message") @db.Text

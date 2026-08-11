@@ -25,6 +25,7 @@ describe('MembersService', () => {
       dingTalkContactStaging: {
         createMany: vi.fn().mockResolvedValue({ count: 2 }),
         findMany: vi.fn(),
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
       dingTalkSyncBatch: { create: vi.fn().mockResolvedValue({ id: 'batch-1' }), update: vi.fn().mockResolvedValue({}) },
       user: { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn().mockResolvedValue({ id: 'u' }), findFirst: vi.fn() },
@@ -145,6 +146,65 @@ describe('MembersService', () => {
     expect(prisma.bpDomainMap.deleteMany).toHaveBeenCalledWith({
       where: { userId: 'u-bp', domain: '合规法务' },
     });
+  });
+
+  it('syncContacts：联系人移出通讯录(软失效) → 回收部门 + 重算角色（review P1）', async () => {
+    dingtalk.syncContacts.mockResolvedValue({
+      contacts: [{ userId: 'U-1', name: '彭宇欣', mobile: '138', department: '法务部' }],
+      complete: true,
+      departmentCount: 1,
+      pageCount: 1,
+      warnings: [],
+    });
+    prisma.dingTalkContactStaging.findMany.mockResolvedValue([
+      { userId: 'U-1', name: '彭宇欣', mobile: '138', department: '法务部' },
+    ]);
+    // autoBind:未绑定用户=[] + 占用联系人=[];refreshBoundRoles:用户绑定 U-X(不在本批通讯录)
+    prisma.user.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'u-old', username: 'old.staff', dingtalkUserId: 'U-X', casUsername: null, role: 'legal_bp' },
+      ]);
+
+    const result = await service.syncContacts();
+
+    expect(result.complete).toBe(true);
+    // 旧联系人绑定的用户:清部门 + 角色回落到 business（CAS 映射空）
+    expect(prisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'u-old' },
+        data: expect.objectContaining({ department: null, role: 'business' }),
+      }),
+    );
+    // staging 清理:成功保留本批、删旧批
+    expect(prisma.dingTalkContactStaging.deleteMany).toHaveBeenCalledWith({
+      where: { batchId: { not: 'batch-1' } },
+    });
+  });
+
+  it('bind：种子测试账号角色固定,不参与组织映射（review P2）', async () => {
+    prisma.dingTalkContact.findUnique.mockResolvedValue({ userId: 'U-1', mobile: '138', isActive: true });
+    prisma.user.findUnique.mockResolvedValue({ id: 'u-seed', username: 'legal_bp', displayName: '种子BP', role: 'legal_bp' });
+    prisma.user.findFirst.mockResolvedValue(null);
+
+    await service.bind('u-seed', 'U-1');
+    expect(prisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ role: 'legal_bp' }), // 种子角色不被组织映射改掉
+      }),
+    );
+  });
+
+  it('unbind：种子测试账号角色固定,不回落（review P2）', async () => {
+    prisma.user.findUnique.mockResolvedValue({ id: 'u-seed', username: 'business', displayName: '种子业务', role: 'business' });
+
+    await service.unbind('u-seed');
+    expect(prisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ dingtalkUserId: null, department: null, role: 'business' }),
+      }),
+    );
   });
 
   it('failures：route=legalbp 且无群（口径含合同类工单）', async () => {
