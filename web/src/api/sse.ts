@@ -13,6 +13,9 @@ const reportSseError = (error: RequestError): RequestError => {
   return error
 }
 
+/** 流式空闲超时（2026-08-11）：长静默期（推理模型思考）不超时，只在「很久没有任何数据」时中断。 */
+const SSE_IDLE_TIMEOUT_MS = 120_000
+
 const consumeSseResponse = async <T extends SseEvent>(response: Response, onEvent: EventHandler<T>): Promise<void> => {
   const requestId = readRequestId(response)
   const contentType = response.headers.get('content-type') || ''
@@ -37,6 +40,19 @@ const consumeSseResponse = async <T extends SseEvent>(response: Response, onEven
   const decoder = new TextDecoder('utf-8', { fatal: false })
   let buffer = ''
   let terminalEvent = false
+  // 空闲超时：每收到一个 chunk 重置；超时 → 取消读取并报「请求超时」（推理模型长思考不误杀）
+  let idleTimedOut = false
+  let idleTimer: ReturnType<typeof setTimeout> | null = null
+  const armIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => {
+      idleTimedOut = true
+      reader.cancel().catch(() => {})
+    }, SSE_IDLE_TIMEOUT_MS)
+  }
+  const clearIdleTimer = () => {
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+  }
 
   const dispatch = (block: string) => {
     const data = block
@@ -63,7 +79,9 @@ const consumeSseResponse = async <T extends SseEvent>(response: Response, onEven
 
   try {
     while (true) {
+      armIdleTimer()
       const { done, value } = await reader.read()
+      clearIdleTimer()
       if (done) break
       buffer += decoder.decode(value, { stream: true })
       const blocks = buffer.split(/\r?\n\r?\n/)
@@ -74,6 +92,14 @@ const consumeSseResponse = async <T extends SseEvent>(response: Response, onEven
     if (buffer.trim()) dispatch(buffer)
   } catch (error) {
     if (error instanceof RequestError) throw error
+    if (idleTimedOut) {
+      throw reportSseError(new RequestError({
+        error: '请求超时，请重试',
+        code: 'REQUEST_TIMEOUT',
+        statusCode: response.status,
+        ...(requestId ? { requestId } : {}),
+      }))
+    }
     throw reportSseError(new RequestError({
       error: '流式连接中断，请重试',
       code: 'SSE_CONNECTION_CLOSED',
@@ -81,6 +107,7 @@ const consumeSseResponse = async <T extends SseEvent>(response: Response, onEven
       ...(requestId ? { requestId } : {}),
     }))
   } finally {
+    clearIdleTimer()
     reader.releaseLock()
   }
 

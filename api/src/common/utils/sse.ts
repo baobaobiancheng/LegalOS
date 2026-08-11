@@ -1,5 +1,6 @@
 import { Response } from 'express';
 import { ChildProcess } from 'child_process';
+import { Readable } from 'stream';
 import { StringDecoder } from 'string_decoder';
 
 /**
@@ -15,7 +16,7 @@ import { StringDecoder } from 'string_decoder';
  */
 export function sendSSE(
   res: Response,
-  stream: ChildProcess,
+  stream: ChildProcess & { thinking?: Readable },
   donePayload: Record<string, unknown> = {},
   onDisconnect?: () => void,
 ): void {
@@ -27,6 +28,8 @@ export function sendSSE(
 
   // StringDecoder 自动处理跨 chunk 的多字节 UTF-8 字符
   const decoder = new StringDecoder('utf8');
+  // 思考过程独立流（2026-08-11 app-server）：reasoning delta → data:{thinking}
+  const thinkingDecoder = new StringDecoder('utf8');
   // 标记正常结束（done/error 已写入），用于区分"连接断开"与"正常结束"
   let ended = false;
 
@@ -37,6 +40,13 @@ export function sendSSE(
     }
   });
 
+  stream.thinking?.on('data', (chunk: Buffer) => {
+    const text = thinkingDecoder.write(chunk);
+    if (text) {
+      res.write(`data: ${JSON.stringify({ thinking: text })}\n\n`);
+    }
+  });
+
   stream.on('close', (code) => {
     // 客户端已断开（刷新/切页）时无需推送，落库由 service 的 close handler 完成
     if (res.destroyed || res.writableEnded) return;
@@ -44,6 +54,10 @@ export function sendSSE(
     const remaining = decoder.end();
     if (remaining) {
       res.write(`data: ${JSON.stringify({ text: remaining })}\n\n`);
+    }
+    const remainingThinking = thinkingDecoder.end();
+    if (remainingThinking) {
+      res.write(`data: ${JSON.stringify({ thinking: remainingThinking })}\n\n`);
     }
     if (code === 0) {
       ended = true;

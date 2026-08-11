@@ -56,7 +56,8 @@ export class LLMRiskService {
     try {
       const raw = await this.codexService.execute(this.buildPrompt(query), {
         maxTokens: 60,
-        timeout: 30_000,
+        // 2026-08-11：glm-5-2 是推理模型,分类约 6-15s,留足余量防 30s 撞前端超时
+        timeout: 90_000,
       });
       ({ modelRisk, modelDomain, modelReason } = this.parseModelJson(raw));
     } catch (error) {

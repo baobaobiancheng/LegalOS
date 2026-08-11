@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { Inject } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CodexService } from '../../common/services/codex.service';
+import { CodexAppServerService } from '../../common/services/codex-app-server.service';
 import { LLMRiskService } from '../../common/services/llm-risk.service';
 import {
   CrmAdapter,
@@ -41,7 +41,7 @@ export class ProjectService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly codexService: CodexService,
+    private readonly appServer: CodexAppServerService,
     private readonly riskService: LLMRiskService,
     @Inject(CRM_ADAPTER) private readonly crm: CrmAdapter,
     @Inject(DINGTALK_ADAPTER) private readonly dingtalk: DingTalkAdapter,
@@ -468,12 +468,12 @@ export class ProjectService {
   // 内部方法
   // ═══════════════════════════════════════════
 
-  /** 触发 AI 生成答复 — 经共享 Codex 队列，返回 ChildProcess 供 SSE 流式 */
+  /** 触发 AI 生成答复 — 经共享 Codex 队列，app-server 双路流(思考+内容)供 SSE 流式 */
   private async triggerAIResponse(
     projectId: string,
     userQuery: string,
     signal?: AbortSignal,
-  ): Promise<ChildProcess> {
+  ): Promise<any> {
     const project = await this.prisma.project
       .findUnique({
         where: { id: projectId },
@@ -487,7 +487,7 @@ export class ProjectService {
       skillPrompt ?? undefined,
     );
 
-    const child = await this.codexService.executeStream(prompt, {
+    const child = await this.appServer.executeStream(prompt, {
       timeout: 120_000,
       sessionId: projectId,
       signal,

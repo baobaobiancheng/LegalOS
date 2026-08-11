@@ -10,7 +10,7 @@ import DownloadMenu from '../../components/DownloadMenu.vue'
 import ChatInputBar from '../../components/ChatInputBar.vue'
 import BusinessSidebarLayout from '../../components/BusinessSidebarLayout.vue'
 import ErrorState from '../../components/ErrorState.vue'
-import type { Skill } from '../../types'
+import type { Skill, ProjectDetail } from '../../types'
 import { GENERAL_SKILL } from '../../types'
 
 const auth = useAuthStore()
@@ -24,6 +24,9 @@ const projectId = ref('')
 const projectRoute = ref('')
 const messages = ref<any[]>([])
 const msgContainer = ref<HTMLElement | null>(null)
+// 思考过程（2026-08-11 app-server 双路流）：当前 AI 回复的推理增量,可折叠
+const aiThinking = ref('')
+const showThinking = ref(true)
 
 // 技能选择（2026-08-04 技能库模块）：默认兜底"通用法务咨询"（skillId=null 不注入）
 // 交互（frontend-design 重设计）：欢迎页领域卡片选择（对话方向感），对话开始后不再显示
@@ -42,7 +45,52 @@ const loadSkills = async () => {
       : new RequestError({ error: '咨询领域加载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
   }
 }
-onMounted(loadSkills)
+
+// ── 会话持久化（2026-08-11）：切页/刷新保留当前咨询，「新建会话」才清空 ──
+const SESSION_KEY = 'legalos:consult-session'
+const saveSession = () => {
+  if (projectId.value) {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ projectId: projectId.value, route: projectRoute.value }))
+  }
+}
+const clearSession = () => localStorage.removeItem(SESSION_KEY)
+
+const startNewSession = () => {
+  clearSession()
+  projectId.value = ''
+  projectRoute.value = ''
+  upgraded.value = false
+  messages.value = []
+  lastError.value = null
+  scrollBottom()
+}
+
+/** 切页回来恢复上次咨询会话：拉取工单 + 重建消息时间线 */
+const restoreSession = async () => {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY)
+    if (!raw) return
+    const saved = JSON.parse(raw) as { projectId?: string }
+    if (!saved?.projectId) return
+    const data = await request<ProjectDetail>(`/projects/${saved.projectId}`)
+    projectId.value = data.id
+    projectRoute.value = data.route
+    upgraded.value = data.route === 'legalbp'
+    const tl: any[] = []
+    for (const m of data.messages) tl.push(m)
+    for (const e of data.events) tl.push({ ...e, _event: true })
+    tl.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+    messages.value = tl
+    scrollBottom()
+  } catch {
+    clearSession() // 会话失效（删除/无权限）→ 回到欢迎页
+  }
+}
+
+onMounted(() => {
+  loadSkills()
+  restoreSession()
+})
 
 const pickSkill = (s: { id?: string; name: string }) => {
   selectedSkill.value = s
@@ -87,8 +135,10 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
 
   if (!projectId.value) {
     try {
+      // 建单含风险分类(glm-5-2 推理模型,约 6-15s),超时给到 90s 对齐后端
       const data = await request<{ id: string; route: string; risk?: string }>('/projects', {
         method: 'POST',
+        timeoutMs: 90_000,
         body: {
           kind: 'consult',
           title: text.slice(0, 50) || '文件咨询',
@@ -98,6 +148,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
         },
       })
       projectId.value = data.id; projectRoute.value = data.route
+      saveSession()
       if (data.route === 'legalbp') {
         messages.value.push({ _event: true, text: '系统判定 ' + data.risk + ' 风险，已创建工单并通知法务 BP' })
         upgraded.value = true
@@ -114,13 +165,17 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
 
   if (projectRoute.value === 'llm' && !upgraded.value) {
     expectingAI.value = true
+    aiThinking.value = ''
+    showThinking.value = true
     try {
       let fullText = ''
       let aiMsg: any | undefined
-      const data = await requestStreamOrJson<{ route?: string; done?: boolean; error?: boolean; text?: string }>(`/projects/${projectId.value}/messages`, {
+      const data = await requestStreamOrJson<{ route?: string; done?: boolean; error?: boolean; text?: string; thinking?: string }>(`/projects/${projectId.value}/messages`, {
         method: 'POST',
         body: { text: fullInput, role: 'user' },
       }, (d) => {
+        // 思考过程独立流（app-server 双路）：增量累积,不混入答案
+        if (d.thinking) aiThinking.value += String(d.thinking)
         if (d.text || d.error) {
           aiMsg ??= { id: 'streaming', role: 'assistant', text: '' }
           if (messages.value[messages.value.length - 1] !== aiMsg) messages.value.push(aiMsg)
@@ -187,6 +242,13 @@ const handleUpgrade = async () => {
         v-else-if="upgraded"
         class="tb-badge escalated"
       >已升级人工</span>
+      <button
+        v-if="projectId"
+        class="tb-new-btn"
+        @click="startNewSession"
+      >
+        ＋ 新建会话
+      </button>
     </template>
     <div
       v-if="messages.length === 0 && !expectingAI"
@@ -280,6 +342,23 @@ const handleUpgrade = async () => {
       ref="msgContainer"
       class="msg-scroll"
     >
+      <div
+        v-if="expectingAI && aiThinking"
+        class="thinking-panel"
+      >
+        <button
+          class="thinking-toggle"
+          @click="showThinking = !showThinking"
+        >
+          {{ showThinking ? '▾' : '▸' }} 思考过程
+        </button>
+        <div
+          v-if="showThinking"
+          class="thinking-body"
+        >
+          {{ aiThinking }}
+        </div>
+      </div>
       <div class="msg-thread">
         <template
           v-for="(m, i) in messages"
@@ -472,9 +551,14 @@ const handleUpgrade = async () => {
 .tb-badge { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 10px; }
 .tb-badge.thinking { background: rgba(0,113,227,0.08); color: var(--blue); animation: pulse 2s infinite; }
 .tb-badge.escalated { background: rgba(255,149,0,0.08); color: #FF9500; }
+.tb-new-btn { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--blue); background: rgba(0,113,227,0.08); border: none; padding: 5px 12px; border-radius: 999px; cursor: pointer; }
+.tb-new-btn:hover { background: rgba(0,113,227,0.15); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 .chat-content { max-width: 860px; padding: 0; }
 .msg-scroll { padding: 24px 32px 8px; }
+.thinking-panel { margin: 0 0 14px; border: 1px solid rgba(0,113,227,0.14); background: rgba(0,113,227,0.04); border-radius: 12px; overflow: hidden; }
+.thinking-toggle { display: block; width: 100%; text-align: left; font-size: 12px; font-weight: 600; color: var(--blue); background: none; border: none; padding: 8px 14px; cursor: pointer; }
+.thinking-body { padding: 0 14px 12px; font-size: 12px; line-height: 1.7; color: var(--text-secondary); white-space: pre-wrap; }
 .ai-disclaimer { margin-top: 4px; font-size: 10px; color: var(--text-tertiary); padding-left: 4px; }
 .file-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .file-tag { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 8px; background: rgba(0,113,227,0.06); font-size: 11px; }
