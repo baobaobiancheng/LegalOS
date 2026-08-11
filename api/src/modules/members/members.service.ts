@@ -18,6 +18,8 @@ import {
 import { isBpDomain, BP_DOMAINS } from './dto/members.dto';
 
 /** P1-08：通讯录 staging 批大小（createMany 每批条数） */
+/** 种子测试账号（三端测试固定角色）：不参与组织同步(自动绑定/重算),角色固定 admin/legal_bp/business */
+const SEED_USERNAMES = new Set(['admin', 'legal_bp', 'business']);
 const SYNC_BATCH_SIZE = 300;
 
 /**
@@ -211,9 +213,9 @@ export class MembersService {
   private async autoBind(tx: any, contacts: ContactInfo[]): Promise<{ autoBound: number; ambiguous: string[] }> {
     const unbound = await tx.user.findMany({
       where: { dingtalkUserId: null },
-      select: { id: true, displayName: true, casUsername: true, role: true },
+      select: { id: true, username: true, displayName: true, casUsername: true, role: true },
     });
-    const nameToUsers = new Map<string, { id: string; displayName: string; casUsername: string | null; role: Role }[]>();
+    const nameToUsers = new Map<string, { id: string; username: string; displayName: string; casUsername: string | null; role: Role }[]>();
     for (const u of unbound) {
       const list = nameToUsers.get(u.displayName) || [];
       list.push(u);
@@ -250,6 +252,7 @@ export class MembersService {
       }
       const contact = snapshot[0];
       if (boundContactIds.has(contact.userId)) continue; // 已被他人绑定
+      if (SEED_USERNAMES.has(users[0].username)) continue; // 种子测试账号不自动绑定/改角色
       // 组织架构权威(用户决策 A)：部门 + 角色一起设置,admin 不降级(review 2026-08-11)
       const role = this.orgRole(users[0].role, users[0].casUsername ?? contact.userId, contact.department);
       await tx.user.update({
@@ -275,9 +278,10 @@ export class MembersService {
     if (!ids.length) return;
     const bound = (await tx.user.findMany({
       where: { dingtalkUserId: { in: ids } },
-      select: { id: true, dingtalkUserId: true, casUsername: true, role: true },
+      select: { id: true, username: true, dingtalkUserId: true, casUsername: true, role: true },
     })) ?? [];
     for (const u of bound) {
+      if (SEED_USERNAMES.has(u.username)) continue; // 种子测试账号不重算角色
       const contact = stagedContacts.find((c) => c.userId === u.dingtalkUserId);
       if (!contact) continue;
       const role = this.orgRole(u.role, u.casUsername ?? contact.userId, contact.department);
