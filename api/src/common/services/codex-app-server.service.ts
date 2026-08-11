@@ -348,7 +348,9 @@ export class CodexAppServerService {
               );
             }
           } else {
-            // phase=null：缓冲，不在流式中展示（final 由 turn/completed 选定）
+            // phase=null：实测网关 agentMessage 单 item、phase 恒为 null、delta 为增量(2026-08-11 定案)。
+            // 流式输出(打字机效果)；权威仍以 turn/completed 选定的 item 文本为准，done.finalText 校正。
+            stdout.write(delta);
           }
           break;
         }
