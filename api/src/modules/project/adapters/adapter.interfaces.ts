@@ -13,11 +13,12 @@ export interface DingTalkGroup {
   members: string[];
 }
 
-// 通讯录同步条目（user/list 分页拉取）
+// 通讯录同步条目（user/list 分页拉取；department=钉钉部门名,2026-08-11 组织架构身份映射）
 export interface ContactInfo {
   userId: string;
   name: string;
   mobile?: string;
+  department?: string;
 }
 
 /** 通讯录同步结构化结果（P1-07）：complete=false 时不允许失效对账/自动绑定 */

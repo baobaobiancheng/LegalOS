@@ -177,7 +177,7 @@
           </div>
           <table class="member-table">
             <thead>
-              <tr><th>姓名</th><th>角色</th><th>钉钉绑定</th><th>操作</th></tr>
+              <tr><th>姓名</th><th>角色</th><th>部门</th><th>钉钉绑定</th><th>操作</th></tr>
             </thead>
             <tbody>
               <tr
@@ -186,6 +186,7 @@
               >
                 <td>{{ u.displayName }}</td>
                 <td><span class="role-chip">{{ roleLabel(u.role) }}</span></td>
+                <td>{{ u.department || '—' }}</td>
                 <td>
                   <span
                     v-if="u.dingtalkUserId"
@@ -339,7 +340,7 @@ const actionError = ref<RequestError | null>(null)
 const syncResult = ref<{ total: number; autoBound: number; ambiguous: string[] } | null>(null)
 const failures = ref<number | null>(null)
 
-const users = ref<Array<{ id: string; displayName: string; role: string; dingtalkUserId: string | null }>>([])
+const users = ref<Array<{ id: string; displayName: string; role: string; dingtalkUserId: string | null; department: string | null }>>([])
 const userKeyword = ref('')
 
 const bpUsers = ref<Array<{ id: string; displayName: string; bound: boolean; domains: string[] }>>([])

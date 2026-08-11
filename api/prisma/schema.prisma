@@ -103,6 +103,8 @@ model User {
   // CAS 绑定（2026-08-10 CAS 统一登录）：@unique 一个系统用户最多绑一个公司 CAS 账号；
   // CAS 是唯一身份来源(生产),cas-login 按 casUsername 找/建,防重复人
   casUsername String? @unique @map("cas_username") @db.VarChar(128)
+  // 组织架构部门（2026-08-11 统一身份映射）：CAS 登录写入(deptName)/钉钉绑定同步;角色 CAS_DEPT_MAP 据此匹配
+  department String? @map("department") @db.VarChar(128)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -177,6 +179,8 @@ model DingTalkContactStaging {
   userId  String            @map("user_id") @db.VarChar(128)
   name    String            @db.VarChar(128)
   mobile  String?           @db.VarChar(32)
+  // 部门名（2026-08-11 组织架构身份映射）：钉钉同步按部门拉取时写入
+  department String?        @db.VarChar(128)
 
   @@unique([batchId, userId])
   @@index([batchId, name])

@@ -238,7 +238,7 @@ export class AuthService {
     // 组织架构驱动：每次登录重新派生角色（个人映射 > 部门映射 > business）
     const role = this.resolveRole(info.username, info.deptName);
 
-    // upsert：并发首登只建一条（casUsername 唯一约束），不报冲突
+    // upsert：并发首登只建一条（casUsername 唯一约束），不报冲突；department 由 CAS deptName 落库
     const user = await this.prisma.user.upsert({
       where: { casUsername: info.username },
       create: {
@@ -247,8 +247,9 @@ export class AuthService {
         passwordHash: crypto.randomBytes(16).toString('hex'), // 随机不可用哈希,不能密码登录
         role,
         casUsername: info.username,
+        department: info.deptName ?? null,
       },
-      update: { displayName: info.name, role },
+      update: { displayName: info.name, role, department: info.deptName ?? null },
     });
 
     if (!user.isActive) {

@@ -197,6 +197,7 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
     // 调用方（MembersService）据此把批次标记 failed，不动旧快照。
     const seen = new Set<string>();
     const contacts: ContactInfo[] = [];
+    const deptNames = new Map<number, string>(); // 部门 id → 部门名（2026-08-11 存部门）
     let truncatedDepth = false;
     let truncatedPage = false;
     let pageCount = 0;
@@ -208,7 +209,11 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
       const batch = deptQueue.splice(0, Math.min(SYNC_CONCURRENCY, deptQueue.length));
       const subLists = await mapLimit(batch, SYNC_CONCURRENCY, async ({ id }) => {
         const res = await this.oapi<any>('/topapi/v2/department/listsub', { dept_id: id });
-        return ((res.result || []) as Array<{ dept_id: number }>).map((d) => d.dept_id);
+        const list = (res.result || []) as Array<{ dept_id: number; name?: string }>;
+        for (const d of list) {
+          if (d?.dept_id && d.name) deptNames.set(d.dept_id, d.name);
+        }
+        return list.map((d) => d.dept_id);
       });
       for (let b = 0; b < batch.length; b++) {
         if (batch[b].depth >= 8) {
@@ -241,7 +246,12 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
           if (!u.userid || seen.has(u.userid)) continue; // 跨部门重复按 userid 去重
           if (this.isBlockedContact(u)) continue; // 排除机器人/离职/停用/测试账号
           seen.add(u.userid);
-          contacts.push({ userId: u.userid, name: u.name || '', mobile: u.mobile });
+          contacts.push({
+            userId: u.userid,
+            name: u.name || '',
+            mobile: u.mobile,
+            department: deptNames.get(deptId), // 该用户所属部门名
+          });
         }
         if (!res.result?.has_more) break;
         cursor = res.result?.next_cursor ?? 0;

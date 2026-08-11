@@ -56,6 +56,7 @@ export class MembersService {
             userId: c.userId,
             name: c.name,
             mobile: c.mobile ?? null,
+            department: c.department ?? null,
           })),
         });
       }
@@ -65,12 +66,13 @@ export class MembersService {
       const { autoBound, ambiguous } = await this.prisma.$transaction(async (tx) => {
         const staged = await tx.dingTalkContactStaging.findMany({
           where: { batchId: batch.id },
-          select: { userId: true, name: true, mobile: true },
+          select: { userId: true, name: true, mobile: true, department: true },
         });
         const stagedContacts: ContactInfo[] = staged.map((c) => ({
           userId: c.userId,
           name: c.name,
           mobile: c.mobile ?? undefined,
+          department: c.department ?? undefined,
         }));
 
         await this.mergeContacts(tx, batch.id, stagedContacts);
@@ -238,14 +240,18 @@ export class MembersService {
       if (boundContactIds.has(contact.userId)) continue; // 已被他人绑定
       await tx.user.update({
         where: { id: users[0].id },
-        data: { dingtalkUserId: contact.userId, dingtalkPhone: contact.mobile ?? null },
+        data: {
+          dingtalkUserId: contact.userId,
+          dingtalkPhone: contact.mobile ?? null,
+          department: contact.department ?? undefined, // 组织架构部门(2026-08-11)
+        },
       });
       autoBound++;
     }
     return { autoBound, ambiguous };
   }
 
-  /** 系统用户列表（含钉钉绑定状态，管理端绑定表） */
+  /** 系统用户列表（含钉钉绑定状态，管理端绑定表；部门 2026-08-11） */
   async listUsers() {
     const users = await this.prisma.user.findMany({
       select: {
@@ -253,6 +259,7 @@ export class MembersService {
         displayName: true,
         role: true,
         dingtalkUserId: true,
+        department: true,
       },
       orderBy: { createdAt: 'asc' },
     });
