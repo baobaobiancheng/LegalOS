@@ -8,6 +8,7 @@ import {
 import { Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Role } from '@prisma/client';
+import { resolveOrgRole } from '../../common/org/org-role';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   DINGTALK_ADAPTER,
@@ -36,17 +37,9 @@ export class MembersService {
     private readonly config: ConfigService,
   ) {}
 
-  /** 部门→领域角色（用户决策 A：角色以钉钉组织架构为准，2026-08-11） */
-  private deptRole(dept?: string): Role | undefined {
-    if (!dept) return undefined;
-    const raw = this.config.get<string>('CAS_DEPT_MAP') || '';
-    for (const pair of raw.split(',')) {
-      const [d, r] = pair.split(':').map((s) => s.trim());
-      if (d === dept && (r === 'legal_bp' || r === 'legal_lead' || r === 'admin' || r === 'business')) {
-        return r as Role;
-      }
-    }
-    return undefined;
+  /** 组织架构角色（用户决策 A，共用解析器）：个人映射 > 钉钉部门映射 > business（review 2026-08-11） */
+  private orgRole(identity: string | undefined, dept: string | undefined): Role {
+    return resolveOrgRole(identity, dept, this.config);
   }
 
   /**
@@ -132,6 +125,8 @@ export class MembersService {
         }
 
         const binding = await this.autoBind(tx, stagedContacts);
+        // review 2026-08-11 P1：已绑定员工调岗后,每次同步重算部门+角色,防旧部门权限残留
+        await this.refreshBoundRoles(tx, stagedContacts);
         await tx.dingTalkSyncBatch.update({
           where: { id: batch.id },
           data: {
@@ -216,9 +211,9 @@ export class MembersService {
   private async autoBind(tx: any, contacts: ContactInfo[]): Promise<{ autoBound: number; ambiguous: string[] }> {
     const unbound = await tx.user.findMany({
       where: { dingtalkUserId: null },
-      select: { id: true, displayName: true },
+      select: { id: true, displayName: true, casUsername: true },
     });
-    const nameToUsers = new Map<string, { id: string; displayName: string }[]>();
+    const nameToUsers = new Map<string, { id: string; displayName: string; casUsername: string | null }[]>();
     for (const u of unbound) {
       const list = nameToUsers.get(u.displayName) || [];
       list.push(u);
@@ -255,20 +250,42 @@ export class MembersService {
       }
       const contact = snapshot[0];
       if (boundContactIds.has(contact.userId)) continue; // 已被他人绑定
-      // 组织架构权威(用户决策 A)：部门 + 角色一起按钉钉部门设置
-      const role = this.deptRole(contact.department);
+      // 组织架构权威(用户决策 A)：部门 + 角色一起设置,个人映射优先(review 2026-08-11 P1)
+      const role = this.orgRole(users[0].casUsername ?? contact.userId, contact.department);
       await tx.user.update({
         where: { id: users[0].id },
         data: {
           dingtalkUserId: contact.userId,
           dingtalkPhone: contact.mobile ?? null,
           department: contact.department,
-          ...(role ? { role } : {}), // CAS_DEPT_MAP 命中则同步角色
+          role,
         },
       });
       autoBound++;
     }
     return { autoBound, ambiguous };
+  }
+
+  /**
+   * 刷新已绑定用户的部门/角色（review 2026-08-11 P1）：
+   * autoBind 只处理未绑定用户;已绑定员工调岗后,本方法按最新通讯录重算部门+角色。
+   */
+  private async refreshBoundRoles(tx: any, stagedContacts: ContactInfo[]): Promise<void> {
+    const ids = stagedContacts.map((c) => c.userId);
+    if (!ids.length) return;
+    const bound = (await tx.user.findMany({
+      where: { dingtalkUserId: { in: ids } },
+      select: { id: true, dingtalkUserId: true, casUsername: true },
+    })) ?? [];
+    for (const u of bound) {
+      const contact = stagedContacts.find((c) => c.userId === u.dingtalkUserId);
+      if (!contact) continue;
+      const role = this.orgRole(u.casUsername ?? contact.userId, contact.department);
+      await tx.user.update({
+        where: { id: u.id },
+        data: { department: contact.department, role },
+      });
+    }
   }
 
   /** 系统用户列表（含钉钉绑定状态，管理端绑定表；部门 2026-08-11） */
@@ -317,12 +334,15 @@ export class MembersService {
     if (occupied) throw new ConflictException('该钉钉成员已绑定其他系统用户');
 
     try {
+      // 手动绑定也应用组织架构角色映射（review 2026-08-11 P2）
+      const role = this.orgRole(user.casUsername ?? dingtalkUserId, contact.department ?? undefined);
       const updated = await this.prisma.user.update({
         where: { id: userId },
         data: {
           dingtalkUserId,
           dingtalkPhone: contact.mobile,
-          department: contact.department ?? undefined, // 手动绑定带部门（review 2026-08-11）
+          department: contact.department ?? undefined,
+          role,
         },
       });
       return { id: updated.id, displayName: updated.displayName, dingtalkUserId: updated.dingtalkUserId };
@@ -334,11 +354,14 @@ export class MembersService {
     }
   }
 
-  /** 解绑 */
+  /** 解绑：清部门 + 角色重算（不再可信的钉钉部门不能继续给权限,review 2026-08-11 P1） */
   async unbind(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('系统用户不存在');
+    const role = this.orgRole(user.casUsername ?? undefined, undefined); // 只剩个人映射或 business
     await this.prisma.user.update({
       where: { id: userId },
-      data: { dingtalkUserId: null, dingtalkPhone: null },
+      data: { dingtalkUserId: null, dingtalkPhone: null, department: null, role },
     });
     return { ok: true };
   }

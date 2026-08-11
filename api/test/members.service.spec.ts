@@ -36,7 +36,11 @@ describe('MembersService', () => {
       }),
     };
     dingtalk = { syncContacts: vi.fn() };
-    service = new MembersService(prisma as any, dingtalk as any);
+    service = new MembersService(
+      prisma as any,
+      dingtalk as any,
+      { get: (k: string) => ({ CAS_ROLE_MAP: '', CAS_DEPT_MAP: '' })[k] ?? undefined } as any,
+    );
   });
 
   it('syncContacts：staging 批处理 + 软失效 + 唯一姓名自动绑定 + 重名跳过', async () => {
@@ -103,7 +107,13 @@ describe('MembersService', () => {
       expect.objectContaining({ where: { dingtalkUserId: 'U-1', id: { not: 'u-1' } } }),
     );
     expect(prisma.user.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { dingtalkUserId: 'U-1', dingtalkPhone: '138' } }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          dingtalkUserId: 'U-1',
+          dingtalkPhone: '138',
+          role: 'business', // 手动绑定应用组织架构角色映射（review 2026-08-11）
+        }),
+      }),
     );
     expect(r.dingtalkUserId).toBe('U-1');
   });

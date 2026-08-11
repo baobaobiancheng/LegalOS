@@ -10,6 +10,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Role, User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'node:crypto';
+import { resolveOrgRole } from '../../common/org/org-role';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   CAS_ADAPTER,
@@ -150,45 +151,9 @@ export class AuthService {
     return { ...tokens, user: this.publicUser(user) };
   }
 
-  /** CAS_ROLE_MAP 个人映射：'user:role,user2:role2'（如 junfang.zhao:legal_lead、zhenghe.bao:admin） */
-  private casRoleMap(): Record<string, Role> {
-    const raw = this.config.get<string>('CAS_ROLE_MAP') || '';
-    const map: Record<string, Role> = {};
-    for (const pair of raw.split(',')) {
-      const [user, role] = pair.split(':').map((s) => s.trim());
-      if (
-        user &&
-        (role === 'admin' || role === 'legal_bp' || role === 'legal_lead' || role === 'business')
-      ) {
-        map[user.toLowerCase()] = role as Role;
-      }
-    }
-    return map;
-  }
-
-  /** CAS_DEPT_MAP 部门映射：'法务部:legal_bp,部门2:role2'（组织架构驱动） */
-  private casDeptMap(): Record<string, Role> {
-    const raw = this.config.get<string>('CAS_DEPT_MAP') || '';
-    const map: Record<string, Role> = {};
-    for (const pair of raw.split(',')) {
-      const [dept, role] = pair.split(':').map((s) => s.trim());
-      if (
-        dept &&
-        (role === 'admin' || role === 'legal_bp' || role === 'legal_lead' || role === 'business')
-      ) {
-        map[dept] = role as Role;
-      }
-    }
-    return map;
-  }
-
-  /** 领域角色解析（组织架构驱动,登录时重新派生）：个人映射 > 部门映射(deptName) > 默认 business */
+  /** 领域角色解析（组织架构驱动）：个人映射 > 钉钉部门映射 > business（共用解析器,review 2026-08-11） */
   private resolveRole(casUsername: string, deptName?: string): Role {
-    const personal = this.casRoleMap()[casUsername.trim().toLowerCase()];
-    if (personal) return personal;
-    const dept = this.casDeptMap()[(deptName || '').trim()];
-    if (dept) return dept;
-    return 'business';
+    return resolveOrgRole(casUsername, deptName, this.config);
   }
 
   /**
