@@ -8,7 +8,7 @@ import {
 import { Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Role } from '@prisma/client';
-import { resolveOrgRole } from '../../common/org/org-role';
+import { applyOrgRole } from '../../common/org/org-role';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   DINGTALK_ADAPTER,
@@ -37,9 +37,9 @@ export class MembersService {
     private readonly config: ConfigService,
   ) {}
 
-  /** 组织架构角色（用户决策 A，共用解析器）：个人映射 > 钉钉部门映射 > business（review 2026-08-11） */
-  private orgRole(identity: string | undefined, dept: string | undefined): Role {
-    return resolveOrgRole(identity, dept, this.config);
+  /** 组织架构角色（admin 不降级；个人映射 > 钉钉部门映射 > business，共用解析器） */
+  private orgRole(existingRole: Role, identity: string | undefined, dept: string | undefined): Role {
+    return applyOrgRole(existingRole, identity, dept, this.config);
   }
 
   /**
@@ -211,9 +211,9 @@ export class MembersService {
   private async autoBind(tx: any, contacts: ContactInfo[]): Promise<{ autoBound: number; ambiguous: string[] }> {
     const unbound = await tx.user.findMany({
       where: { dingtalkUserId: null },
-      select: { id: true, displayName: true, casUsername: true },
+      select: { id: true, displayName: true, casUsername: true, role: true },
     });
-    const nameToUsers = new Map<string, { id: string; displayName: string; casUsername: string | null }[]>();
+    const nameToUsers = new Map<string, { id: string; displayName: string; casUsername: string | null; role: Role }[]>();
     for (const u of unbound) {
       const list = nameToUsers.get(u.displayName) || [];
       list.push(u);
@@ -250,8 +250,8 @@ export class MembersService {
       }
       const contact = snapshot[0];
       if (boundContactIds.has(contact.userId)) continue; // 已被他人绑定
-      // 组织架构权威(用户决策 A)：部门 + 角色一起设置,个人映射优先(review 2026-08-11 P1)
-      const role = this.orgRole(users[0].casUsername ?? contact.userId, contact.department);
+      // 组织架构权威(用户决策 A)：部门 + 角色一起设置,admin 不降级(review 2026-08-11)
+      const role = this.orgRole(users[0].role, users[0].casUsername ?? contact.userId, contact.department);
       await tx.user.update({
         where: { id: users[0].id },
         data: {
@@ -275,12 +275,12 @@ export class MembersService {
     if (!ids.length) return;
     const bound = (await tx.user.findMany({
       where: { dingtalkUserId: { in: ids } },
-      select: { id: true, dingtalkUserId: true, casUsername: true },
+      select: { id: true, dingtalkUserId: true, casUsername: true, role: true },
     })) ?? [];
     for (const u of bound) {
       const contact = stagedContacts.find((c) => c.userId === u.dingtalkUserId);
       if (!contact) continue;
-      const role = this.orgRole(u.casUsername ?? contact.userId, contact.department);
+      const role = this.orgRole(u.role, u.casUsername ?? contact.userId, contact.department);
       await tx.user.update({
         where: { id: u.id },
         data: { department: contact.department, role },
@@ -334,8 +334,8 @@ export class MembersService {
     if (occupied) throw new ConflictException('该钉钉成员已绑定其他系统用户');
 
     try {
-      // 手动绑定也应用组织架构角色映射（review 2026-08-11 P2）
-      const role = this.orgRole(user.casUsername ?? dingtalkUserId, contact.department ?? undefined);
+      // 手动绑定也应用组织架构角色映射（review 2026-08-11 P2,admin 不降级）
+      const role = this.orgRole(user.role, user.casUsername ?? dingtalkUserId, contact.department ?? undefined);
       const updated = await this.prisma.user.update({
         where: { id: userId },
         data: {
@@ -358,7 +358,7 @@ export class MembersService {
   async unbind(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('系统用户不存在');
-    const role = this.orgRole(user.casUsername ?? undefined, undefined); // 只剩个人映射或 business
+    const role = this.orgRole(user.role, user.casUsername ?? undefined, undefined); // admin 不降级;其余只剩个人映射或 business
     await this.prisma.user.update({
       where: { id: userId },
       data: { dingtalkUserId: null, dingtalkPhone: null, department: null, role },

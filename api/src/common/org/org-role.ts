@@ -32,3 +32,18 @@ export function resolveOrgRole(
   }
   return 'business';
 }
+
+/**
+ * 应用组织架构角色（用户决策 2026-08-11）：
+ * 已有 admin 角色【不降级】——平台管理员是手动/种子授予的系统级角色，不跟组织架构走；
+ * 组织同步/登录只赋予非 admin 角色。移除 admin 需手动操作。
+ */
+export function applyOrgRole(
+  existingRole: Role,
+  identity: string | undefined,
+  dept: string | undefined,
+  config: Pick<ConfigService, 'get'>,
+): Role {
+  if (existingRole === 'admin') return 'admin';
+  return resolveOrgRole(identity, dept, config);
+}

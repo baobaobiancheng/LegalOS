@@ -10,7 +10,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Role, User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'node:crypto';
-import { resolveOrgRole } from '../../common/org/org-role';
+import { applyOrgRole } from '../../common/org/org-role';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   CAS_ADAPTER,
@@ -151,9 +151,9 @@ export class AuthService {
     return { ...tokens, user: this.publicUser(user) };
   }
 
-  /** 领域角色解析（组织架构驱动）：个人映射 > 钉钉部门映射 > business（共用解析器,review 2026-08-11） */
-  private resolveRole(casUsername: string, deptName?: string): Role {
-    return resolveOrgRole(casUsername, deptName, this.config);
+  /** 领域角色解析（组织架构驱动,admin 不降级）：个人映射 > 钉钉部门映射 > business（共用解析器） */
+  private resolveRole(existingRole: Role, casUsername: string, deptName?: string): Role {
+    return applyOrgRole(existingRole, casUsername, deptName, this.config);
   }
 
   /**
@@ -220,8 +220,8 @@ export class AuthService {
       throw new UnauthorizedException({ error: '账号已停用，请联系管理员', code: 'USER_DISABLED' });
     }
 
-    // 角色按 User.department（钉钉部门）解析：个人映射 > 部门映射 > business；与现有不同则更新
-    const role = this.resolveRole(info.username, user.department ?? undefined);
+    // 角色按 User.department（钉钉部门）解析：admin 不降级,其余 个人映射 > 部门映射 > business；不同则更新
+    const role = this.resolveRole(user.role, info.username, user.department ?? undefined);
     if (role !== user.role) {
       await this.prisma.user.update({ where: { id: user.id }, data: { role } });
     }
