@@ -5,6 +5,7 @@ import { request, RequestError } from '../../api/client'
 import { requestStreamOrJson, type ConsultStreamEvent } from '../../api/sse'
 import { useFileUpload } from '../../composables/useFileUpload'
 import type { AttachedFile } from '../../composables/useFileUpload'
+import { useSmoothStream } from '../../composables/useSmoothStream'
 import MarkdownContent from '../../components/MarkdownContent.vue'
 import DownloadMenu from '../../components/DownloadMenu.vue'
 import ChatInputBar from '../../components/ChatInputBar.vue'
@@ -155,18 +156,20 @@ const onMsgScroll = () => {
   if (!el) return
   stickToBottom.value = el.scrollHeight - el.clientHeight - el.scrollTop <= 80
 }
-/** 自动跟随：仅在贴合底部时滚动（流式 token 用，behavior 默认 auto 防抖动） */
-const scrollBottom = () => {
-  if (!stickToBottom.value) return
+/** 强制回到底部（新提问 / 恢复会话 / 点「回到最新」） */
+const forceScrollBottom = () => {
+  stickToBottom.value = true
   nextTick(() => {
     const el = msgContainer.value
     if (el) el.scrollTop = el.scrollHeight
   })
 }
-/** 强制回到底部（新提问 / 恢复会话 / 点「回到最新」） */
-const forceScrollBottom = () => {
-  stickToBottom.value = true
-  nextTick(() => {
+/** P0（review 2026-08-12）：流式期间每动画帧最多滚动一次，避免逐 token 重排 */
+let scrollFrame: number | null = null
+const scheduleScroll = () => {
+  if (!stickToBottom.value || scrollFrame !== null) return
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = null
     const el = msgContainer.value
     if (el) el.scrollTop = el.scrollHeight
   })
@@ -264,6 +267,12 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
     // P0-2：message_start 只保存运行身份，首个 text_delta 才创建可见 AI 消息（防思考期空白框）
     let pendingRun: { runId: string; messageId: string } | undefined
     let lastSeq = 0
+    // P0（review 2026-08-12）：流式调度器——SSE 高频入队，rAF 32ms 批量渲染，消除一卡一卡
+    const streamRenderer = useSmoothStream()
+    streamRenderer.setListener((text) => {
+      if (aiMsg) aiMsg.text = text
+      scheduleScroll()
+    })
     try {
       // 非流式 JSON 响应（幂等命中/升级）shape
       type ConsultJsonResponse = { route?: string; status?: string; message?: any }
@@ -302,8 +311,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
           if (!thinkingDone.value) { thinkingDone.value = true; showThinking.value = false }
           if (aiMsg) aiMsg.status = 'streaming'
           fullText += evt.delta
-          if (aiMsg) aiMsg.text = fullText
-          scrollBottom()
+          streamRenderer.enqueue(evt.delta) // 只入队，不直接更新页面（P0 调度器）
           return
         }
         if (evt.type === 'message_end') {
@@ -316,9 +324,11 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
               aiMsg = { id: pendingRun.messageId, role: 'assistant', text: '', status: 'streaming' }
               messages.value.push(aiMsg)
             }
-            if (aiMsg) { aiMsg.text = evt.finalText; aiMsg.status = 'completed' }
+            // P0：权威校准——清空缓冲、以 finalText 收口
+            streamRenderer.finish(evt.finalText)
+            if (aiMsg) aiMsg.status = 'completed'
           }
-          scrollBottom()
+          scheduleScroll()
           return
         }
         if (evt.type === 'error') {
@@ -326,7 +336,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
           // P0-2：正文前的 error 不创建空白气泡；有正文则附着在回答内
           if (aiMsg) {
             aiMsg.status = 'failed'
-            aiMsg.text = '⚠️ AI 答复生成失败，已通知法务BP处理'
+            streamRenderer.finish('⚠️ AI 答复生成失败，已通知法务BP处理')
           } else {
             messages.value.push({ _event: true, text: 'AI 答复生成失败，已通知法务BP处理', _key: genIdempotencyKey() })
           }
@@ -356,6 +366,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
         if (aiMsg.status !== 'completed') {
           aiMsg.status = 'incomplete'
           aiMsg.errorText = reqErr.payload.error
+          streamRenderer.finish(fullText) // 立即展示已收到的部分，再标不完整
         }
       } else {
         messages.value.push({ _event: true, text: reqErr.payload.error, _key: genIdempotencyKey() })

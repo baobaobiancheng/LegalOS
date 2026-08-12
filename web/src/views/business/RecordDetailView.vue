@@ -6,6 +6,7 @@ import { RequestError, request } from '../../api/client'
 import { requestStreamOrJson, type ConsultStreamEvent } from '../../api/sse'
 import { useFileUpload } from '../../composables/useFileUpload'
 import type { AttachedFile } from '../../composables/useFileUpload'
+import { useSmoothStream } from '../../composables/useSmoothStream'
 import MarkdownContent from '../../components/MarkdownContent.vue'
 import DownloadMenu from '../../components/DownloadMenu.vue'
 import ChatInputBar from '../../components/ChatInputBar.vue'
@@ -63,6 +64,16 @@ const scrollBottom = () => nextTick(() => {
   const el = document.getElementById('msg-container')
   if (el) el.scrollTop = el.scrollHeight
 })
+// P0：流式期间每动画帧最多滚动一次
+let streamScrollFrame: number | null = null
+const scheduleStreamScroll = () => {
+  if (streamScrollFrame !== null) return
+  streamScrollFrame = requestAnimationFrame(() => {
+    streamScrollFrame = null
+    const el = document.getElementById('msg-container')
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
 
 const handleSend = async (text: string, files: AttachedFile[]) => {
   if ((!text && !files.length) || sending.value) return
@@ -72,11 +83,18 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
   actionError.value = null
 
   messages.value.push({ id: 'tmp-' + Date.now(), role: 'user', text: displayText, createdAt: new Date().toISOString() } as any)
+  // 提升到 try 外：流式调度器回调引用（P0）
+  let aiMsg: any | undefined
+  // P0：流式调度器（rAF 32ms 批量渲染）
+  const streamRenderer = useSmoothStream()
+  streamRenderer.setListener((t) => {
+    if (aiMsg) { streaming.value = t; aiMsg.text = t }
+    scheduleStreamScroll()
+  })
   scrollBottom()
 
   try {
     streaming.value = ''
-    let aiMsg: any | undefined
     const attachmentIds = files.filter(f => f.status === 'ready' || f.status === 'warning').map(f => f.id)
     const data = (await requestStreamOrJson<ConsultStreamEvent | { route?: string }>(`/projects/${id}/messages`, {
       method: 'POST',
@@ -89,10 +107,10 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
         aiMsg ??= { id: evt.messageId, role: 'assistant', text: '' }
         if (!messages.value.some(m => m.id === evt.messageId)) messages.value.push(aiMsg)
       } else if (evt.type === 'text_delta') {
-        if (aiMsg) { streaming.value += evt.delta; aiMsg.text = streaming.value; scrollBottom() }
+        streaming.value += evt.delta
+        streamRenderer.enqueue(evt.delta)
       } else if (evt.type === 'message_end') {
-        streaming.value = evt.finalText
-        if (aiMsg) aiMsg.text = evt.finalText
+        streamRenderer.finish(evt.finalText)
         void refreshMessages()
       } else if (evt.type === 'error') {
         if (aiMsg) aiMsg.text = '⚠️ AI 答复生成失败，已通知法务BP处理'
