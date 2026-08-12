@@ -15,9 +15,11 @@ const emit = defineEmits<{
 const input = ref('')
 const { files, fileInput, triggerFilePick, removeFile, formatSize, handleFiles, hasPending, clearFiles } = useFileUpload()
 
-// review 2026-08-12：去掉"至少 10 字"限制；上传/解析中禁用发送
+// review 2026-08-12：发送门槛对齐后端 DTO @MinLength(5)——前端门槛必须 ≥ 后端，
+// 否则短句(如"你好")前端能发、后端拒 → 报 title/input <5 字符。
+// 纯文本需 ≥5 字；仅附件(空文本)时 handleSend 自动补"请分析所附文件"(>5 字)绕过。
 const canSend = () =>
-  (input.value.trim().length > 0 || files.value.some(f => f.status === 'ready' || f.status === 'warning')) &&
+  (input.value.trim().length >= 5 || files.value.some(f => f.status === 'ready' || f.status === 'warning')) &&
   !props.disabled &&
   !hasPending.value
 
