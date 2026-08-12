@@ -361,7 +361,7 @@ export class ProjectService {
     dto: CreateProjectMessageDto,
     actor: ProjectActor,
     signal?: AbortSignal,
-  ): Promise<{ message: any; stream?: any; route: string; status?: 'succeeded' | 'running' }> {
+  ): Promise<{ message: any; stream?: any; route: string; status?: 'succeeded' | 'running'; completion?: Promise<unknown> }> {
     const role = actor.role === 'business' ? 'user' : 'legal';
 
     // 统一前置：加载工单 + 鉴权（F5：幂等快捷返回也须过鉴权；idempotencyKey 不是访问凭证）
@@ -391,7 +391,7 @@ export class ProjectService {
       return {
         message: first,
         route: 'llm',
-        stream: await this.triggerAIResponse(projectId, first.id, signal, claimed.runId),
+        ...(await this.triggerAIResponse(projectId, first.id, signal, claimed.runId)),
       };
     }
 
@@ -417,7 +417,7 @@ export class ProjectService {
         return {
           message: existing,
           route: 'llm',
-          stream: await this.triggerAIResponse(projectId, existing.id, signal, claimed.runId),
+          ...(await this.triggerAIResponse(projectId, existing.id, signal, claimed.runId)),
         };
       }
     }
@@ -463,7 +463,7 @@ export class ProjectService {
           return {
             message: winner,
             route: 'llm',
-            stream: await this.triggerAIResponse(projectId, winner.id, signal, claimed.runId),
+            ...(await this.triggerAIResponse(projectId, winner.id, signal, claimed.runId)),
           };
         }
       }
@@ -501,7 +501,7 @@ export class ProjectService {
       return {
         message,
         route: 'llm',
-        stream: await this.triggerAIResponse(projectId, message.id, signal, claimed.runId),
+        ...(await this.triggerAIResponse(projectId, message.id, signal, claimed.runId)),
       };
     }
 
@@ -597,6 +597,14 @@ export class ProjectService {
       release();
       this.projectTurnTails.delete(projectId);
     };
+    // P0-4（review 2026-08-12）：SSE 的 message_end 必须等落库成功后才发，
+    // 避免「前端显示成功 → 落库失败 → 刷新答案消失」。
+    let resolveCompletion!: (msg: unknown) => void;
+    let rejectCompletion!: (e: unknown) => void;
+    const completion = new Promise<unknown>((res, rej) => {
+      resolveCompletion = res;
+      rejectCompletion = rej;
+    });
     let child: any;
     try {
       const project = await this.prisma.project
@@ -656,6 +664,7 @@ export class ProjectService {
               .update({ where: { id: runId }, data: { status: 'cancelled', completedAt: new Date() } })
               .catch(() => undefined);
           }
+          rejectCompletion(new Error('cancelled'));
           return;
         }
         // 权威文本优先用网关 content 增量累计（__finalText），流式累计仅兜底
@@ -680,8 +689,10 @@ export class ProjectService {
                 .catch(() => undefined);
             }
             await this.addEvent(projectId, this.formatTime() + ' · AI 答复已完成');
+            resolveCompletion(msg); // P0-4：落库成功 → 前端可收到 message_end
           } catch (err) {
             this.logger.error(`AI 答复落库失败：${err}`);
+            rejectCompletion(err);
             if (runId) {
               await this.prisma.consultationRun
                 .update({
@@ -693,6 +704,7 @@ export class ProjectService {
           }
         } else {
           this.logger.error(`咨询网关流异常退出，code=${code}`);
+          rejectCompletion(new Error(`code=${code}`));
           try {
             await this.prisma.project.update({
               where: { id: projectId },
@@ -719,6 +731,7 @@ export class ProjectService {
 
     child.once('error', async (err) => {
       this.logger.error(`咨询网关流错误：${err.message}`);
+      rejectCompletion(err);
       try {
         await this.prisma.project.update({
           where: { id: projectId },
@@ -740,7 +753,8 @@ export class ProjectService {
       }
     });
 
-    return child;
+    // P0-4：completion 供 sendConsultSSE 门控 message_end（落库成功才发）
+    return { stream: child, completion };
   }
 
   /** 认领/复用咨询运行（2026-08-12）：一条 userMessageId 最多一个生成任务。

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useAuthStore } from '../../stores/auth'
 import { request, RequestError } from '../../api/client'
 import { requestStreamOrJson, type ConsultStreamEvent } from '../../api/sse'
@@ -76,9 +76,15 @@ const clearSession = () => localStorage.removeItem(SESSION_KEY)
 // 会话代次：新建会话/过期恢复响应不覆盖当前状态（review 2026-08-11 竞态防护）
 let sessionGen = 0
 const restoring = ref(false)
+// 当前咨询请求取消控制器（P1：新建会话/卸载时中止旧请求，防旧答案写进新会话）
+let activeAbort: AbortController | null = null
+const abortActiveRequest = () => {
+  if (activeAbort) { activeAbort.abort(); activeAbort = null }
+}
 
 const startNewSession = () => {
   sessionGen++
+  abortActiveRequest() // 中止正在进行的旧请求
   clearSession()
   projectId.value = ''
   projectRoute.value = ''
@@ -103,7 +109,8 @@ const restoreSession = async () => {
     projectRoute.value = data.route
     upgraded.value = data.route === 'legalbp'
     const tl: any[] = []
-    for (const m of data.messages) tl.push(m)
+    // P0-2：恢复的已落库 assistant 消息标记为 completed（Markdown 按 status 决定流式/最终）
+    for (const m of data.messages) tl.push({ ...m, ...(m.role === 'assistant' ? { status: 'completed' } : {}) })
     for (const e of data.events) tl.push({ ...e, _event: true })
     tl.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
     messages.value = tl
@@ -124,6 +131,7 @@ onMounted(() => {
   loadSkills()
   restoreSession()
 })
+onUnmounted(abortActiveRequest) // 离开页面中止在途请求
 
 const pickSkill = (s: { id?: string; name: string }) => {
   selectedSkill.value = s
@@ -192,12 +200,16 @@ const sendSuggested = (q: string) => {
 const handleSend = async (text: string, files: AttachedFile[]) => {
   // 防重复点击（review 2026-08-11）：发送/思考/恢复期间忽略再次提交（后端幂等是最终保障）
   if (sending.value || expectingAI.value || restoring.value) return
+  const gen = sessionGen // 新建会话后丢弃过期响应
   const fullInput = buildFullInput(text, files)
   const displayText = buildDisplayText(text, files)
   // 首条消息：建单已落库,后续 /messages 只启动首轮回答(firstReply=true,不重复写消息/评估)
   const firstReply = !projectId.value
   // 客户端幂等键：同一次发送若被重复提交，后端按 key 去重，只启动一次 AI
   const idempotencyKey = genIdempotencyKey()
+  // P1：本次请求取消控制器（新建会话/卸载时中止）
+  const abortCtrl = new AbortController()
+  activeAbort = abortCtrl
 
   sending.value = true
   lastError.value = null
@@ -210,6 +222,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
       const data = await request<{ id: string; route: string; risk?: string }>('/projects', {
         method: 'POST',
         timeoutMs: 90_000,
+        signal: abortCtrl.signal,
         body: {
           kind: 'consult',
           title: text.slice(0, 50) || '文件咨询',
@@ -241,14 +254,16 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
     aiThinking.value = ''
     showThinking.value = true
     thinkingDone.value = false
+    // 提升到 try 外：catch 需据此把流式错误附着在对应回答内（P0-3）
+    let fullText = ''
+    let aiMsg: any | undefined
+    let lastSeq = 0
     try {
-      let fullText = ''
-      let aiMsg: any | undefined
-      let lastSeq = 0
       // 非流式 JSON 响应（幂等命中/升级）shape
       type ConsultJsonResponse = { route?: string; status?: string; message?: any }
       const data = (await requestStreamOrJson<ConsultStreamEvent | ConsultJsonResponse>(`/projects/${projectId.value}/messages`, {
         method: 'POST',
+        signal: abortCtrl.signal,
         body: { text: fullInput, firstReply, idempotencyKey },
       }, (d) => {
         // onEvent 只收 SSE 事件；非流式 JSON 响应不会走到这里
@@ -259,20 +274,22 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
         // - 一次 runId 只建一个 assistant 节点（id=messageId）
         // - message_end.finalText 权威覆盖，绝不追加
         if (evt.type === 'message_start') {
-          aiMsg ??= { id: evt.messageId, role: 'assistant', text: '' }
+          aiMsg ??= { id: evt.messageId, role: 'assistant', text: '', status: 'streaming' }
           if (!messages.value.some((m) => m.id === evt.messageId)) messages.value.push(aiMsg)
           return
         }
         if (typeof evt.seq === 'number' && evt.seq <= lastSeq) return
         if (evt.type === 'reasoning_delta') {
           lastSeq = evt.seq
-          aiThinking.value += evt.delta
+          // P1：只保留最近 16KB 思考文本（UI 只显示尾部 800 字，内存不无限增长）
+          aiThinking.value = (aiThinking.value + evt.delta).slice(-16000)
           return
         }
         if (evt.type === 'text_delta') {
           lastSeq = evt.seq
           // P1-2：正文开始输出 → 思考区自动收起为「分析完成」
           if (!thinkingDone.value) { thinkingDone.value = true; showThinking.value = false }
+          if (aiMsg) aiMsg.status = 'streaming'
           fullText += evt.delta
           if (aiMsg) aiMsg.text = fullText
           scrollBottom()
@@ -281,13 +298,14 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
         if (evt.type === 'message_end') {
           lastSeq = evt.seq
           fullText = evt.finalText
-          if (aiMsg) aiMsg.text = evt.finalText // 权威覆盖，绝不追加
+          // P0-2：完成态；finalText 权威覆盖，绝不追加
+          if (aiMsg) { aiMsg.text = evt.finalText; aiMsg.status = 'completed' }
           scrollBottom()
           return
         }
         if (evt.type === 'error') {
           lastSeq = evt.seq
-          if (aiMsg) aiMsg.text = '⚠️ AI 答复生成失败，已通知法务BP处理'
+          if (aiMsg) { aiMsg.status = 'failed'; aiMsg.text = '⚠️ AI 答复生成失败，已通知法务BP处理' }
         }
       })) as ConsultJsonResponse | undefined
       if (data?.route === 'legalbp') {
@@ -302,13 +320,22 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
           messages.value.push(ans)
         }
       } else if (data?.status === 'running') {
-        messages.value.push({ _event: true, text: '该问题正在处理中，答案生成后会自动出现，请稍候', _key: genIdempotencyKey() })
+        messages.value.push({ _event: true, text: '该问题正在处理中，请稍后刷新查看', _key: genIdempotencyKey() })
       }
     } catch (error) {
-      lastError.value = error instanceof RequestError
+      if (gen !== sessionGen) return // 新建会话已清空，丢弃过期响应
+      const reqErr = error instanceof RequestError
         ? error
         : new RequestError({ error: '消息发送失败，请重试', code: 'UNKNOWN', statusCode: 0 })
-      messages.value.push({ _event: true, text: lastError.value.payload.error, _key: genIdempotencyKey() })
+      // P0-3：流式错误附着在对应 AI 回答内；已 message_end 的后续 EOF 不报错；不再全局双重显示
+      if (aiMsg) {
+        if (aiMsg.status !== 'completed') {
+          aiMsg.status = 'incomplete'
+          aiMsg.errorText = reqErr.payload.error
+        }
+      } else {
+        messages.value.push({ _event: true, text: reqErr.payload.error, _key: genIdempotencyKey() })
+      }
     }
     expectingAI.value = false
   } else {
@@ -491,12 +518,19 @@ const handleUpgrade = async () => {
                 <MarkdownContent
                   v-if="m.role === 'assistant'"
                   :text="m.text"
-                  :streaming="m.id === 'streaming'"
-                  :done="!expectingAI"
+                  :streaming="m.status === 'streaming'"
+                  :done="m.status === 'completed'"
                 />
                 <template v-else>
                   {{ m.text }}
                 </template>
+                <!-- P0-3：流式错误/不完整附着在回答内，不再全局 ErrorState 双重显示 -->
+                <div
+                  v-if="m.role === 'assistant' && (m.status === 'failed' || m.status === 'incomplete')"
+                  class="msg-error"
+                >
+                  {{ m.errorText || (m.status === 'incomplete' ? '回答可能不完整' : 'AI 答复生成失败') }}
+                </div>
               </div>
               <div
                 v-if="m._files?.length"

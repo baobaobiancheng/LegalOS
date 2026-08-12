@@ -4,6 +4,15 @@ import { apiLogger } from './logger'
 export type SseEvent = Record<string, unknown>
 type EventHandler<T extends SseEvent> = (event: T) => void
 
+/** 终止事件判定（2026-08-12 review P0）：兼容新旧协议。
+ *  旧协议 `{done:true}/{error:true}`；新咨询协议 `{type:'message_end'}/{type:'error'}`。
+ *  只有收到终止事件才算业务完成——不能靠 HTTP EOF 推测（半截断流仍要报错）。 */
+export const isTerminalEvent = (event: SseEvent): boolean =>
+  event.done === true ||
+  event.error === true ||
+  event.type === 'message_end' ||
+  event.type === 'error'
+
 /** 咨询流式协议（2026-08-12，与后端 sendConsultSSE 对齐）：runId/seq 去重，messageId 唯一节点 */
 export type ConsultStreamEvent =
   | { type: 'message_start'; runId: string; messageId: string }
@@ -81,7 +90,7 @@ const consumeSseResponse = async <T extends SseEvent>(response: Response, onEven
         ...(requestId ? { requestId } : {}),
       }))
     }
-    if (event.done === true || event.error === true) terminalEvent = true
+    if (isTerminalEvent(event)) terminalEvent = true
     onEvent(event)
   }
 

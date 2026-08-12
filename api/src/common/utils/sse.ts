@@ -21,7 +21,7 @@ export function sendSSE(
   onDisconnect?: () => void,
 ): void {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
@@ -120,9 +120,10 @@ export function sendConsultSSE(
   stream: SseStream & { __runId?: string },
   donePayload: Record<string, unknown> = {},
   onDisconnect?: () => void,
+  completion?: Promise<unknown>,
 ): void {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
@@ -141,6 +142,12 @@ export function sendConsultSSE(
     emit({ type: 'message_start', runId, messageId: runId });
   };
 
+  // P1：SSE 心跳（注释行 keep-alive）——长时间无数据时不让代理/网关断开；前端忽略非 data 行
+  const heartbeat = setInterval(() => {
+    if (!res.destroyed && !res.writableEnded && !ended) res.write(': ping\n\n');
+  }, 20_000);
+  heartbeat.unref?.();
+
   stream.stdout?.on('data', (chunk: Buffer) => {
     const text = decoder.write(chunk);
     if (!text) return;
@@ -155,7 +162,8 @@ export function sendConsultSSE(
     emit({ type: 'reasoning_delta', runId, seq: next(), delta: text });
   });
 
-  stream.on('close', (code: number) => {
+  stream.on('close', async (code: number) => {
+    clearInterval(heartbeat);
     if (res.destroyed || res.writableEnded) return;
     const remaining = decoder.end();
     if (remaining) {
@@ -169,6 +177,17 @@ export function sendConsultSSE(
     }
     ended = true;
     if (code === 0) {
+      // P0-4：落库成功后才发 message_end；落库失败发 error（前端不误报成功）
+      if (completion) {
+        try {
+          await completion;
+        } catch {
+          emit({ type: 'error', runId, seq: next(), code: 'PERSIST_FAILED', message: '回答保存失败，请重试' });
+          res.end();
+          return;
+        }
+        if (res.destroyed || res.writableEnded) return;
+      }
       emit({
         type: 'message_end',
         runId,
@@ -184,6 +203,7 @@ export function sendConsultSSE(
   });
 
   stream.on('error', () => {
+    clearInterval(heartbeat);
     if (res.destroyed || res.writableEnded) return;
     ended = true;
     emit({ type: 'error', runId, seq: next(), code: 'SERVICE_ERROR', message: '服务异常' });
@@ -191,6 +211,7 @@ export function sendConsultSSE(
   });
 
   res.on('close', () => {
+    clearInterval(heartbeat);
     if (!ended && onDisconnect) onDisconnect();
   });
 }

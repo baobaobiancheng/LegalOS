@@ -127,8 +127,8 @@ export class ProjectController {
     const result = await this.projectService.createMessage(id, dto, actor, abort.signal);
 
     if (result.stream) {
-      // P2 llm 路由 → SSE 流式推送（有身份协议：runId/seq；连接断开 → abort 取消生成）
-      sendConsultSSE(res, result.stream, { projectId: id }, () => abort.abort());
+      // P2 llm 路由 → SSE 流式推送（有身份协议：runId/seq；completion 门控 message_end 晚于落库）
+      sendConsultSSE(res, result.stream, { projectId: id }, () => abort.abort(), result.completion);
     } else {
       // P1/P0 非流式 → 普通 JSON 响应
       res.json(result.message);
