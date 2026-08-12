@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsOptional, IsIn, IsBoolean, MinLength, MaxLength } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsIn, IsBoolean, IsArray, MinLength, MaxLength, ArrayMaxSize } from 'class-validator';
 import { ProjectKind } from '@prisma/client';
 
 export class CreateProjectDto {
@@ -45,6 +45,13 @@ export class CreateProjectDto {
   @IsString()
   @MaxLength(128)
   idempotencyKey?: string;
+
+  // 咨询附件 id 列表（2026-08-12：multipart 上传后返回的 attachmentId）
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5)
+  @IsString({ each: true })
+  attachmentIds?: string[];
 }
 
 export class CreateProjectMessageDto {
@@ -68,6 +75,13 @@ export class CreateProjectMessageDto {
   @IsString()
   @MaxLength(128)
   idempotencyKey?: string;
+
+  // 咨询附件 id 列表（2026-08-12）
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5)
+  @IsString({ each: true })
+  attachmentIds?: string[];
 }
 
 export class ReplyProjectDto {

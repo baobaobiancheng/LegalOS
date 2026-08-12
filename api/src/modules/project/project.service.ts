@@ -10,6 +10,7 @@ import { Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ConsultationChatService } from '../../common/services/consultation-chat.service';
+import { ConsultationAttachmentService } from '../../common/services/consultation-attachment.service';
 import { LLMRiskService } from '../../common/services/llm-risk.service';
 import {
   CrmAdapter,
@@ -58,6 +59,7 @@ export class ProjectService {
     private readonly consultationChat: ConsultationChatService,
     private readonly contextBuilder: ConsultationContextBuilder,
     private readonly config: ConfigService,
+    private readonly attachmentService: ConsultationAttachmentService,
   ) {}
 
   // ═══════════════════════════════════════════
@@ -74,6 +76,11 @@ export class ProjectService {
         currentUserId,
       );
       if (existing) return this.formatProject(existing);
+    }
+
+    // 0.5 附件校验（归属/状态/过期；绑定在工单创建后执行）
+    if (dto.attachmentIds?.length) {
+      await this.attachmentService.validateForUser(dto.attachmentIds, currentUserId);
     }
 
     // 1. 风险判定 + 领域标签（事务前：外部 LLM 调用；P1-11 带回规则下限证据）
@@ -158,7 +165,13 @@ export class ProjectService {
       extra: skillPrompt ? { skillPrompt } : null,
       events,
       enqueueDingtalkGroup: route === 'legalbp',
+      attachmentIds: dto.attachmentIds,
     });
+
+    // 3.5 附件绑定到工单（首次使用才写 projectId）
+    if (dto.attachmentIds?.length) {
+      await this.attachmentService.bind(dto.attachmentIds, project.id);
+    }
 
     // 4. 首条消息已由建单落库；不再在此自动触发 AI —— 前端随后用 firstReply=true 启动首轮回答，
     //    避免「同一问题触发两次 AI、存两条用户消息」（review 2026-08-11 P0 双重提交）。
@@ -452,6 +465,10 @@ export class ProjectService {
     // clientKey unique 兜并发：同 key 两个并发请求只有一个能建消息成功。
     let txProject: any;
     let message: any;
+    // 附件校验（归属/状态/过期），绑定在消息创建后执行
+    if (dto.attachmentIds?.length) {
+      await this.attachmentService.validateForUser(dto.attachmentIds, actor.id);
+    }
     try {
       const result = await this.prisma.$transaction(async (tx) => {
         if (typeof tx.$queryRaw === 'function') {
@@ -466,11 +483,15 @@ export class ProjectService {
             role,
             text: dto.text,
             ...(dto.idempotencyKey ? { clientKey: dto.idempotencyKey } : {}),
+            ...(dto.attachmentIds?.length ? { attachmentIds: dto.attachmentIds } : {}),
           },
         });
         return { project: lockedProject, message: createdMessage };
       });
       ({ project: txProject, message } = result);
+      if (dto.attachmentIds?.length) {
+        await this.attachmentService.bind(dto.attachmentIds, projectId);
+      }
     } catch (e: any) {
       if (e?.code === 'P2002' && dto.idempotencyKey) {
         // 并发方同 key 先建成功：复用其消息（校验归属同工单，防跨工单 key 碰撞）

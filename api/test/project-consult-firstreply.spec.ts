@@ -109,6 +109,7 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
       consultationChat as any,
       contextBuilder as any,
       { get: vi.fn((_k: string, d: unknown) => d) } as any,
+      { validateForUser: vi.fn(), bind: vi.fn(), getTexts: vi.fn(), upload: vi.fn() } as any,
     );
     prisma.project.create.mockResolvedValue(mockProject());
     prisma.project.findUnique.mockResolvedValue(mockProject());

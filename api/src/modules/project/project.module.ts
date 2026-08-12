@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ProjectController } from './project.controller';
 import { OutboxAdminController } from './outbox-admin.controller';
+import { ConsultationAttachmentsController } from './consultation-attachments.controller';
 import { ProjectService } from './project.service';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { LLMRiskService } from '../../common/services/llm-risk.service';
@@ -19,7 +20,7 @@ import { ConsultationContextBuilder } from './application/consultation-context-b
 
 @Module({
   imports: [PrismaModule, DingTalkAdapterModule],
-  controllers: [ProjectController, OutboxAdminController],
+  controllers: [ProjectController, OutboxAdminController, ConsultationAttachmentsController],
   providers: [
     ProjectService,
     LLMRiskService,

@@ -13,9 +13,13 @@ const emit = defineEmits<{
 }>()
 
 const input = ref('')
-const { files, fileInput, triggerFilePick, removeFile, formatSize, handleFiles, clearFiles } = useFileUpload()
+const { files, fileInput, triggerFilePick, removeFile, formatSize, handleFiles, hasPending, clearFiles } = useFileUpload()
 
-const canSend = () => (input.value.trim().length >= 10 || files.value.length > 0) && !props.disabled
+// review 2026-08-12：去掉"至少 10 字"限制；上传/解析中禁用发送
+const canSend = () =>
+  (input.value.trim().length > 0 || files.value.some(f => f.status === 'ready' || f.status === 'warning')) &&
+  !props.disabled &&
+  !hasPending.value
 
 const handleSend = () => {
   if (!canSend()) return
@@ -34,13 +38,28 @@ const handleSend = () => {
       <div
         v-for="f in files"
         :key="f.id"
-        class="file-chip"
+        :class="['file-chip', f.status]"
       >
-        <span class="fc-icon">📄</span>
-        <span class="fc-name">{{ f.name }}</span>
-        <span class="fc-size">{{ formatSize(f.size) }}</span>
+        <span class="fc-icon">
+          {{ f.status === 'uploading' ? '↻' : f.status === 'failed' ? '!' : 'W' }}
+        </span>
+        <span class="fc-info">
+          <span
+            class="fc-name"
+            :title="f.name"
+          >{{ f.name }}</span>
+          <span class="fc-meta">
+            {{ f.type.includes('word') || f.name.toLowerCase().endsWith('.docx') ? 'DOCX' : f.name.toLowerCase().endsWith('.md') ? 'MD' : 'TXT' }}
+            · {{ formatSize(f.size) }}
+            <template v-if="f.status === 'ready'"> · ✓ 已解析 {{ f.extractedChars?.toLocaleString() }} 字</template>
+            <template v-else-if="f.status === 'warning'"> · ⚠ {{ f.warning || '部分内容可能缺失' }}</template>
+            <template v-else-if="f.status === 'uploading'"> · 上传中…</template>
+            <template v-else-if="f.status === 'failed'"> · {{ f.warning || '上传失败' }}</template>
+          </span>
+        </span>
         <button
           class="fc-remove"
+          :aria-label="'删除 ' + f.name"
           @click="removeFile(f.id)"
         >
           ×
@@ -90,7 +109,7 @@ const handleSend = () => {
       type="file"
       multiple
       hidden
-      accept=".txt,.md,.json,.docx,.pdf,.xlsx,.pptx,.doc,.xls,.ppt,.csv"
+      accept=".docx,.txt,.md"
       @change="handleFiles"
     >
   </div>

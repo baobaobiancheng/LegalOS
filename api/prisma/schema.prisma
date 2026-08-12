@@ -265,10 +265,31 @@ model ProjectMessage {
   // 2026-08-12 客户端幂等键：前端每个问题生成一个 key，防双重提交/网络重试
   // 产生重复消息与重复回答（与 ConsultationRun.userMessageId 配合）。
   clientKey String?  @unique @map("client_key")
+  // 2026-08-12 附件：本轮消息关联的咨询附件 id 列表（正文由后端提取后注入上下文）
+  attachmentIds Json? @map("attachment_ids")
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([projectId])
   @@map("project_messages")
+}
+
+model ConsultationAttachment {
+  id             String   @id @default(uuid())
+  creatorId      String   @map("creator_id")
+  projectId      String?  @map("project_id")
+  fileName       String   @map("file_name")
+  fileSize       Int      @map("file_size")
+  mimeType       String?  @map("mime_type")
+  status         String   @default("ready") @db.VarChar(16) // ready | warning | failed
+  extractedText  String?  @map("extracted_text") @db.Text
+  extractedChars Int      @default(0) @map("extracted_chars")
+  warning        String?  @db.VarChar(256)
+  expiresAt      DateTime @map("expires_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([creatorId])
+  @@index([projectId])
+  @@map("consultation_attachments")
 }
 
 model ProjectEvent {

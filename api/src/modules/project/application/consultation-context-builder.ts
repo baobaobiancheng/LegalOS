@@ -114,6 +114,9 @@ export class ConsultationContextBuilder {
       throw new Error(`ConsultationContextBuilder: 未找到当前消息 ${input.currentUserMessageId}`);
     }
     const current = messages[currentIndex];
+    // 3.1 附件正文（review 2026-08-12）：当前消息关联附件作为不可信资料拼进用户消息
+    const attachmentTexts = await this.fetchAttachmentTexts(current.attachmentIds);
+    const currentContent = attachmentTexts ? `${current.text}\n\n${attachmentTexts}` : current.text;
 
     const answerTextById = new Map<string, string>();
     for (const m of messages) answerTextById.set(m.id, m.text);
@@ -155,7 +158,7 @@ export class ConsultationContextBuilder {
           out.push({ role: 'assistant', content: `（人工法务回复）${e.assistantText}` });
         }
       }
-      out.push({ role: 'user', content: current.text });
+      out.push({ role: 'user', content: currentContent });
       return out;
     };
 
@@ -190,5 +193,27 @@ export class ConsultationContextBuilder {
   /** 基于最终 messages 逐条估算（P2b：真实 system/skill prompt 纳入） */
   private estimateMessages(msgs: ChatMessage[]): number {
     return msgs.reduce((sum, m) => sum + estimateTokens(m.content), 0) + msgs.length;
+  }
+
+  /** 取当前消息关联附件的正文（不可信资料，带文件名前缀；仅取 ready 状态） */
+  private async fetchAttachmentTexts(attachmentIds: unknown): Promise<string | null> {
+    let ids: string[] = [];
+    if (Array.isArray(attachmentIds)) ids = attachmentIds.filter((x) => typeof x === 'string');
+    else if (typeof attachmentIds === 'string') {
+      try {
+        const parsed = JSON.parse(attachmentIds);
+        if (Array.isArray(parsed)) ids = parsed.filter((x) => typeof x === 'string');
+      } catch { /* 忽略 */ }
+    }
+    if (!ids.length) return null;
+    const attachments = await this.prisma.consultationAttachment.findMany({
+      where: { id: { in: ids }, status: 'ready' },
+      select: { fileName: true, extractedText: true },
+    });
+    if (!attachments.length) return null;
+    const parts = attachments
+      .map((a) => (a.extractedText ? `【附件 ${a.fileName}】\n${a.extractedText}` : ''))
+      .filter(Boolean);
+    return parts.length ? parts.join('\n\n') : null;
   }
 }

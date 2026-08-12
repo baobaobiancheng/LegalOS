@@ -86,6 +86,7 @@ describe('ProjectService.create 技能解析', () => {
       { stream: vi.fn() } as any,
       { build: vi.fn() } as any,
       { get: vi.fn((_k: string, d: unknown) => d) } as any,
+      { validateForUser: vi.fn(), bind: vi.fn(), getTexts: vi.fn(), upload: vi.fn() } as any,
     );
     prisma.project.create.mockResolvedValue(mockProject());
   });

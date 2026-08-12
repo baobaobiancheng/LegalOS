@@ -1,12 +1,31 @@
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
+import { request, RequestError } from '../api/client'
 
+/**
+ * 附件上传（2026-08-12 review）：不再 Base64 塞进 JSON——
+ * 选择文件 → multipart 上传 /consultation-attachments → 后端 mammoth 提取正文 →
+ * 返回 attachmentId；发送消息只带 attachmentIds，正文由后端注入模型上下文。
+ * 仅支持 .docx / .txt / .md。
+ */
 export interface AttachedFile {
-  id: string
+  id: string              // 后端 attachmentId（上传成功）或本地临时 key
   name: string
   size: number
   type: string
-  content: string       // 文本内容或 base64
-  textPreview: string   // 可读预览
+  status: 'uploading' | 'ready' | 'warning' | 'failed'
+  warning?: string
+  extractedChars?: number
+  _local?: boolean
+}
+
+export interface AttachmentMetadata {
+  id: string
+  name: string
+  size: number
+  mimeType: string | null
+  status: string
+  extractedChars: number
+  warning: string | null
 }
 
 export function useFileUpload() {
@@ -25,59 +44,60 @@ export function useFileUpload() {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
   }
 
+  /** 就绪可发送的附件 id */
+  const readyIds = computed(() =>
+    files.value.filter(f => f.status === 'ready' || f.status === 'warning').map(f => f.id),
+  )
+  const hasPending = computed(() => files.value.some(f => f.status === 'uploading'))
+
   const handleFiles = async (e: Event) => {
     const target = e.target as HTMLInputElement
     const selected = target.files
     if (!selected) return
 
-    for (let i = 0; i < selected.length; i++) {
-      const f = selected[i]
-      if (f.size > 5 * 1024 * 1024) continue
-      const fid = 'f-' + Date.now() + '-' + i
-      let content = '', textPreview = ''
+    for (const f of Array.from(selected)) {
+      const localKey = 'l-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
+      const fd = new FormData()
+      fd.append('file', f)
+      files.value.push({ id: localKey, name: f.name, size: f.size, type: f.type, status: 'uploading', _local: true })
       try {
-        if (f.type.startsWith('text/') || f.name.endsWith('.txt') || f.name.endsWith('.md')) {
-          content = await f.text()
-          textPreview = content.slice(0, 500)
-        } else {
-          const buf = await f.arrayBuffer()
-          const bytes = new Uint8Array(buf)
-          let binary = ''
-          for (let j = 0; j < bytes.length; j++) binary += String.fromCharCode(bytes[j])
-          content = btoa(binary)
-          textPreview = `[${f.type || 'binary'}] ${formatSize(f.size)}`
+        const meta = await request<AttachmentMetadata>('/consultation-attachments', {
+          method: 'POST',
+          body: fd,
+          timeoutMs: 60_000,
+        })
+        const idx = files.value.findIndex(x => x.id === localKey)
+        if (idx >= 0) {
+          files.value[idx] = {
+            id: meta.id,
+            name: meta.name,
+            size: meta.size,
+            type: f.type,
+            status: meta.status === 'warning' ? 'warning' : 'ready',
+            warning: meta.warning ?? undefined,
+            extractedChars: meta.extractedChars,
+          }
         }
-      } catch {
-        textPreview = '[读取失败]'
+      } catch (err) {
+        const idx = files.value.findIndex(x => x.id === localKey)
+        if (idx >= 0) {
+          const msg = err instanceof RequestError ? err.payload.error : '上传失败'
+          files.value[idx] = { ...files.value[idx], status: 'failed', warning: msg }
+        }
       }
-      files.value.push({ id: fid, name: f.name, size: f.size, type: f.type, content, textPreview })
     }
     target.value = ''
   }
 
-  /** 构建含附件内容的完整输入文本 */
-  const buildFullInput = (text: string, attached: AttachedFile[]): string => {
-    if (!attached.length) return text
-    let result = text + '\n\n--- 附件内容 ---'
-    for (const f of attached) {
-      result += `\n[文件：${f.name} (${formatSize(f.size)})]`
-      if (f.textPreview && !f.textPreview.startsWith('[')) {
-        result += `\n${f.textPreview}${f.content.length > 500 ? '\n...(内容已截断)' : ''}`
-      }
-    }
-    return result
-  }
-
-  /** 构建用户侧的展示文本 */
-  const buildDisplayText = (text: string, attached: AttachedFile[]): string => {
-    if (!attached.length) return text
-    return text + '\n\n📎 附件：' + attached.map(f => f.name).join('、')
-  }
+  /** 用户消息只显示提问文字；附件正文由后端注入（不再拼 Base64/文件名进提示词）。
+   *  保留 files 形参以兼容既有调用点（ConsultView/RecordDetailView）。 */
+  const buildFullInput = (text: string, _attached?: AttachedFile[]): string => text
+  const buildDisplayText = (text: string, _attached?: AttachedFile[]): string => text
 
   const clearFiles = () => { files.value = [] }
 
   return {
     files, fileInput, triggerFilePick, removeFile, formatSize,
-    handleFiles, buildFullInput, buildDisplayText, clearFiles,
+    readyIds, hasPending, handleFiles, buildFullInput, buildDisplayText, clearFiles,
   }
 }

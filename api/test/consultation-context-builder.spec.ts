@@ -18,6 +18,7 @@ function makePrisma() {
   return {
     consultationRun: { findMany: vi.fn() },
     projectMessage: { findMany: vi.fn() },
+    consultationAttachment: { findMany: vi.fn() },
   };
 }
 
@@ -25,13 +26,31 @@ function makeConfig(overrides: Record<string, unknown> = {}) {
   return { get: (k: string, d: unknown) => (k in overrides ? overrides[k] : d) } as any;
 }
 
-function msg(id: string, role: string, text: string, index: number) {
-  return { id, projectId: 'p1', role, text, createdAt: new Date(Date.UTC(2026, 7, 12, 0, 0, index)), label: null };
+function msg(id: string, role: string, text: string, index: number, over: Record<string, unknown> = {}) {
+  return { id, projectId: 'p1', role, text, createdAt: new Date(Date.UTC(2026, 7, 12, 0, 0, index)), label: null, ...over };
 }
 
 describe('ConsultationContextBuilder', () => {
   let prisma: ReturnType<typeof makePrisma>;
   let builder: ConsultationContextBuilder;
+
+  it('附件正文注入：当前消息带 attachmentIds 时拼进用户内容', async () => {
+    prisma.consultationRun.findMany.mockResolvedValue([]);
+    prisma.projectMessage.findMany.mockResolvedValue([
+      msg('cur', 'user', '请评估这份答复', 1, { attachmentIds: ['att-1'] }),
+    ]);
+    prisma.consultationAttachment.findMany.mockResolvedValue([
+      { id: 'att-1', fileName: '答复.docx', extractedText: '这是附件里的法律答复正文' },
+    ]);
+
+    const result = await builder.build({ projectId: 'p1', currentUserMessageId: 'cur' });
+
+    const last = result.messages[result.messages.length - 1];
+    expect(last.role).toBe('user');
+    expect(last.content).toContain('请评估这份答复');
+    expect(last.content).toContain('【附件 答复.docx】');
+    expect(last.content).toContain('这是附件里的法律答复正文');
+  });
 
   it('P1-1：P2 system prompt 不强制四段式固定模板（自然回答）', () => {
     expect(CONSULT_SYSTEM_PROMPT).not.toContain('严格按四段式输出');

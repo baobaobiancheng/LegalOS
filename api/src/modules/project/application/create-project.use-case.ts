@@ -30,6 +30,8 @@ export interface CreateProjectCommand {
   idempotencyKey?: string | null;
   /** extra JSON（技能 prompt 快照等） */
   extra?: Prisma.InputJsonValue | null;
+  /** 首条消息关联的咨询附件 id（2026-08-12） */
+  attachmentIds?: string[];
   contractTemplateSlug?: string | null;
   /** 事务内额外写入的事件文案（含时间戳前缀，调用方拼接） */
   events?: string[];
@@ -107,7 +109,12 @@ export class CreateProjectUseCase {
 
         // 首条消息（role 由服务端派生：用户输入恒为 'user'）
         await tx.projectMessage.create({
-          data: { projectId: p.id, role: 'user', text: cmd.input },
+          data: {
+            projectId: p.id,
+            role: 'user',
+            text: cmd.input,
+            ...(cmd.attachmentIds?.length ? { attachmentIds: cmd.attachmentIds } : {}),
+          },
         });
 
         // 事件

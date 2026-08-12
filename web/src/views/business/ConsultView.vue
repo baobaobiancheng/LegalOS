@@ -14,7 +14,7 @@ import type { Skill, ProjectDetail } from '../../types'
 import { GENERAL_SKILL } from '../../types'
 
 const auth = useAuthStore()
-const { buildFullInput, buildDisplayText } = useFileUpload()
+const { buildFullInput, buildDisplayText, formatSize } = useFileUpload()
 
 const sending = ref(false)
 const upgrading = ref(false)
@@ -207,6 +207,8 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
   const firstReply = !projectId.value
   // 客户端幂等键：同一次发送若被重复提交，后端按 key 去重，只启动一次 AI
   const idempotencyKey = genIdempotencyKey()
+  // 附件：只提交就绪的 attachmentId，正文由后端注入（review 2026-08-12）
+  const attachmentIds = files.filter(f => f.status === 'ready' || f.status === 'warning').map(f => f.id)
   // P1：本次请求取消控制器（新建会话/卸载时中止）
   const abortCtrl = new AbortController()
   activeAbort = abortCtrl
@@ -231,6 +233,8 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
           skillId: selectedSkill.value.id || undefined,
           // P2d：建单也带幂等键——建单成功但响应丢失时重试不会创建第二个工单
           idempotencyKey,
+          // 附件 id（正文由后端注入；2026-08-12）
+          attachmentIds,
         },
       })
       projectId.value = data.id; projectRoute.value = data.route
@@ -266,7 +270,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
       const data = (await requestStreamOrJson<ConsultStreamEvent | ConsultJsonResponse>(`/projects/${projectId.value}/messages`, {
         method: 'POST',
         signal: abortCtrl.signal,
-        body: { text: fullInput, firstReply, idempotencyKey },
+        body: { text: fullInput, firstReply, idempotencyKey, attachmentIds },
       }, (d) => {
         // onEvent 只收 SSE 事件；非流式 JSON 响应不会走到这里
         if (!('type' in d)) return
@@ -563,7 +567,7 @@ const handleUpgrade = async () => {
                   :key="f.id"
                   class="file-tag"
                 >
-                  <span class="ft-icon">📎</span><span class="ft-name">{{ f.name }}</span><span class="ft-size">{{ f.size }}</span>
+                  <span class="ft-icon">📎</span><span class="ft-name">{{ f.name }}</span><span class="ft-size">{{ formatSize(f.size) }}</span>
                 </span>
               </div>
               <div
