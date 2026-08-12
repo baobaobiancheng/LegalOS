@@ -89,6 +89,9 @@ export class ProjectAccessPolicy {
           project.status !== '已取消' &&
           project.status !== '已回传'
         );
+      case ProjectAction.Escalate:
+        // 仅自己创建、且未取消的工单可申请升级（AI 已回传的 P2 允许升级）
+        return project.creatorId === actor.id && project.status !== '已取消';
       case ProjectAction.List:
         return true; // 列表范围由 listScope 服务端生成
       case ProjectAction.Claim:

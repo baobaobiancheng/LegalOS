@@ -348,6 +348,31 @@ export class ProjectService {
     return updated;
   }
 
+  /** 用户申请升级人工处理（2026-08-12 review P0）：独立接口，复用 EscalateProjectToLegalUseCase。
+   *   business 仅能升级自己创建且未取消的工单；lead/admin 全部。
+   *   不启动模型、不新增用户消息、不创建 ConsultationRun；重复点击幂等返回 200。 */
+  async escalate(projectId: string, actor: ProjectActor) {
+    const project = await this.prisma.project.findUnique({ where: { id: projectId } });
+    if (!project) throw new NotFoundException('工单不存在');
+    this.accessPolicy.assertCan(actor, ProjectAction.Escalate, project);
+    if (project.status === '已取消') throw new ForbiddenException('已取消的工单不能升级');
+
+    // 已是法务流程：幂等返回 200，不重复写事件/建群
+    if (project.route === 'legalbp') {
+      return { upgraded: false, route: 'legalbp', status: project.status };
+    }
+
+    await this.escalateToLegal.execute({
+      projectId,
+      route: 'legalbp',
+      status: '待复核',
+      domain: null,
+      eventTexts: [this.formatTime() + ' · 用户申请升级为人工处理，已通知法务 BP'],
+    });
+
+    return { upgraded: true, route: 'legalbp', status: '待复核' };
+  }
+
   // ═══════════════════════════════════════════
   // 消息流
   // ═══════════════════════════════════════════

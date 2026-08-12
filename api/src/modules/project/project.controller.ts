@@ -135,6 +135,18 @@ export class ProjectController {
     }
   }
 
+  /** 用户申请升级人工处理（review 2026-08-12 P0：独立命令接口，不启动模型/不写用户消息） */
+  @Post(':id/escalate')
+  @Roles(Role.admin, Role.legal_bp, Role.legal_lead, Role.business)
+  async escalate(
+    @Param('id') id: string,
+    @CurrentUser('id') userId: string,
+    @CurrentUser('role') role: Role,
+  ) {
+    const actor: ProjectActor = { id: userId, role };
+    return this.projectService.escalate(id, actor);
+  }
+
   /** 法务 BP 正式回传 */
   @Post(':id/reply')
   @Roles(Role.admin, Role.legal_bp, Role.legal_lead)

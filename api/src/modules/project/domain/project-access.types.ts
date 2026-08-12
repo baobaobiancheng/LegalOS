@@ -35,4 +35,6 @@ export enum ProjectAction {
   ManageFile = 'manage-file',
   /** business 发起法务审阅（仅自己创建的合同工单） */
   SubmitReview = 'submit-review',
+  /** 用户申请升级人工处理（business 仅自己创建、未取消；lead/admin 全部） */
+  Escalate = 'escalate',
 }

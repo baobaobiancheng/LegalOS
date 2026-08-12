@@ -257,6 +257,8 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
     // 提升到 try 外：catch 需据此把流式错误附着在对应回答内（P0-3）
     let fullText = ''
     let aiMsg: any | undefined
+    // P0-2：message_start 只保存运行身份，首个 text_delta 才创建可见 AI 消息（防思考期空白框）
+    let pendingRun: { runId: string; messageId: string } | undefined
     let lastSeq = 0
     try {
       // 非流式 JSON 响应（幂等命中/升级）shape
@@ -274,8 +276,8 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
         // - 一次 runId 只建一个 assistant 节点（id=messageId）
         // - message_end.finalText 权威覆盖，绝不追加
         if (evt.type === 'message_start') {
-          aiMsg ??= { id: evt.messageId, role: 'assistant', text: '', status: 'streaming' }
-          if (!messages.value.some((m) => m.id === evt.messageId)) messages.value.push(aiMsg)
+          // P0-2：只保存运行身份，不创建可见消息（避免思考期出现空白 AI 框/头像/操作按钮）
+          if (!pendingRun) pendingRun = { runId: evt.runId, messageId: evt.messageId }
           return
         }
         if (typeof evt.seq === 'number' && evt.seq <= lastSeq) return
@@ -287,6 +289,11 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
         }
         if (evt.type === 'text_delta') {
           lastSeq = evt.seq
+          // P0-2：第一条正文到达才创建可见 AI 消息
+          if (!aiMsg && pendingRun) {
+            aiMsg = { id: pendingRun.messageId, role: 'assistant', text: '', status: 'streaming' }
+            messages.value.push(aiMsg)
+          }
           // P1-2：正文开始输出 → 思考区自动收起为「分析完成」
           if (!thinkingDone.value) { thinkingDone.value = true; showThinking.value = false }
           if (aiMsg) aiMsg.status = 'streaming'
@@ -298,14 +305,27 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
         if (evt.type === 'message_end') {
           lastSeq = evt.seq
           fullText = evt.finalText
-          // P0-2：完成态；finalText 权威覆盖，绝不追加
-          if (aiMsg) { aiMsg.text = evt.finalText; aiMsg.status = 'completed' }
+          // P0-2：边界——finalText 为空按协议异常处理，不生成空白成功消息；
+          //       有 finalText 但此前无 text_delta（极短答案）→ 此时才创建消息
+          if (evt.finalText) {
+            if (!aiMsg && pendingRun) {
+              aiMsg = { id: pendingRun.messageId, role: 'assistant', text: '', status: 'streaming' }
+              messages.value.push(aiMsg)
+            }
+            if (aiMsg) { aiMsg.text = evt.finalText; aiMsg.status = 'completed' }
+          }
           scrollBottom()
           return
         }
         if (evt.type === 'error') {
           lastSeq = evt.seq
-          if (aiMsg) { aiMsg.status = 'failed'; aiMsg.text = '⚠️ AI 答复生成失败，已通知法务BP处理' }
+          // P0-2：正文前的 error 不创建空白气泡；有正文则附着在回答内
+          if (aiMsg) {
+            aiMsg.status = 'failed'
+            aiMsg.text = '⚠️ AI 答复生成失败，已通知法务BP处理'
+          } else {
+            messages.value.push({ _event: true, text: 'AI 答复生成失败，已通知法务BP处理', _key: genIdempotencyKey() })
+          }
         }
       })) as ConsultJsonResponse | undefined
       if (data?.route === 'legalbp') {
@@ -350,11 +370,13 @@ const handleUpgrade = async () => {
   upgrading.value = true
   lastError.value = null
   try {
-    await request(`/projects/${projectId.value}/messages`, {
+    // review 2026-08-12 P0：独立升级命令接口（返回 JSON，不启动模型/不写用户消息/不建 run）
+    await request<{ upgraded: boolean; route: 'legalbp'; status: string }>(`/projects/${projectId.value}/escalate`, {
       method: 'POST',
-      body: { text: '申请升级为人工处理', role: 'user' },
+      body: { reason: 'user_requested' },
     })
-    upgraded.value = true; projectRoute.value = 'legalbp'
+    upgraded.value = true
+    projectRoute.value = 'legalbp'
     messages.value.push({ _event: true, text: '已申请升级人工处理，法务 BP 将尽快跟进', _key: genIdempotencyKey() })
     forceScrollBottom()
   } catch (error) {
@@ -545,18 +567,18 @@ const handleUpgrade = async () => {
                 </span>
               </div>
               <div
-                v-if="m.role === 'assistant'"
+                v-if="m.role === 'assistant' && m.status === 'completed' && m.text"
                 class="ai-disclaimer"
               >
                 AI 生成 · 仅供参考
               </div>
               <DownloadMenu
-                v-if="m.role === 'assistant' && m.text"
+                v-if="m.role === 'assistant' && m.status === 'completed' && m.text"
                 :content="m.text"
                 :filename="'法律咨询答复'"
               />
               <button
-                v-if="m.role === 'assistant' && projectId && projectRoute === 'llm' && !upgraded && m === messages[messages.length - 1]"
+                v-if="m.role === 'assistant' && m.status === 'completed' && projectId && projectRoute === 'llm' && !upgraded && m === messages[messages.length - 1]"
                 class="escalate-btn"
                 :disabled="upgrading"
                 @click="handleUpgrade"
