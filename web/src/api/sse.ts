@@ -112,7 +112,7 @@ const consumeSseResponse = async <T extends SseEvent>(response: Response, onEven
     if (idleTimedOut) {
       throw reportSseError(new RequestError({
         error: '请求超时，请重试',
-        code: 'REQUEST_TIMEOUT',
+        code: 'ANSWER_GENERATION_TIMEOUT',
         statusCode: response.status,
         ...(requestId ? { requestId } : {}),
       }))
@@ -132,7 +132,7 @@ const consumeSseResponse = async <T extends SseEvent>(response: Response, onEven
   if (idleTimedOut) {
     throw reportSseError(new RequestError({
       error: '请求超时，请重试',
-      code: 'REQUEST_TIMEOUT',
+      code: 'ANSWER_GENERATION_TIMEOUT',
       statusCode: response.status,
       ...(requestId ? { requestId } : {}),
     }))

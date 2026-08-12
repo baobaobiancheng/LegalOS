@@ -98,6 +98,9 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
     const attachmentIds = files.filter(f => f.status === 'ready' || f.status === 'warning').map(f => f.id)
     const data = (await requestStreamOrJson<ConsultStreamEvent | { route?: string }>(`/projects/${id}/messages`, {
       method: 'POST',
+      // P1（2026-08-12）：SSE 响应头等待超时显式 45s（追问也走风险分类），默认 30s 偏紧
+      timeoutMs: 45_000,
+      timeoutCode: 'SSE_HEADER_TIMEOUT',
       body: { text: fullInput, attachmentIds },
     }, (d) => {
       // 有身份流式协议（review 2026-08-12）：与咨询页一致

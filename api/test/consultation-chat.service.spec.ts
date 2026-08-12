@@ -274,3 +274,94 @@ describe('ConsultationChatService', () => {
     expect(out.code).toBe(0);
   });
 });
+
+/** 构造非流式 JSON 响应（complete 用；契约 C1/C2：choices[0].message.content） */
+function jsonResponse(content: string, status = 200): Response {
+  return new Response(
+    JSON.stringify({
+      id: 'chatcmpl-c',
+      object: 'chat.completion',
+      choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+    }),
+    { status, headers: { 'content-type': 'application/json' } },
+  );
+}
+
+describe('ConsultationChatService.complete（非流式，2026-08-12 风险分类改造）', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('非流式返回 content（契约 C1）；请求体 stream=false + max_tokens', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(jsonResponse('{"risk":"P2"}'));
+    vi.stubGlobal('fetch', mockFetch);
+    const service = makeService(baseEnv);
+
+    const content = await service.complete([{ role: 'user', content: '分类' }], {
+      maxTokens: 200,
+      timeout: 15_000,
+      runId: 'risk-classify',
+    });
+
+    expect(content).toBe('{"risk":"P2"}');
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(String(url)).toContain('/chat/completions');
+    const body = JSON.parse(String(init.body));
+    expect(body.stream).toBe(false);
+    expect(body.max_tokens).toBe(200);
+    expect(body.messages).toEqual([{ role: 'user', content: '分类' }]);
+    expect(String(init.headers.authorization)).toBe('Bearer sk-test');
+  });
+
+  it('max_tokens 显式生效（非流式也传，P1：不再有"传了但没用"的假配置）', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(jsonResponse('ok'));
+    vi.stubGlobal('fetch', mockFetch);
+    const service = makeService(baseEnv);
+
+    await service.complete([{ role: 'user', content: 'x' }], { maxTokens: 88 });
+
+    const body = JSON.parse(String(mockFetch.mock.calls[0][1].body));
+    expect(body.max_tokens).toBe(88);
+  });
+
+  it('网关非 2xx → reject（不读正文，防回显）', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response('内部错误', { status: 500 }));
+    vi.stubGlobal('fetch', mockFetch);
+    const service = makeService(baseEnv);
+
+    await expect(service.complete([{ role: 'user', content: 'x' }])).rejects.toThrow();
+  });
+
+  it('空 content（思考吃满预算，契约 C8）→ reject，调用方兜底 P1', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(jsonResponse(''));
+    vi.stubGlobal('fetch', mockFetch);
+    const service = makeService(baseEnv);
+
+    await expect(service.complete([{ role: 'user', content: 'x' }])).rejects.toThrow('空内容');
+  });
+
+  it('超时(默认 15s) → abort 并 reject', async () => {
+    const mockFetch = vi.fn().mockImplementation(
+      (_url: string, init: any) => new Promise((_res, rej) => {
+        init?.signal?.addEventListener('abort', () => rej(new DOMException('aborted', 'AbortError')));
+      }),
+    );
+    vi.stubGlobal('fetch', mockFetch);
+    const service = makeService(baseEnv);
+
+    await expect(service.complete([{ role: 'user', content: 'x' }], { timeout: 20 })).rejects.toThrow();
+  });
+
+  it('Kill Switch 关闭 / 未配置 → reject，不请求网关', async () => {
+    const mockFetch = vi.fn();
+    vi.stubGlobal('fetch', mockFetch);
+    const off = makeService({ ...baseEnv, AI_EXECUTION_ENABLED: 'false' });
+    await expect(off.complete([{ role: 'user', content: 'x' }])).rejects.toThrow();
+    const unconfigured = makeService({ ...baseEnv, LLM_API_KEY: '' });
+    await expect(unconfigured.complete([{ role: 'user', content: 'x' }])).rejects.toThrow();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});

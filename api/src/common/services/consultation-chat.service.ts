@@ -95,6 +95,71 @@ export class ConsultationChatService {
   }
 
   /**
+   * 直连网关非流式单次调用（2026-08-12 风险分类改造）：短超时 + 小 maxTokens。
+   * 契约 C1/C2 已验证非流式：`choices[0].message.content` 为答案、`message.reasoning` 为思考。
+   * 用于风险分类等"只要一次短答案"的场景，绕开 Codex CLI（Codex 子进程会卡满 90s）。
+   * C8/C9：max_tokens 含思考；不打印 prompt/messages/key。
+   */
+  async complete(
+    messages: ChatMessage[],
+    options?: { maxTokens?: number; timeout?: number; runId?: string; projectId?: string },
+  ): Promise<string> {
+    if (!this.aiEnabled()) throw new Error('AI 执行已禁用（AI_EXECUTION_ENABLED=false）');
+    if (!this.baseUrl || !this.apiKey) throw new Error('咨询直连网关未配置');
+    if (!messages?.length) throw new Error('咨询直连网关收到空 messages，拒绝请求');
+
+    const maxTokens = options?.maxTokens ?? 200;
+    const timeoutMs = options?.timeout ?? 15_000;
+    const tag = `project=${options?.projectId ?? '-'} run=${options?.runId ?? '-'}`;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer.unref?.();
+
+    const t0 = Date.now();
+    try {
+      const resp = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages,
+          stream: false,
+          max_tokens: maxTokens,
+        }),
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        // C9：不记录网关错误响应体（可能回显请求内容）；只记状态码
+        this.logger.error(`[consult-chat] complete HTTP ${resp.status} ${tag}`);
+        throw new Error(`网关 HTTP ${resp.status}`);
+      }
+      const data = (await resp.json()) as any;
+      const content = String(data?.choices?.[0]?.message?.content ?? '').trim();
+      if (!content) {
+        // C8：思考吃满预算 → content 为空；作为失败处理，由调用方兜底（分类默认 P1）
+        this.logger.error(`[consult-chat] complete 空内容 ${tag} elapsed=${Date.now() - t0}ms`);
+        throw new Error('网关返回空内容（max_tokens 被思考吃满）');
+      }
+      this.logger.debug(
+        `[consult-chat] complete 完成 ${tag} elapsed=${Date.now() - t0}ms content=${content.length}字`,
+      );
+      return content;
+    } catch (e) {
+      const timedOut = controller.signal.aborted;
+      this.logger.error(
+        `[consult-chat] complete ${timedOut ? `超时(${timeoutMs}ms)` : '失败'} ${tag} elapsed=${Date.now() - t0}ms`,
+      );
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * 直连网关流式生成（thinking + content 双路）。
    * messages 由 ConsultationContextBuilder 构建（system 规则 + 历史 + 当前问题）。
    */

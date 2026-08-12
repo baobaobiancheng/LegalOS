@@ -1,5 +1,6 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
-import { CodexService } from './codex.service';
+import { ConfigService } from '@nestjs/config';
+import { ConsultationChatService } from './consultation-chat.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SKILL_GROUPS } from '../constants/skill.constants';
 import { DeterministicRiskClassifier, maxSeverity } from '../risk/deterministic-risk-classifier';
@@ -34,10 +35,20 @@ export class LLMRiskService {
   private readonly logger = new Logger(LLMRiskService.name);
   private readonly classifier = new DeterministicRiskClassifier();
 
+  private readonly classifyTimeoutMs: number;
+  private readonly classifyMaxTokens: number;
+
   constructor(
-    private readonly codexService: CodexService,
+    private readonly chat: ConsultationChatService,
+    @Optional() private readonly config?: ConfigService,
     @Optional() private readonly prisma?: PrismaService,
-  ) {}
+  ) {
+    // 分类直连网关：短超时 + 小预算（2026-08-12，绕开 Codex CLI）。超时必须在建单请求超时之前返回。
+    this.classifyTimeoutMs =
+      Number.parseInt(String(this.config?.get('RISK_CLASSIFY_TIMEOUT_MS', '15000') ?? 15000), 10) || 15_000;
+    this.classifyMaxTokens =
+      Number.parseInt(String(this.config?.get('RISK_CLASSIFY_MAX_TOKENS', '200') ?? 200), 10) || 200;
+  }
 
   /**
    * 风险 + 领域双标签（P1-11 加固）：
@@ -49,15 +60,17 @@ export class LLMRiskService {
     // 1. 确定性下限（不依赖模型，提示词注入无法降级）
     const ruleHit = this.classifier.classify(query);
 
-    // 2. 模型输出严格 JSON
+    // 2. 模型输出严格 JSON（2026-08-12 改造：直连网关非流式，短超时 15s，绕开 Codex CLI）
+    //    契约 C8：max_tokens 含思考；小预算即可出 JSON，分类约 2-6s。
+    //    超时/失败 → 下方兜底 P1，不阻塞建单请求（此前 Codex CLI 卡满 90s 导致前端也 90s 超时）。
     let modelRisk: RiskLevel | null = null;
     let modelDomain: string | null = null;
     let modelReason: string | null = null;
     try {
-      const raw = await this.codexService.execute(this.buildPrompt(query), {
-        maxTokens: 60,
-        // 2026-08-11：glm-5-2 是推理模型,分类约 6-15s,留足余量防 30s 撞前端超时
-        timeout: 90_000,
+      const raw = await this.chat.complete([{ role: 'user', content: this.buildPrompt(query) }], {
+        maxTokens: this.classifyMaxTokens,
+        timeout: this.classifyTimeoutMs,
+        runId: 'risk-classify',
       });
       ({ modelRisk, modelDomain, modelReason } = this.parseModelJson(raw));
     } catch (error) {

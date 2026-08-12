@@ -15,7 +15,6 @@ import {
 
 interface CodexOptions {
   model?: string;
-  maxTokens?: number;
   timeout?: number;
   /** 隔离会话 ID（如 projectId），确保不同会话互不干扰；同会话任务严格串行 */
   sessionId?: string;

@@ -223,10 +223,12 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
 
   if (!projectId.value) {
     try {
-      // 建单含风险分类(glm-5-2 推理模型,约 6-15s),超时给到 90s 对齐后端
+      // 建单含风险分类(直连网关短超时 15s)。超时 45s：必须晚于后端分类超时(15s)，
+      // 让后端分类失败时能走确定性规则(P1)兜底返回；早于 SSE 生成超时(10min)。
       const data = await request<{ id: string; route: string; risk?: string }>('/projects', {
         method: 'POST',
-        timeoutMs: 90_000,
+        timeoutMs: 45_000,
+        timeoutCode: 'PROJECT_CREATE_TIMEOUT',
         signal: abortCtrl.signal,
         body: {
           kind: 'consult',
@@ -278,6 +280,10 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
       type ConsultJsonResponse = { route?: string; status?: string; message?: any }
       const data = (await requestStreamOrJson<ConsultStreamEvent | ConsultJsonResponse>(`/projects/${projectId.value}/messages`, {
         method: 'POST',
+        // P1（2026-08-12）：SSE 响应头等待超时显式 45s（默认 30s 会撞上分类兜底/上下文构建）。
+        // 只约束「等响应头」，正文流由 SSE 空闲超时(120s)守护。
+        timeoutMs: 45_000,
+        timeoutCode: 'SSE_HEADER_TIMEOUT',
         signal: abortCtrl.signal,
         body: { text: fullInput, firstReply, idempotencyKey, attachmentIds },
       }, (d) => {

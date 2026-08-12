@@ -44,6 +44,8 @@ export type RequestOptions = {
   body?: unknown
   retry?: boolean
   timeoutMs?: number
+  /** 阶段化超时错误码（2026-08-12 P1）：区分建单/SSE 头/回答生成哪个阶段超时，便于定位 */
+  timeoutCode?: string
   signal?: AbortSignal
 }
 
@@ -103,7 +105,7 @@ export async function parseApiResponse<T>(response: Response): Promise<T> {
 
 /** 发起 API 请求并处理安全方法的单飞刷新；POST 等副作用请求绝不自动重放。 */
 export async function apiFetch(path: string, options: RequestOptions = {}): Promise<Response> {
-  const { method = 'GET', body, retry = true, timeoutMs = DEFAULT_TIMEOUT_MS, signal } = options
+  const { method = 'GET', body, retry = true, timeoutMs = DEFAULT_TIMEOUT_MS, timeoutCode = 'REQUEST_TIMEOUT', signal } = options
   const controller = new AbortController()
   let timedOut = false
   const timer = setTimeout(() => {
@@ -133,7 +135,7 @@ export async function apiFetch(path: string, options: RequestOptions = {}): Prom
     const aborted = error instanceof DOMException && error.name === 'AbortError'
     const requestError = new RequestError({
       error: timedOut ? '请求超时，请重试' : aborted ? '请求已取消' : '网络异常，请检查连接后重试',
-      code: timedOut ? 'REQUEST_TIMEOUT' : aborted ? 'REQUEST_ABORTED' : 'NETWORK_ERROR',
+      code: timedOut ? timeoutCode : aborted ? 'REQUEST_ABORTED' : 'NETWORK_ERROR',
       statusCode: 0,
     })
     apiLogger.warn('http.transport_error', { path, method, code: requestError.payload.code })
