@@ -10,7 +10,7 @@ import {
   HttpCode,
 } from '@nestjs/common';
 import { Response } from 'express';
-import { sendSSE } from '../../common/utils/sse';
+import { sendConsultSSE } from '../../common/utils/sse';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ProjectService } from './project.service';
@@ -127,8 +127,8 @@ export class ProjectController {
     const result = await this.projectService.createMessage(id, dto, actor, abort.signal);
 
     if (result.stream) {
-      // P2 llm 路由 → SSE 流式推送（连接断开 → abort → 释放 Codex 队列槽位）
-      sendSSE(res, result.stream, { projectId: id }, () => abort.abort());
+      // P2 llm 路由 → SSE 流式推送（有身份协议：runId/seq；连接断开 → abort 取消生成）
+      sendConsultSSE(res, result.stream, { projectId: id }, () => abort.abort());
     } else {
       // P1/P0 非流式 → 普通 JSON 响应
       res.json(result.message);

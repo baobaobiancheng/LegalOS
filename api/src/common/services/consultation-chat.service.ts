@@ -37,6 +37,16 @@ export interface ConsultationChatStreamOptions {
   projectId?: string;
 }
 
+/** 免责声明末尾最多一次（review 2026-08-12）：去掉重复的免责声明，只保留最后一份 */
+function ensureDisclaimerOnce(text: string): string {
+  const pattern = /> ⚠️ 本答复由AI生成[^\n]*/g;
+  const matches = text.match(pattern);
+  if (!matches || matches.length <= 1) return text;
+  const last = matches[matches.length - 1];
+  const without = text.replace(pattern, '').trimEnd();
+  return `${without}\n${last}`;
+}
+
 /** 不可用/被拦截时返回的伪流：close(1) 走失败路径（转人工） */
 function failedStream(): any {
   const emitter = new EventEmitter();
@@ -120,12 +130,17 @@ export class ConsultationChatService {
     let fullText = '';
     let fullThinking = '';
     let gatewayRequestId: string | undefined;
+    // P0-4 保守防线：检测到连续完全重复的大段后不再展示/累积
+    let repeatGuardTriggered = false;
 
     const finalize = (code: number) => {
       if (finalized) return;
       finalized = true;
-      // 权威最终文本交给 sendSSE 的 done 事件（与 app-server 的 __finalText 语义一致）
-      if (code === 0 && fullText) stream.__finalText = fullText;
+      // 权威最终文本交给 SSE done 事件；重复截断 + 免责声明最多一次在此收口
+      if (code === 0 && fullText) {
+        stream.__finalText = ensureDisclaimerOnce(fullText);
+        if (repeatGuardTriggered) stream.__repeatGuard = true;
+      }
       stdout.end();
       thinking.end();
       emitter.emit('close', code);
@@ -211,7 +226,21 @@ export class ConsultationChatService {
               thinking.write(delta.reasoning);
             }
             if (delta?.content) {
-              fullText += delta.content;
+              if (repeatGuardTriggered) continue; // 已触发不再累积/写出
+              const next = fullText + delta.content;
+              // 连续完全一致的大段重复（≥200 字）→ 判定模型循环，只保留第一份
+              const block = 200;
+              if (next.length >= block * 2) {
+                const tail = next.slice(-block);
+                const prev = next.slice(-block * 2, -block);
+                if (tail === prev) {
+                  repeatGuardTriggered = true;
+                  this.logger.warn(`[consult-chat] 检测到连续完全重复(≥${block}字)，停止展示 ${tag}`);
+                  fullText = next.slice(0, -block);
+                  continue;
+                }
+              }
+              fullText = next;
               stdout.write(delta.content);
             }
           }

@@ -2,7 +2,7 @@
 import { ref, computed, nextTick, onMounted } from 'vue'
 import { useAuthStore } from '../../stores/auth'
 import { request, RequestError } from '../../api/client'
-import { requestStreamOrJson } from '../../api/sse'
+import { requestStreamOrJson, type ConsultStreamEvent } from '../../api/sse'
 import { useFileUpload } from '../../composables/useFileUpload'
 import type { AttachedFile } from '../../composables/useFileUpload'
 import MarkdownContent from '../../components/MarkdownContent.vue'
@@ -28,12 +28,13 @@ const msgContainer = ref<HTMLElement | null>(null)
 const aiThinking = ref('')
 const showThinking = ref(true)
 const thinkingBox = ref<HTMLElement | null>(null)
-/** 最后一条用户消息下标：思考框紧跟其下、每次回答仅一个框（review 2026-08-11 P1） */
-const lastUserMsgIndex = computed(() => {
+/** 最后一条用户消息 key：思考框紧跟其下、每次回答仅一个框（review 2026-08-11 P1） */
+const lastUserMsgKey = computed(() => {
   for (let i = messages.value.length - 1; i >= 0; i--) {
-    if (messages.value[i]?.role === 'user') return i
+    const m = messages.value[i]
+    if (m?.role === 'user') return m.id ?? m._key
   }
-  return -1
+  return ''
 })
 const scrollThinkingBox = () => nextTick(() => {
   requestAnimationFrame(() => {
@@ -178,7 +179,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
 
   sending.value = true
   lastError.value = null
-  messages.value.push({ role: 'user', text: displayText, _files: files })
+  messages.value.push({ role: 'user', text: displayText, _files: files, _key: genIdempotencyKey() })
   scrollBottom()
 
   if (!projectId.value) {
@@ -200,14 +201,14 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
       projectId.value = data.id; projectRoute.value = data.route
       saveSession()
       if (data.route === 'legalbp') {
-        messages.value.push({ _event: true, text: '系统判定 ' + data.risk + ' 风险，已创建工单并通知法务 BP' })
+        messages.value.push({ _event: true, text: '系统判定 ' + data.risk + ' 风险，已创建工单并通知法务 BP', _key: genIdempotencyKey() })
         upgraded.value = true
       }
     } catch (error) {
       lastError.value = error instanceof RequestError
         ? error
         : new RequestError({ error: '服务异常，请稍后重试', code: 'UNKNOWN', statusCode: 0 })
-      messages.value.push({ _event: true, text: lastError.value.payload.error })
+      messages.value.push({ _event: true, text: lastError.value.payload.error, _key: genIdempotencyKey() })
       sending.value = false
       return
     }
@@ -220,52 +221,74 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
     try {
       let fullText = ''
       let aiMsg: any | undefined
-      const data = await requestStreamOrJson<{ route?: string; done?: boolean; error?: boolean; text?: string; thinking?: string; finalText?: string; status?: string; message?: any }>(`/projects/${projectId.value}/messages`, {
+      let lastSeq = 0
+      // 非流式 JSON 响应（幂等命中/升级）shape
+      type ConsultJsonResponse = { route?: string; status?: string; message?: any }
+      const data = (await requestStreamOrJson<ConsultStreamEvent | ConsultJsonResponse>(`/projects/${projectId.value}/messages`, {
         method: 'POST',
         body: { text: fullInput, firstReply, idempotencyKey },
       }, (d) => {
-        // 思考过程独立流（app-server 双路）：增量累积,不混入答案；框内自动滚到底
-        if (d.thinking) {
-          aiThinking.value += String(d.thinking)
+        // onEvent 只收 SSE 事件；非流式 JSON 响应不会走到这里
+        if (!('type' in d)) return
+        const evt = d as ConsultStreamEvent
+        // 有身份流式协议（2026-08-12 P0）：runId/messageId/seq
+        // - 忽略 seq <= lastSeq 的过期/重复帧
+        // - 一次 runId 只建一个 assistant 节点（id=messageId）
+        // - message_end.finalText 权威覆盖，绝不追加
+        if (evt.type === 'message_start') {
+          aiMsg ??= { id: evt.messageId, role: 'assistant', text: '' }
+          if (!messages.value.some((m) => m.id === evt.messageId)) messages.value.push(aiMsg)
+          return
+        }
+        if (typeof evt.seq === 'number' && evt.seq <= lastSeq) return
+        if (evt.type === 'reasoning_delta') {
+          lastSeq = evt.seq
+          aiThinking.value += evt.delta
           scrollThinkingBox()
+          return
         }
-        if (d.text || d.done || d.error) {
-          aiMsg ??= { id: 'streaming', role: 'assistant', text: '' }
-          if (messages.value[messages.value.length - 1] !== aiMsg) messages.value.push(aiMsg)
-        }
-        if (d.text) {
-          fullText += String(d.text); aiMsg!.text = fullText; scrollBottom()
-        }
-        // done.finalText 是权威快照：赋值替换,绝不追加（review 2026-08-11 P1 多 item 拼接）
-        if (d.done && typeof d.finalText === 'string') {
-          fullText = d.finalText
-          aiMsg!.text = d.finalText
+        if (evt.type === 'text_delta') {
+          lastSeq = evt.seq
+          fullText += evt.delta
+          if (aiMsg) aiMsg.text = fullText
           scrollBottom()
+          return
         }
-        if (d.error) aiMsg!.text = '⚠️ AI 答复生成失败，已通知法务BP处理'
-      })
+        if (evt.type === 'message_end') {
+          lastSeq = evt.seq
+          fullText = evt.finalText
+          if (aiMsg) aiMsg.text = evt.finalText // 权威覆盖，绝不追加
+          scrollBottom()
+          return
+        }
+        if (evt.type === 'error') {
+          lastSeq = evt.seq
+          if (aiMsg) aiMsg.text = '⚠️ AI 答复生成失败，已通知法务BP处理'
+        }
+      })) as ConsultJsonResponse | undefined
       if (data?.route === 'legalbp') {
-        messages.value.push({ _event: true, text: '追问触发风险升级，已通知法务 BP 人工处理' })
+        messages.value.push({ _event: true, text: '追问触发风险升级，已通知法务 BP 人工处理', _key: genIdempotencyKey() })
         upgraded.value = true; projectRoute.value = 'legalbp'
       }
       // F6（review 2026-08-12）：幂等命中已有答案/已在处理（无流，返回普通 JSON）
       if (data?.status === 'succeeded' && data.message) {
         const ans = data.message
-        if (!messages.value.some((m) => m.role === 'assistant' && m.text === ans.text)) {
+        // 按 id 去重（不再按 text——文本相同不代表消息相同）
+        if (!messages.value.some((m) => m.id === ans.id)) {
           messages.value.push(ans)
         }
       } else if (data?.status === 'running') {
-        messages.value.push({ _event: true, text: '该问题正在处理中，答案生成后会自动出现，请稍候' })
+        messages.value.push({ _event: true, text: '该问题正在处理中，答案生成后会自动出现，请稍候', _key: genIdempotencyKey() })
       }
     } catch (error) {
       lastError.value = error instanceof RequestError
         ? error
         : new RequestError({ error: '消息发送失败，请重试', code: 'UNKNOWN', statusCode: 0 })
-      messages.value.push({ _event: true, text: lastError.value.payload.error })
+      messages.value.push({ _event: true, text: lastError.value.payload.error, _key: genIdempotencyKey() })
     }
     expectingAI.value = false
   } else {
-    messages.value.push({ _event: true, text: '已收到，法务 BP 处理后将回传至此处' })
+    messages.value.push({ _event: true, text: '已收到，法务 BP 处理后将回传至此处', _key: genIdempotencyKey() })
   }
   sending.value = false
   scrollBottom()
@@ -281,7 +304,7 @@ const handleUpgrade = async () => {
       body: { text: '申请升级为人工处理', role: 'user' },
     })
     upgraded.value = true; projectRoute.value = 'legalbp'
-    messages.value.push({ _event: true, text: '已申请升级人工处理，法务 BP 将尽快跟进' })
+    messages.value.push({ _event: true, text: '已申请升级人工处理，法务 BP 将尽快跟进', _key: genIdempotencyKey() })
     scrollBottom()
   } catch (error) {
     lastError.value = error instanceof RequestError
@@ -422,8 +445,8 @@ const handleUpgrade = async () => {
     >
       <div class="msg-thread">
         <template
-          v-for="(m, i) in messages"
-          :key="i"
+          v-for="m in messages"
+          :key="m.id ?? m._key"
         >
           <div
             v-if="m._event"
@@ -474,7 +497,7 @@ const handleUpgrade = async () => {
                 :filename="'法律咨询答复'"
               />
               <button
-                v-if="m.role === 'assistant' && projectId && projectRoute === 'llm' && !upgraded && i === messages.length - 1"
+                v-if="m.role === 'assistant' && projectId && projectRoute === 'llm' && !upgraded && m === messages[messages.length - 1]"
                 class="escalate-btn"
                 :disabled="upgrading"
                 @click="handleUpgrade"
@@ -485,7 +508,7 @@ const handleUpgrade = async () => {
           </div>
           <!-- 思考过程：紧跟最后一条用户消息下方,每次回答仅一个框,框内自动滚动 -->
           <div
-            v-if="i === lastUserMsgIndex && expectingAI && aiThinking"
+            v-if="(m.id ?? m._key) === lastUserMsgKey && expectingAI && aiThinking"
             class="thinking-panel"
           >
             <button

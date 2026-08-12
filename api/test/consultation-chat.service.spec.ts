@@ -161,6 +161,39 @@ describe('ConsultationChatService', () => {
     expect(out.code).toBe(1);
   });
 
+  it('P0-4：连续完全重复的大段 → 只保留第一份 + __repeatGuard', async () => {
+    const block = '甲'.repeat(210);
+    const mockFetch = vi.fn().mockResolvedValue(
+      sseResponse(frames([{ content: block }, { content: block }])), // 同一大段出现两次
+    );
+    vi.stubGlobal('fetch', mockFetch);
+    const service = makeService(baseEnv);
+
+    const stream = await service.stream([{ role: 'user', content: '问题' }]);
+    const out = await collect(stream);
+
+    expect(out.code).toBe(0);
+    // 不再出现完整重复的两份；长度 < 2×block（截断边界可能在块内）
+    expect(out.finalText!.length).toBeLessThan(block.length * 2);
+    expect(out.finalText!.length).toBeGreaterThan(block.length);
+    expect(stream.__repeatGuard).toBe(true);
+  });
+
+  it('P0-4：免责声明重复 → finalText 只剩一份', async () => {
+    const d = '> ⚠️ 本答复由AI生成，不构成正式法律意见。如需正式法务意见，请联系法务BP确认。';
+    const mockFetch = vi.fn().mockResolvedValue(sseResponse(frames([{ content: `正文\n${d}\n${d}` }])));
+    vi.stubGlobal('fetch', mockFetch);
+    const service = makeService(baseEnv);
+
+    const stream = await service.stream([{ role: 'user', content: '问题' }]);
+    const out = await collect(stream);
+
+    expect(out.code).toBe(0);
+    const count = out.finalText!.split('本答复由AI生成').length - 1;
+    expect(count).toBe(1); // 末尾最多一次
+    expect(out.finalText).toContain('正文');
+  });
+
   it('F1：EOF 未收到 [DONE]（半段答案）→ close(1)，不得保存截断答复', async () => {
     const mockFetch = vi.fn().mockResolvedValue(
       sseResponse([

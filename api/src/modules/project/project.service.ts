@@ -592,6 +592,11 @@ export class ProjectService {
     runId?: string,
   ): Promise<any> {
     const release = await this.acquireProjectTurn(projectId);
+    // 释放串行锁 + 清理 Map 条目（幂等：close 与 error 都可能触发）
+    const finishTurn = () => {
+      release();
+      this.projectTurnTails.delete(projectId);
+    };
     let child: any;
     try {
       const project = await this.prisma.project
@@ -617,16 +622,22 @@ export class ProjectService {
       }
 
       child = await this.consultationChat.stream(context.messages, {
-        // 与 ConsultationChatService 默认一致：16000 token 生成需数分钟，120s 会误杀
+        // 分级输出预算（review 2026-08-12）：普通 P2 咨询 6000，防简单问题也获得超长生成空间
+        // （一旦模型循环，长预算会重复更多）；复杂/长文研究才用 12000~16000
+        maxTokens:
+          Number.parseInt(String(this.config.get('CONSULT_P2_OUTPUT_TOKENS', '6000')), 10) || 6000,
         timeout: Number.parseInt(String(this.config.get('CONSULT_CHAT_TIMEOUT_MS', '600000')), 10) || 600_000,
         signal,
         runId,
         projectId,
       });
     } catch (e) {
-      release();
+      finishTurn();
       throw e;
     }
+
+    // P0-3：流式协议身份——一次 Run 一个稳定 runId，SSE 事件据此去重/丢弃过期
+    if (runId) child.__runId = runId;
 
     let fullText = '';
 
@@ -634,75 +645,79 @@ export class ProjectService {
       fullText += chunk.toString();
     });
 
-    // F4：同 Project 串行锁在生成结束（无论成败）才释放，后一问上下文才能看到前一问答案
-    child.on('close', () => release());
-
-    child.on('close', async (code) => {
-      // 连接断开主动取消 → 不写失败状态（刷新 ≠ 生成失败）；run 标记 cancelled 以便重试
-      if ((child as any).__cancelled) {
-        if (runId) {
-          await this.prisma.consultationRun
-            .update({ where: { id: runId }, data: { status: 'cancelled', completedAt: new Date() } })
-            .catch(() => undefined);
+    // P0（review 2026-08-12）：单个结束处理器——先落库/更新 Run，最后才释放同 Project 串行锁，
+    // 否则下一轮上下文构建可能发生在上一轮答案入库之前。
+    child.once('close', async (code) => {
+      try {
+        // 连接断开主动取消 → 不写失败状态（刷新 ≠ 生成失败）；run 标记 cancelled 以便重试
+        if ((child as any).__cancelled) {
+          if (runId) {
+            await this.prisma.consultationRun
+              .update({ where: { id: runId }, data: { status: 'cancelled', completedAt: new Date() } })
+              .catch(() => undefined);
+          }
+          return;
         }
-        return;
-      }
-      // 权威文本优先用网关 content 增量累计（__finalText），流式累计仅兜底
-      const finalText = String((child as any).__finalText ?? fullText).trim();
-      if (code === 0 && finalText) {
-        try {
-          const [msg] = await this.prisma.$transaction([
-            this.prisma.projectMessage.create({
-              data: { projectId, role: 'assistant', text: finalText },
-            }),
-            this.prisma.project.update({
+        // 权威文本优先用网关 content 增量累计（__finalText），流式累计仅兜底
+        const finalText = String((child as any).__finalText ?? fullText).trim();
+        if (code === 0 && finalText) {
+          try {
+            const [msg] = await this.prisma.$transaction([
+              this.prisma.projectMessage.create({
+                data: { projectId, role: 'assistant', text: finalText },
+              }),
+              this.prisma.project.update({
+                where: { id: projectId },
+                data: { status: '已回传', result: finalText },
+              }),
+            ]);
+            if (runId) {
+              await this.prisma.consultationRun
+                .update({
+                  where: { id: runId },
+                  data: { status: 'succeeded', answerMessageId: msg.id, completedAt: new Date() },
+                })
+                .catch(() => undefined);
+            }
+            await this.addEvent(projectId, this.formatTime() + ' · AI 答复已完成');
+          } catch (err) {
+            this.logger.error(`AI 答复落库失败：${err}`);
+            if (runId) {
+              await this.prisma.consultationRun
+                .update({
+                  where: { id: runId },
+                  data: { status: 'failed', errorMessage: String(err).slice(0, 500), completedAt: new Date() },
+                })
+                .catch(() => undefined);
+            }
+          }
+        } else {
+          this.logger.error(`咨询网关流异常退出，code=${code}`);
+          try {
+            await this.prisma.project.update({
               where: { id: projectId },
-              data: { status: '已回传', result: finalText },
-            }),
-          ]);
-          if (runId) {
-            await this.prisma.consultationRun
-              .update({
-                where: { id: runId },
-                data: { status: 'succeeded', answerMessageId: msg.id, completedAt: new Date() },
-              })
-              .catch(() => undefined);
-          }
-          await this.addEvent(projectId, this.formatTime() + ' · AI 答复已完成');
-        } catch (err) {
-          this.logger.error(`AI 答复落库失败：${err}`);
-          if (runId) {
-            await this.prisma.consultationRun
-              .update({
-                where: { id: runId },
-                data: { status: 'failed', errorMessage: String(err).slice(0, 500), completedAt: new Date() },
-              })
-              .catch(() => undefined);
+              data: { status: '待处理', isFailed: true },
+            });
+            await this.addEvent(projectId, this.formatTime() + ' · AI 答复生成失败，已转人工处理');
+            if (runId) {
+              await this.prisma.consultationRun
+                .update({
+                  where: { id: runId },
+                  data: { status: 'failed', errorMessage: `code=${code}`, completedAt: new Date() },
+                })
+                .catch(() => undefined);
+            }
+          } catch (err) {
+            this.logger.error(`失败状态更新失败：${err}`);
           }
         }
-      } else {
-        this.logger.error(`咨询网关流异常退出，code=${code}`);
-        try {
-          await this.prisma.project.update({
-            where: { id: projectId },
-            data: { status: '待处理', isFailed: true },
-          });
-          await this.addEvent(projectId, this.formatTime() + ' · AI 答复生成失败，已转人工处理');
-          if (runId) {
-            await this.prisma.consultationRun
-              .update({
-                where: { id: runId },
-                data: { status: 'failed', errorMessage: `code=${code}`, completedAt: new Date() },
-              })
-              .catch(() => undefined);
-          }
-        } catch (err) {
-          this.logger.error(`失败状态更新失败：${err}`);
-        }
+      } finally {
+        // 串行锁必须在落库完成后才释放，并清理 Map 条目（防长期增长）
+        finishTurn();
       }
     });
 
-    child.on('error', async (err) => {
+    child.once('error', async (err) => {
       this.logger.error(`咨询网关流错误：${err.message}`);
       try {
         await this.prisma.project.update({
@@ -720,6 +735,8 @@ export class ProjectService {
         }
       } catch (dbErr) {
         this.logger.error(`失败状态更新失败：${dbErr}`);
+      } finally {
+        finishTurn();
       }
     });
 

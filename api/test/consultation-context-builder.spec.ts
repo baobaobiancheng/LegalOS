@@ -33,6 +33,16 @@ describe('ConsultationContextBuilder', () => {
   let prisma: ReturnType<typeof makePrisma>;
   let builder: ConsultationContextBuilder;
 
+  it('P1-1：P2 system prompt 不强制四段式固定模板（自然回答）', () => {
+    expect(CONSULT_SYSTEM_PROMPT).not.toContain('严格按四段式输出');
+    expect(CONSULT_SYSTEM_PROMPT).not.toContain('### 核心结论');
+    expect(CONSULT_SYSTEM_PROMPT).not.toContain('只输出一份四段式回答');
+    // 明确要求自然回答 + 保留身份与免责声明
+    expect(CONSULT_SYSTEM_PROMPT).toContain('自然直接');
+    expect(CONSULT_SYSTEM_PROMPT).toContain('企业法务顾问');
+    expect(CONSULT_SYSTEM_PROMPT).toContain('免责声明');
+  });
+
   beforeEach(() => {
     prisma = makePrisma();
     builder = new ConsultationContextBuilder(prisma as any, makeConfig());

@@ -89,3 +89,108 @@ export function sendSSE(
     if (!ended && onDisconnect) onDisconnect();
   });
 }
+
+// ════════════════════════════════════════════════════════════════════
+// 咨询流式协议（2026-08-12，P0 有身份的流）：runId/messageId/seq
+// 一次 Run = 一个稳定 runId；一次回答 = 一个 messageId（流式用 runId 暂代）；
+// seq 严格递增，前端忽略 seq <= lastSeq 的过期/重复事件；message_end 只处理一次；
+// finalText 是权威覆盖，绝不追加。仅咨询用；合同模块继续用 sendSSE 旧协议。
+// ════════════════════════════════════════════════════════════════════
+
+/** 咨询流式 stream 对象的最小结构（sendSSE/sendConsultSSE 消费） */
+export interface SseStream {
+  stdout?: Readable;
+  thinking?: Readable;
+  on(event: string, listener: (...args: any[]) => void): any;
+  __finalText?: string;
+  __answerItemId?: string | null;
+  __cancelled?: boolean;
+  __runId?: string;
+}
+
+export type ConsultStreamEvent =
+  | { type: 'message_start'; runId: string; messageId: string }
+  | { type: 'reasoning_delta'; runId: string; seq: number; delta: string }
+  | { type: 'text_delta'; runId: string; seq: number; delta: string }
+  | { type: 'message_end'; runId: string; seq: number; messageId: string; finalText: string }
+  | { type: 'error'; runId: string; seq: number; code: string; message: string };
+
+export function sendConsultSSE(
+  res: Response,
+  stream: SseStream & { __runId?: string },
+  donePayload: Record<string, unknown> = {},
+  onDisconnect?: () => void,
+): void {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const decoder = new StringDecoder('utf8');
+  const thinkingDecoder = new StringDecoder('utf8');
+  const runId = stream.__runId ?? '';
+  let seq = 0;
+  let started = false;
+  let ended = false;
+  const emit = (event: Record<string, unknown>) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+  const next = () => ++seq;
+  const start = () => {
+    if (started) return;
+    started = true;
+    emit({ type: 'message_start', runId, messageId: runId });
+  };
+
+  stream.stdout?.on('data', (chunk: Buffer) => {
+    const text = decoder.write(chunk);
+    if (!text) return;
+    start();
+    emit({ type: 'text_delta', runId, seq: next(), delta: text });
+  });
+
+  stream.thinking?.on('data', (chunk: Buffer) => {
+    const text = thinkingDecoder.write(chunk);
+    if (!text) return;
+    start();
+    emit({ type: 'reasoning_delta', runId, seq: next(), delta: text });
+  });
+
+  stream.on('close', (code: number) => {
+    if (res.destroyed || res.writableEnded) return;
+    const remaining = decoder.end();
+    if (remaining) {
+      start();
+      emit({ type: 'text_delta', runId, seq: next(), delta: remaining });
+    }
+    const remainingThinking = thinkingDecoder.end();
+    if (remainingThinking) {
+      start();
+      emit({ type: 'reasoning_delta', runId, seq: next(), delta: remainingThinking });
+    }
+    ended = true;
+    if (code === 0) {
+      emit({
+        type: 'message_end',
+        runId,
+        seq: next(),
+        messageId: runId,
+        finalText: stream.__finalText ?? '',
+        ...donePayload,
+      });
+    } else {
+      emit({ type: 'error', runId, seq: next(), code: 'AI_GENERATION_FAILED', message: 'AI 答复生成失败' });
+    }
+    res.end();
+  });
+
+  stream.on('error', () => {
+    if (res.destroyed || res.writableEnded) return;
+    ended = true;
+    emit({ type: 'error', runId, seq: next(), code: 'SERVICE_ERROR', message: '服务异常' });
+    res.end();
+  });
+
+  res.on('close', () => {
+    if (!ended && onDisconnect) onDisconnect();
+  });
+}

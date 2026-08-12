@@ -4,6 +4,14 @@ import { apiLogger } from './logger'
 export type SseEvent = Record<string, unknown>
 type EventHandler<T extends SseEvent> = (event: T) => void
 
+/** 咨询流式协议（2026-08-12，与后端 sendConsultSSE 对齐）：runId/seq 去重，messageId 唯一节点 */
+export type ConsultStreamEvent =
+  | { type: 'message_start'; runId: string; messageId: string }
+  | { type: 'reasoning_delta'; runId: string; seq: number; delta: string }
+  | { type: 'text_delta'; runId: string; seq: number; delta: string }
+  | { type: 'message_end'; runId: string; seq: number; messageId: string; finalText: string }
+  | { type: 'error'; runId: string; seq: number; code: string; message: string }
+
 const reportSseError = (error: RequestError): RequestError => {
   apiLogger.warn('sse.error', {
     code: error.payload.code,
