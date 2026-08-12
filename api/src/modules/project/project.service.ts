@@ -40,6 +40,9 @@ const userSelect = { id: true, username: true, displayName: true, role: true };
 @Injectable()
 export class ProjectService {
   private readonly logger = new Logger(ProjectService.name);
+  /** F4（2026-08-12 review）：同一 Project 的 AI 严格串行（替代原 Codex 队列 sessionId 语义），
+   *  后一问的上下文构建等前一问生成结束后才进行，防止上下文缺前一问答案。单实例内有效。 */
+  private readonly projectTurnTails = new Map<string, Promise<void>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -358,14 +361,17 @@ export class ProjectService {
     dto: CreateProjectMessageDto,
     actor: ProjectActor,
     signal?: AbortSignal,
-  ): Promise<{ message: any; stream?: any; route: string }> {
+  ): Promise<{ message: any; stream?: any; route: string; status?: 'succeeded' | 'running' }> {
     const role = actor.role === 'business' ? 'user' : 'legal';
+
+    // 统一前置：加载工单 + 鉴权（F5：幂等快捷返回也须过鉴权；idempotencyKey 不是访问凭证）
+    const project = await this.prisma.project.findUnique({ where: { id: projectId } });
+    if (!project) throw new NotFoundException('工单不存在');
+    this.accessPolicy.assertCan(actor, ProjectAction.SendMessage, project);
 
     // 0. 首轮回答（review 2026-08-11 P0/P1）：首条消息已在建单时落库。
     //    只启动首轮 AI 回答；ConsultationRun(userMessageId 唯一) 兜并发幂等。
     if (dto.firstReply) {
-      const project = await this.prisma.project.findUnique({ where: { id: projectId } });
-      if (!project) throw new NotFoundException('工单不存在');
       if (project.route !== 'llm') {
         return { message: null, route: project.route };
       }
@@ -377,10 +383,10 @@ export class ProjectService {
 
       const claimed = await this.claimConsultationRun(projectId, first.id);
       if (claimed.status === 'succeeded' && claimed.answer) {
-        return { message: claimed.answer, route: 'llm', stream: undefined };
+        return { message: claimed.answer, route: 'llm', status: 'succeeded' };
       }
       if (claimed.status === 'running') {
-        return { message: first, route: 'llm', stream: undefined }; // 已在跑,不再启动第二个
+        return { message: first, route: 'llm', status: 'running' }; // 已在跑,不再启动第二个
       }
       return {
         message: first,
@@ -396,12 +402,16 @@ export class ProjectService {
         .findUnique({ where: { clientKey: dto.idempotencyKey } })
         .catch(() => null);
       if (existing && existing.projectId === projectId) {
+        // F5：工单已升级/非 llm → 不重触发 AI
+        if (project.route !== 'llm') {
+          return { message: existing, route: project.route };
+        }
         const claimed = await this.claimConsultationRun(projectId, existing.id);
         if (claimed.status === 'succeeded' && claimed.answer) {
-          return { message: claimed.answer, route: 'llm', stream: undefined };
+          return { message: claimed.answer, route: 'llm', status: 'succeeded' };
         }
         if (claimed.status === 'running') {
-          return { message: existing, route: 'llm', stream: undefined };
+          return { message: existing, route: 'llm', status: 'running' };
         }
         // 无 run / 失败 / 已取消：重新回答该消息（不重复建消息）
         return {
@@ -415,7 +425,7 @@ export class ProjectService {
     // 1. 锁定工单后鉴权并写消息。MySQL 生产路径使用 FOR UPDATE，避免
     // 检查 assignment 后到 INSERT 之间被转派/撤销；全部本地写入同事务。
     // clientKey unique 兜并发：同 key 两个并发请求只有一个能建消息成功。
-    let project: any;
+    let txProject: any;
     let message: any;
     try {
       const result = await this.prisma.$transaction(async (tx) => {
@@ -435,7 +445,7 @@ export class ProjectService {
         });
         return { project: lockedProject, message: createdMessage };
       });
-      ({ project, message } = result);
+      ({ project: txProject, message } = result);
     } catch (e: any) {
       if (e?.code === 'P2002' && dto.idempotencyKey) {
         // 并发方同 key 先建成功：复用其消息（校验归属同工单，防跨工单 key 碰撞）
@@ -461,7 +471,7 @@ export class ProjectService {
     }
 
     // 2. 根据路由决定后续
-    if (project.route === 'llm' && role === 'user') {
+    if (txProject.route === 'llm' && role === 'user') {
       // P2 追问：重新风险判定
       const { risk, route, domain } = await this.riskService.assess(dto.text);
 
@@ -483,10 +493,10 @@ export class ProjectService {
       // 认领 run（userMessageId=message.id）：确保每轮只启动一次模型
       const claimed = await this.claimConsultationRun(projectId, message.id);
       if (claimed.status === 'succeeded' && claimed.answer) {
-        return { message: claimed.answer, route: 'llm', stream: undefined };
+        return { message: claimed.answer, route: 'llm', status: 'succeeded' };
       }
       if (claimed.status === 'running') {
-        return { message, route: 'llm', stream: undefined };
+        return { message, route: 'llm', status: 'running' };
       }
       return {
         message,
@@ -563,6 +573,17 @@ export class ProjectService {
   // 内部方法
   // ═══════════════════════════════════════════
 
+  /** F4：同一 Project 的 AI 严格串行（单实例）；锁在 stream close 时释放 */
+  private async acquireProjectTurn(projectId: string): Promise<() => void> {
+    const prev = this.projectTurnTails.get(projectId) ?? Promise.resolve();
+    let release!: () => void;
+    const tail = new Promise<void>((r) => (release = r));
+    const gate = prev.catch(() => undefined).then(() => undefined);
+    this.projectTurnTails.set(projectId, gate.then(() => tail).catch(() => tail));
+    await gate;
+    return release;
+  }
+
   /** 触发 AI 生成答复 — 直连网关双路流(思考+内容)，上下文由 ConsultationContextBuilder 从数据库重建 */
   private async triggerAIResponse(
     projectId: string,
@@ -570,39 +591,50 @@ export class ProjectService {
     signal?: AbortSignal,
     runId?: string,
   ): Promise<any> {
-    const project = await this.prisma.project
-      .findUnique({
-        where: { id: projectId },
-        select: { extra: true, skillName: true },
-      })
-      .catch(() => null);
-    const skillPrompt = (project?.extra as any)?.skillPrompt ?? null;
-    const skillName = project?.skillName ?? null;
-
-    let context;
+    const release = await this.acquireProjectTurn(projectId);
+    let child: any;
     try {
-      context = await this.contextBuilder.build({
+      const project = await this.prisma.project
+        .findUnique({
+          where: { id: projectId },
+          select: { extra: true, skillName: true },
+        })
+        .catch(() => null);
+      const skillPrompt = (project?.extra as any)?.skillPrompt ?? null;
+      const skillName = project?.skillName ?? null;
+
+      let context;
+      try {
+        context = await this.contextBuilder.build({
+          projectId,
+          currentUserMessageId,
+          // 技能段复用共享 util：剥边界标记 + 硬边界模板（防 prompt 注入）
+          skillPrompt: skillName && skillPrompt ? buildSkillSection(skillName, skillPrompt) : undefined,
+        });
+      } catch (e) {
+        this.logger.error(`咨询上下文构建失败（${projectId}/${currentUserMessageId}）：${e}`);
+        throw new BadRequestException('咨询上下文构建失败，请重试');
+      }
+
+      child = await this.consultationChat.stream(context.messages, {
+        timeout: 120_000,
+        signal,
+        runId,
         projectId,
-        currentUserMessageId,
-        // 技能段复用共享 util：剥边界标记 + 硬边界模板（防 prompt 注入）
-        skillPrompt: skillName && skillPrompt ? buildSkillSection(skillName, skillPrompt) : undefined,
       });
     } catch (e) {
-      this.logger.error(`咨询上下文构建失败（${projectId}/${currentUserMessageId}）：${e}`);
-      throw new BadRequestException('咨询上下文构建失败，请重试');
+      release();
+      throw e;
     }
 
-    const child = await this.consultationChat.stream(context.messages, {
-      timeout: 120_000,
-      signal,
-      runId,
-      projectId,
-    });
     let fullText = '';
 
     child.stdout?.on('data', (chunk: Buffer) => {
       fullText += chunk.toString();
     });
+
+    // F4：同 Project 串行锁在生成结束（无论成败）才释放，后一问上下文才能看到前一问答案
+    child.on('close', () => release());
 
     child.on('close', async (code) => {
       // 连接断开主动取消 → 不写失败状态（刷新 ≠ 生成失败）；run 标记 cancelled 以便重试
@@ -719,16 +751,29 @@ export class ProjectService {
       if (existing.status === 'running' || existing.status === 'queued') {
         const age = Date.now() - new Date(existing.updatedAt).getTime();
         if (age < staleMs) return { runId: existing.id, status: 'running' };
+        // F3-CAS：仅当仍 running 且 updatedAt 依旧过期才抢到（count=1），防并发都重置都启动
+        const claimed = await this.prisma.consultationRun
+          .updateMany({
+            where: {
+              id: existing.id,
+              status: existing.status,
+              updatedAt: { lt: new Date(Date.now() - staleMs) },
+            },
+            data: { status: 'running', errorMessage: null },
+          })
+          .catch(() => ({ count: 0 }));
+        if (claimed.count !== 1) return { runId: existing.id, status: 'running' }; // 并发方已重置
         this.logger.warn(`run ${existing.id} 卡在 ${existing.status} 超 ${staleMs}ms，重置重跑`);
-        await this.prisma.consultationRun
-          .update({ where: { id: existing.id }, data: { status: 'running', errorMessage: null } })
-          .catch(() => undefined);
         return { runId: existing.id, status: 'new' };
       }
-      // failed / cancelled：复用同 run 重跑
-      await this.prisma.consultationRun
-        .update({ where: { id: existing.id }, data: { status: 'running', errorMessage: null } })
-        .catch(() => undefined);
+      // failed / cancelled：CAS 抢占（仅当状态仍旧是 failed/cancelled 才拿到），防并发重复重跑
+      const claimed = await this.prisma.consultationRun
+        .updateMany({
+          where: { id: existing.id, status: existing.status },
+          data: { status: 'running', errorMessage: null },
+        })
+        .catch(() => ({ count: 0 }));
+      if (claimed.count !== 1) return { runId: existing.id, status: 'running' };
       return { runId: existing.id, status: 'new' };
     }
 

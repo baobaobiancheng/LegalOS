@@ -84,7 +84,7 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
       outboxEvent: { create: vi.fn() },
       bpDomainMap: { findMany: vi.fn(), upsert: vi.fn(), deleteMany: vi.fn() },
       user: { findUnique: vi.fn(), findFirst: vi.fn() },
-      consultationRun: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
+      consultationRun: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
     };
     makeTransaction(prisma);
     risk = { assess: vi.fn() };
@@ -181,6 +181,7 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
 
     expect(consultationChat.stream).not.toHaveBeenCalled();
     expect(result.message).toMatchObject({ id: 'a1', text: '已有答案' });
+    expect(result.status).toBe('succeeded'); // F6：前端据此直接渲染已有答案
   });
 
   it('追问分支：写消息 + 认领 ConsultationRun + 上下文重建 + 触发一次 AI', async () => {
@@ -216,6 +217,24 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
     expect(result.message).toMatchObject({ id: 'a2', text: '已有追问答案' });
   });
 
+  it('F3：failed run 并发重试 CAS 抢占，只有一个请求启动模型', async () => {
+    // 同 idempotencyKey 的两个并发重试，都读到同一个 failed run
+    prisma.projectMessage.findUnique.mockResolvedValue({ id: 'm-ex', projectId: 'p-1', role: 'user', text: '问题' });
+    prisma.consultationRun.findUnique.mockResolvedValue({ id: 'run-f', status: 'failed', answerMessageId: null });
+    // CAS：第一个 updateMany 抢到(count=1)，第二个已被人抢(count=0)
+    prisma.consultationRun.updateMany
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+
+    await Promise.all([
+      service.createMessage('p-1', { text: '问题', idempotencyKey: 'key-cas' }, { id: 'u-biz', role: 'business' }),
+      service.createMessage('p-1', { text: '问题', idempotencyKey: 'key-cas' }, { id: 'u-biz', role: 'business' }),
+    ]);
+
+    expect(prisma.consultationRun.updateMany).toHaveBeenCalledTimes(2);
+    expect(consultationChat.stream).toHaveBeenCalledTimes(1); // 只有 CAS 获胜者触发
+  });
+
   it('同 idempotencyKey 重复请求：返回已有答案，不重复建消息/不重复触发', async () => {
     // 第一次：无既有消息 → 事务建消息 → 认领 run → 触发
     prisma.projectMessage.findUnique.mockResolvedValue(null); // clientKey 查询：无
@@ -242,6 +261,7 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
     expect(prisma.projectMessage.create).toHaveBeenCalledTimes(1); // 不重复建消息
     expect(consultationChat.stream).not.toHaveBeenCalled(); // 不重复触发
     expect(result.message).toMatchObject({ id: 'a3', text: '答案' });
+    expect(result.status).toBe('succeeded');
   });
 
   it('短推荐问题(≥5 字)可通过建单校验(10→5)', async () => {

@@ -88,7 +88,6 @@ interface HistoryEntry {
   userText?: string;
   assistantText: string;
   messageIds: string[];
-  createdAt: Date;
 }
 
 @Injectable()
@@ -145,44 +144,51 @@ export class ConsultationContextBuilder {
           userText: m.text,
           assistantText: answerText,
           messageIds: [m.id, answerId],
-          createdAt: m.createdAt,
         });
       } else if (m.role === 'legal') {
-        history.push({ type: 'legal', assistantText: m.text, messageIds: [m.id], createdAt: m.createdAt });
+        history.push({ type: 'legal', assistantText: m.text, messageIds: [m.id] });
       }
       // role=assistant 且无配对 user（来自 succeeded run）的单独消息：不作为历史
     }
 
     // 5. 最近 N 条完整历史（qa 原子单元，不拆对；legal 单条计一个单元）
+    const systemPrompt = input.systemPrompt ?? CONSULT_SYSTEM_PROMPT;
+    const systemContents = [systemPrompt, ...(input.skillPrompt ? [input.skillPrompt] : [])];
     let window = history.slice(-this.recentTurns);
-    let estimate = this.estimateFor(window, current);
-    // 6. 超输入窗口上限 → 从最旧开始丢（仍保持 q/a 配对）
-    while (estimate > this.maxInputTokens && window.length > 1) {
+
+    // 6. 组装 messages（P2b：token 估算基于真实 system/skill 文本，不写死常量）
+    const assemble = (w: HistoryEntry[]): ChatMessage[] => {
+      const out: ChatMessage[] = systemContents.map((c) => ({ role: 'system', content: c }));
+      for (const e of w) {
+        if (e.type === 'qa') {
+          out.push({ role: 'user', content: e.userText! });
+          out.push({ role: 'assistant', content: e.assistantText });
+        } else {
+          out.push({ role: 'assistant', content: `（人工法务回复）${e.assistantText}` });
+        }
+      }
+      out.push({ role: 'user', content: current.text });
+      return out;
+    };
+
+    // 7. 超输入窗口上限 → 从最旧开始丢（仍保持 q/a 配对；P2a：允许裁剪到零条历史，
+    //    只有 system+当前问题仍超限才提示，此时是当前问题本身过长）
+    let messagesOut = assemble(window);
+    let estimate = this.estimateMessages(messagesOut);
+    while (estimate > this.maxInputTokens && window.length > 0) {
       window = window.slice(1);
-      estimate = this.estimateFor(window, current);
+      messagesOut = assemble(window);
+      estimate = this.estimateMessages(messagesOut);
     }
     if (estimate > this.maxInputTokens) {
       this.logger.warn(
-        `[consult-ctx] project=${input.projectId} 上下文超限且不可再裁剪（当前问题过长），估计 ${estimate} tokens`,
+        `[consult-ctx] project=${input.projectId} 上下文超限且不可再裁剪（系统+当前问题已超预算），估计 ${estimate} tokens`,
       );
     }
 
-    // 7. 组装 messages
-    const systemPrompt = input.systemPrompt ?? CONSULT_SYSTEM_PROMPT;
-    const messagesOut: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
-    if (input.skillPrompt) messagesOut.push({ role: 'system', content: input.skillPrompt });
     const includedMessageIds: string[] = [];
-    for (const e of window) {
-      includedMessageIds.push(...e.messageIds);
-      if (e.type === 'qa') {
-        messagesOut.push({ role: 'user', content: e.userText! });
-        messagesOut.push({ role: 'assistant', content: e.assistantText });
-      } else {
-        messagesOut.push({ role: 'assistant', content: `（人工法务回复）${e.assistantText}` });
-      }
-    }
+    for (const e of window) includedMessageIds.push(...e.messageIds);
     includedMessageIds.push(current.id);
-    messagesOut.push({ role: 'user', content: current.text });
 
     return {
       messages: messagesOut,
@@ -193,14 +199,8 @@ export class ConsultationContextBuilder {
     };
   }
 
-  private estimateFor(window: HistoryEntry[], current: { text: string }): number {
-    const text = [
-      CONSULT_SYSTEM_PROMPT,
-      ...window.flatMap((e) =>
-        e.type === 'qa' ? [e.userText ?? '', e.assistantText] : [e.assistantText],
-      ),
-      current.text,
-    ].join('');
-    return estimateTokens(text) + window.length + 4; // +系统开销
+  /** 基于最终 messages 逐条估算（P2b：真实 system/skill prompt 纳入） */
+  private estimateMessages(msgs: ChatMessage[]): number {
+    return msgs.reduce((sum, m) => sum + estimateTokens(m.content), 0) + msgs.length;
   }
 }

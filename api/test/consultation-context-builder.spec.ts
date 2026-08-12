@@ -132,17 +132,45 @@ describe('ConsultationContextBuilder', () => {
     ]);
     prisma.projectMessage.findMany.mockResolvedValue(rows);
 
-    // 设定上限：仅够 system + 1 轮 + 当前；2 轮必超
-    const twoPair = estimateTokens(CONSULT_SYSTEM_PROMPT + 'Q1A1Q2A2当前CUR') + 2 + 4;
-    const onePair = estimateTokens(CONSULT_SYSTEM_PROMPT + 'Q2A2当前CUR') + 1 + 4;
-    expect(twoPair).toBeGreaterThan(onePair);
-    builder = new ConsultationContextBuilder(prisma as any, makeConfig({ CONSULT_CONTEXT_MAX_TOKENS: twoPair - 1 }));
+    // 估算基于真实 messages（P2b）：2 轮全量 vs 保留最近 1 轮
+    const fullEstimate =
+      estimateTokens(CONSULT_SYSTEM_PROMPT + 'Q1A1Q2A2当前CUR') + 6;
+    const onePairEstimate =
+      estimateTokens(CONSULT_SYSTEM_PROMPT + 'Q2A2当前CUR') + 4;
+    expect(fullEstimate).toBeGreaterThan(onePairEstimate);
+    builder = new ConsultationContextBuilder(
+      prisma as any,
+      makeConfig({ CONSULT_CONTEXT_MAX_TOKENS: fullEstimate - 1 }),
+    );
 
     const result = await builder.build({ projectId: 'p1', currentUserMessageId: 'cur' });
 
     const contents = result.messages.map((m) => m.content);
     expect(contents).toEqual([CONSULT_SYSTEM_PROMPT, 'Q2', 'A2', '当前CUR']);
-    expect(result.estimatedInputTokens).toBeLessThanOrEqual(twoPair - 1);
+    expect(result.estimatedInputTokens).toBeLessThanOrEqual(fullEstimate - 1);
+  });
+
+  it('P2a：当前问题过长可裁剪到零条历史，仍返回 system+当前', async () => {
+    const rows = [
+      msg('q1', 'user', 'Q1', 1), msg('a1', 'assistant', 'A1', 2),
+      msg('cur', 'user', '当前'.repeat(60), 3), // 当前问题本身超预算
+    ];
+    prisma.consultationRun.findMany.mockResolvedValue([
+      { userMessageId: 'q1', answerMessageId: 'a1' },
+    ]);
+    prisma.projectMessage.findMany.mockResolvedValue(rows);
+    // 上限 = 仅够 system + 当前（不带历史）
+    const bareEstimate = estimateTokens(CONSULT_SYSTEM_PROMPT + '当前'.repeat(60)) + 2;
+    builder = new ConsultationContextBuilder(
+      prisma as any,
+      makeConfig({ CONSULT_CONTEXT_MAX_TOKENS: bareEstimate }),
+    );
+
+    const result = await builder.build({ projectId: 'p1', currentUserMessageId: 'cur' });
+
+    const contents = result.messages.map((m) => m.content);
+    expect(contents).toEqual([CONSULT_SYSTEM_PROMPT, '当前'.repeat(60)]); // 历史被裁剪到零
+    expect(result.includedMessageIds).toEqual(['cur']);
   });
 
   it('项目隔离：查询按 projectId 过滤', async () => {

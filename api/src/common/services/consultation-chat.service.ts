@@ -16,7 +16,7 @@ import { PassThrough } from 'stream';
  *   C8  max_tokens = 思考 + 答案合计；思考会吃满预算导致 content=null
  *   C9  不打印 prompt/messages/key；日志只记 projectId/runId/耗时/token/HTTP 状态/请求 id
  *
- * 返回与 CodexAppServerService 同构的 stream 对象（stdout/thinking/close/__finalText），
+ * 返回与既有 SSE 消费方同构的 stream 对象（stdout/thinking/close/__finalText），
  * sendSSE 可直接复用，前端 SSE 协议零改动。
  */
 
@@ -72,7 +72,7 @@ export class ConsultationChatService {
     );
   }
 
-  /** AI Kill Switch：与 CodexService/CodexAppServerService 同开关 */
+  /** AI Kill Switch：与 CodexService 同开关 */
   private aiEnabled(): boolean {
     const v = String(this.config.get('AI_EXECUTION_ENABLED', 'true')).toLowerCase();
     return !['false', '0', 'off', 'no', 'disabled'].includes(v);
@@ -125,8 +125,12 @@ export class ConsultationChatService {
       emitter.emit('close', code);
     };
 
-    // 客户端断开 / 超时 → 中止 fetch
-    const timeoutTimer = setTimeout(() => controller.abort(), timeoutMs);
+    // 客户端断开 / 超时 → 中止 fetch（F2：区分两种原因，超时=失败、断连=取消）
+    let timedOut = false;
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
     timeoutTimer.unref?.();
     const abortHandler = () => controller.abort();
     if (opts.signal) {
@@ -158,8 +162,8 @@ export class ConsultationChatService {
         });
 
         if (!resp.ok) {
-          const bodyText = (await resp.text()).slice(0, 500);
-          this.logger.error(`[consult-chat] HTTP ${resp.status} ${tag} 响应=${bodyText}`);
+          // C9 / P2：不记录网关错误响应体（可能回显请求内容，含法律咨询正文）；只记状态码
+          this.logger.error(`[consult-chat] HTTP ${resp.status} ${tag}`);
           finalize(1);
           return;
         }
@@ -207,6 +211,14 @@ export class ConsultationChatService {
           }
           if (sawDone) break;
         }
+        if (!sawDone) {
+          // F1：连接在未发送 [DONE] 时结束（半段答案）→ 按失败处理，不得保存截断的法律答复
+          this.logger.error(
+            `[consult-chat] 流式连接未收到 [DONE] 即结束（半段答案）${tag} elapsed=${Date.now() - t0}ms`,
+          );
+          finalize(1);
+          return;
+        }
         this.logger.debug(
           `[consult-chat] 完成 ${tag} elapsed=${Date.now() - t0}ms ` +
             `tokens(估算)≈${Math.ceil((fullThinking.length + fullText.length) / 1.5)} req=${gatewayRequestId ?? '-'}`,
@@ -214,10 +226,20 @@ export class ConsultationChatService {
         finalize(0);
       } catch (e) {
         if (controller.signal.aborted) {
-          // 超时或客户端断开：取消 ≠ 生成失败
-          stream.__cancelled = true;
-          this.logger.warn(`[consult-chat] 已中止 ${tag} elapsed=${Date.now() - t0}ms req=${gatewayRequestId ?? '-'}`);
-          finalize(0);
+          if (timedOut) {
+            // F2：请求超时 ≠ 用户断开 → 失败（前端收到 error，不收到成功 done）
+            this.logger.error(
+              `[consult-chat] 请求超时(${timeoutMs}ms) ${tag} elapsed=${Date.now() - t0}ms req=${gatewayRequestId ?? '-'}`,
+            );
+            finalize(1);
+          } else {
+            // 真实用户断开：取消 ≠ 生成失败
+            stream.__cancelled = true;
+            this.logger.warn(
+              `[consult-chat] 已中止(断连) ${tag} elapsed=${Date.now() - t0}ms req=${gatewayRequestId ?? '-'}`,
+            );
+            finalize(0);
+          }
         } else {
           this.logger.error(
             `[consult-chat] 请求失败 ${tag} elapsed=${Date.now() - t0}ms ${e instanceof Error ? e.message : e}`,

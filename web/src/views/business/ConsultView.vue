@@ -193,6 +193,8 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
           input: fullInput,
           // 技能（2026-08-04）：选中兜底"通用法务咨询"时 skillId=undefined → 后端不注入（工程评审决策 #2）
           skillId: selectedSkill.value.id || undefined,
+          // P2d：建单也带幂等键——建单成功但响应丢失时重试不会创建第二个工单
+          idempotencyKey,
         },
       })
       projectId.value = data.id; projectRoute.value = data.route
@@ -218,9 +220,9 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
     try {
       let fullText = ''
       let aiMsg: any | undefined
-      const data = await requestStreamOrJson<{ route?: string; done?: boolean; error?: boolean; text?: string; thinking?: string; finalText?: string; answerItemId?: string }>(`/projects/${projectId.value}/messages`, {
+      const data = await requestStreamOrJson<{ route?: string; done?: boolean; error?: boolean; text?: string; thinking?: string; finalText?: string; status?: string; message?: any }>(`/projects/${projectId.value}/messages`, {
         method: 'POST',
-        body: { text: fullInput, role: 'user', firstReply, idempotencyKey },
+        body: { text: fullInput, firstReply, idempotencyKey },
       }, (d) => {
         // 思考过程独立流（app-server 双路）：增量累积,不混入答案；框内自动滚到底
         if (d.thinking) {
@@ -245,6 +247,15 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
       if (data?.route === 'legalbp') {
         messages.value.push({ _event: true, text: '追问触发风险升级，已通知法务 BP 人工处理' })
         upgraded.value = true; projectRoute.value = 'legalbp'
+      }
+      // F6（review 2026-08-12）：幂等命中已有答案/已在处理（无流，返回普通 JSON）
+      if (data?.status === 'succeeded' && data.message) {
+        const ans = data.message
+        if (!messages.value.some((m) => m.role === 'assistant' && m.text === ans.text)) {
+          messages.value.push(ans)
+        }
+      } else if (data?.status === 'running') {
+        messages.value.push({ _event: true, text: '该问题正在处理中，答案生成后会自动出现，请稍候' })
       }
     } catch (error) {
       lastError.value = error instanceof RequestError

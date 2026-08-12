@@ -145,13 +145,56 @@ describe('ConsultationChatService', () => {
   });
 
   it('网关 HTTP 500 → close(1)', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('gateway boom', { status: 500 })));
+    // 延迟 resolve：让 collect 的 close 监听器先挂上（避免 mock 瞬时 resolve 抢在监听前完成）
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise((res) => setTimeout(() => res(new Response('gateway boom', { status: 500 })), 5)),
+      ),
+    );
     const service = makeService(baseEnv);
 
     const stream = await service.stream([{ role: 'user', content: '问题' }]);
     const out = await collect(stream);
 
     expect(out.code).toBe(1);
+  });
+
+  it('F1：EOF 未收到 [DONE]（半段答案）→ close(1)，不得保存截断答复', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      sseResponse([
+        chunk({ reasoning: '思考' }),
+        chunk({ content: '半段' }), // 无 [DONE] 即结束
+      ]),
+    );
+    vi.stubGlobal('fetch', mockFetch);
+    const service = makeService(baseEnv);
+
+    const stream = await service.stream([{ role: 'user', content: '问题' }]);
+    const out = await collect(stream);
+
+    expect(out.code).toBe(1);
+    expect(out.finalText).toBeUndefined();
+  });
+
+  it('F2：请求超时 → close(1)（失败），不视为取消', async () => {
+    // fetch 挂起，只有超时 abort 才 reject
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init: any) =>
+        new Promise((_res, reject) => {
+          init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        }),
+      ),
+    );
+    const service = makeService(baseEnv);
+
+    const stream = await service.stream([{ role: 'user', content: '问题' }], { timeout: 50 });
+    const out = await collect(stream);
+
+    expect(out.code).toBe(1);
+    expect(out.cancelled).toBeUndefined(); // 超时不是取消
   });
 
   it('客户端断开(signal.abort) → close(0) + __cancelled，不视为失败', async () => {
