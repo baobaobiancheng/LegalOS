@@ -679,10 +679,10 @@ export class ProjectService {
       }
 
       child = await this.consultationChat.stream(context.messages, {
-        // 分级输出预算（review 2026-08-12 第5轮）：普通 P2 咨询 3000，减少冗长回答与流式时长
-        // （一旦模型循环，长预算会重复更多）；复杂/长文研究才用 6000~16000
+        // 分级输出预算：普通 P2 咨询 6000，为推理过程和正式正文预留充足空间；
+        // 复杂/长文研究可使用 12000~16000。网关的 max_tokens 包含思考与正文，不能设置过低。
         maxTokens:
-          Number.parseInt(String(this.config.get('CONSULT_P2_OUTPUT_TOKENS', '3000')), 10) || 3000,
+          Number.parseInt(String(this.config.get('CONSULT_P2_OUTPUT_TOKENS', '6000')), 10) || 6000,
         timeout: Number.parseInt(String(this.config.get('CONSULT_CHAT_TIMEOUT_MS', '600000')), 10) || 600_000,
         signal,
         runId,
