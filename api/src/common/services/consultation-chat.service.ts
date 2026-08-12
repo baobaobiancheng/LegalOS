@@ -58,17 +58,23 @@ export class ConsultationChatService {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly outputTokenReserve: number;
+  private readonly defaultTimeoutMs: number;
 
   constructor(private readonly config: ConfigService) {
     this.baseUrl = String(config.get('LLM_BASE_URL', '')).replace(/\/+$/, '');
     // 共享 key 场景：LLM_API_KEY 优先，回退 CODEX_API_KEY（网关文档 §0 共享 key）
     this.apiKey = String(config.get('LLM_API_KEY', '') || config.get('CODEX_API_KEY', ''));
     this.model = String(config.get('LLM_MODEL', 'glm-5-2'));
+    // 输出预算 = 思考 + 答案合计（契约 C8：思考会吃预算）。glm-5-2 支持最大 16000 输出 token，
+    // 长法律分析思考可能 5000+，按上限设计。
     this.outputTokenReserve =
-      Number.parseInt(String(config.get('CONSULT_OUTPUT_TOKEN_RESERVE', '4096')), 10) || 4096;
+      Number.parseInt(String(config.get('CONSULT_OUTPUT_TOKEN_RESERVE', '16000')), 10) || 16000;
+    // 生成超时（毫秒）：16000 token 生成需数分钟，120s 会误杀；默认 10 分钟
+    this.defaultTimeoutMs =
+      Number.parseInt(String(config.get('CONSULT_CHAT_TIMEOUT_MS', '600000')), 10) || 600_000;
     this.logger.log(
       `咨询直连网关：model=${this.model} base=${this.baseUrl || '(未配置 LLM_BASE_URL)'} ` +
-        `输出预算=${this.outputTokenReserve} AI执行=${this.aiEnabled() ? '允许' : '禁用'}`,
+        `输出预算=${this.outputTokenReserve} 超时=${this.defaultTimeoutMs}ms AI执行=${this.aiEnabled() ? '允许' : '禁用'}`,
     );
   }
 
@@ -102,7 +108,7 @@ export class ConsultationChatService {
     }
 
     const maxTokens = opts.maxTokens ?? this.outputTokenReserve;
-    const timeoutMs = opts.timeout ?? 120_000;
+    const timeoutMs = opts.timeout ?? this.defaultTimeoutMs;
 
     const emitter = new EventEmitter();
     const stdout = new PassThrough();

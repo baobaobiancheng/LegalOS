@@ -617,7 +617,8 @@ export class ProjectService {
       }
 
       child = await this.consultationChat.stream(context.messages, {
-        timeout: 120_000,
+        // 与 ConsultationChatService 默认一致：16000 token 生成需数分钟，120s 会误杀
+        timeout: Number.parseInt(String(this.config.get('CONSULT_CHAT_TIMEOUT_MS', '600000')), 10) || 600_000,
         signal,
         runId,
         projectId,
