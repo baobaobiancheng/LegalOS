@@ -27,7 +27,8 @@ const msgContainer = ref<HTMLElement | null>(null)
 // 思考过程（2026-08-11 app-server 双路流）：当前 AI 回复的推理增量,可折叠
 const aiThinking = ref('')
 const showThinking = ref(true)
-const thinkingBox = ref<HTMLElement | null>(null)
+/** 回答正文开始输出后自动收起为「分析完成」（review 2026-08-12 P1-2） */
+const thinkingDone = ref(false)
 /** 最后一条用户消息 key：思考框紧跟其下、每次回答仅一个框（review 2026-08-11 P1） */
 const lastUserMsgKey = computed(() => {
   for (let i = messages.value.length - 1; i >= 0; i--) {
@@ -36,11 +37,13 @@ const lastUserMsgKey = computed(() => {
   }
   return ''
 })
-const scrollThinkingBox = () => nextTick(() => {
-  requestAnimationFrame(() => {
-    const el = thinkingBox.value
-    if (el) el.scrollTop = el.scrollHeight
-  })
+/** P1-2：只渲染推理尾部（最后 ~800 字），顶部淡出，无内部滚动条 */
+const thinkingTail = computed(() => {
+  const text = aiThinking.value
+  if (text.length <= 800) return text
+  const tail = text.slice(-800)
+  const boundary = tail.indexOf('\n')
+  return boundary >= 0 ? tail.slice(boundary + 1) : tail
 })
 
 // 技能选择（2026-08-04 技能库模块）：默认兜底"通用法务咨询"（skillId=null 不注入）
@@ -82,7 +85,7 @@ const startNewSession = () => {
   upgraded.value = false
   messages.value = []
   lastError.value = null
-  scrollBottom()
+  forceScrollBottom()
 }
 
 /** 切页回来恢复上次咨询会话：拉取工单 + 重建消息时间线（期间禁用输入,防跨工单消息混合） */
@@ -104,7 +107,7 @@ const restoreSession = async () => {
     for (const e of data.events) tl.push({ ...e, _event: true })
     tl.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
     messages.value = tl
-    scrollBottom()
+    forceScrollBottom()
   } catch (error) {
     if (gen !== sessionGen) return
     // 仅数据损坏/403/404 才清会话；网络错误/5xx 保留 key（下次刷新可重试）
@@ -137,10 +140,29 @@ const GROUP_ICONS: Record<string, string> = {
 }
 const groupIcon = (g: string) => GROUP_ICONS[g] || '法'
 
-const scrollBottom = () => nextTick(() => {
+/** P1-3：是否贴合底部（用户向上滚超过 80px 则暂停自动跟随） */
+const stickToBottom = ref(true)
+const onMsgScroll = () => {
   const el = msgContainer.value
-  if (el) el.scrollTop = el.scrollHeight
-})
+  if (!el) return
+  stickToBottom.value = el.scrollHeight - el.clientHeight - el.scrollTop <= 80
+}
+/** 自动跟随：仅在贴合底部时滚动（流式 token 用，behavior 默认 auto 防抖动） */
+const scrollBottom = () => {
+  if (!stickToBottom.value) return
+  nextTick(() => {
+    const el = msgContainer.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+/** 强制回到底部（新提问 / 恢复会话 / 点「回到最新」） */
+const forceScrollBottom = () => {
+  stickToBottom.value = true
+  nextTick(() => {
+    const el = msgContainer.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
 
 // 建议问题快捷入口
 const suggestedQuestions = [
@@ -180,7 +202,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
   sending.value = true
   lastError.value = null
   messages.value.push({ role: 'user', text: displayText, _files: files, _key: genIdempotencyKey() })
-  scrollBottom()
+  forceScrollBottom()
 
   if (!projectId.value) {
     try {
@@ -218,6 +240,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
     expectingAI.value = true
     aiThinking.value = ''
     showThinking.value = true
+    thinkingDone.value = false
     try {
       let fullText = ''
       let aiMsg: any | undefined
@@ -244,11 +267,12 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
         if (evt.type === 'reasoning_delta') {
           lastSeq = evt.seq
           aiThinking.value += evt.delta
-          scrollThinkingBox()
           return
         }
         if (evt.type === 'text_delta') {
           lastSeq = evt.seq
+          // P1-2：正文开始输出 → 思考区自动收起为「分析完成」
+          if (!thinkingDone.value) { thinkingDone.value = true; showThinking.value = false }
           fullText += evt.delta
           if (aiMsg) aiMsg.text = fullText
           scrollBottom()
@@ -291,7 +315,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
     messages.value.push({ _event: true, text: '已收到，法务 BP 处理后将回传至此处', _key: genIdempotencyKey() })
   }
   sending.value = false
-  scrollBottom()
+  forceScrollBottom()
 }
 
 const handleUpgrade = async () => {
@@ -305,7 +329,7 @@ const handleUpgrade = async () => {
     })
     upgraded.value = true; projectRoute.value = 'legalbp'
     messages.value.push({ _event: true, text: '已申请升级人工处理，法务 BP 将尽快跟进', _key: genIdempotencyKey() })
-    scrollBottom()
+    forceScrollBottom()
   } catch (error) {
     lastError.value = error instanceof RequestError
       ? error
@@ -442,6 +466,7 @@ const handleUpgrade = async () => {
     <div
       ref="msgContainer"
       class="msg-scroll"
+      @scroll="onMsgScroll"
     >
       <div class="msg-thread">
         <template
@@ -506,7 +531,7 @@ const handleUpgrade = async () => {
               </button>
             </div>
           </div>
-          <!-- 思考过程：紧跟最后一条用户消息下方,每次回答仅一个框,框内自动滚动 -->
+          <!-- 思考过程：紧跟最后一条用户消息下方,每次回答仅一个框（P1-2：无内部滚动条,展示尾部,正文开始自动收起） -->
           <div
             v-if="(m.id ?? m._key) === lastUserMsgKey && expectingAI && aiThinking"
             class="thinking-panel"
@@ -515,18 +540,25 @@ const handleUpgrade = async () => {
               class="thinking-toggle"
               @click="showThinking = !showThinking"
             >
-              {{ showThinking ? '▾' : '▸' }} 思考过程
+              {{ showThinking ? '▾' : '▸' }} {{ thinkingDone ? '分析完成' : '思考过程' }}
             </button>
             <div
               v-if="showThinking"
-              ref="thinkingBox"
               class="thinking-body"
             >
-              {{ aiThinking }}
+              {{ thinkingTail }}
             </div>
           </div>
         </template>
       </div>
+      <!-- P1-3：用户向上滚动暂停自动跟随后，底部悬浮「回到最新」 -->
+      <button
+        v-if="!stickToBottom && messages.length"
+        class="back-to-latest"
+        @click="forceScrollBottom"
+      >
+        ↓ 回到最新
+      </button>
     </div>
 
     <ChatInputBar
@@ -659,11 +691,12 @@ const handleUpgrade = async () => {
 /* 多轮上下文轻提示（2026-08-12） */
 .ctx-tip { font-size: 11px; color: var(--text-tertiary); padding: 6px 16px 0; text-align: center; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
-.chat-content { max-width: 860px; padding: 0; }
-.msg-scroll { padding: 24px 32px 8px; }
-.thinking-panel { margin: 2px 0 12px 52px; border: 1px solid rgba(0,113,227,0.14); background: rgba(0,113,227,0.04); border-radius: 12px; overflow: hidden; }
-.thinking-toggle { display: block; width: 100%; text-align: left; font-size: 12px; font-weight: 600; color: var(--blue); background: none; border: none; padding: 8px 14px; cursor: pointer; }
-.thinking-body { padding: 0 14px 12px; font-size: 12px; line-height: 1.7; color: var(--text-secondary); white-space: pre-wrap; height: 180px; overflow-y: auto; overflow-anchor: none; }
+/* 布局由 apple.css .chat-content/.msg-scroll 全局管理（scoped 收不到 BusinessSidebarLayout 容器） */
+.thinking-panel { margin: 2px 0 12px 52px; border: 1px solid rgba(15,23,42,0.08); background: rgba(100,116,139,0.06); border-radius: 12px; overflow: hidden; }
+.thinking-toggle { display: block; width: 100%; text-align: left; font-size: 12px; font-weight: 600; color: var(--text-secondary); background: none; border: none; padding: 8px 14px; cursor: pointer; }
+.thinking-body { padding: 0 14px 12px; font-size: 12px; line-height: 1.7; color: var(--text-secondary); white-space: pre-wrap; max-height: 132px; overflow: hidden; mask-image: linear-gradient(to bottom, transparent 0, #000 26px); -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 26px); }
+/* P1-3：用户向上滚暂停跟随后的「回到最新」悬浮按钮 */
+.back-to-latest { position: sticky; bottom: 12px; display: block; margin: 0 auto 8px; font-size: 12px; font-weight: 600; color: var(--blue); background: #fff; border: 1px solid rgba(15,23,42,0.1); border-radius: 999px; padding: 6px 14px; box-shadow: 0 4px 16px rgba(15,23,42,0.1); cursor: pointer; z-index: 10; }
 .ai-disclaimer { margin-top: 4px; font-size: 10px; color: var(--text-tertiary); padding-left: 4px; }
 .file-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .file-tag { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 8px; background: rgba(0,113,227,0.06); font-size: 11px; }
