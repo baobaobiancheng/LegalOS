@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { validate } from 'class-validator';
+import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import { ProjectService } from '../src/modules/project/project.service';
 import { ProjectStateMachine } from '../src/modules/project/domain/project-state-machine';
@@ -9,9 +10,11 @@ import { EscalateProjectToLegalUseCase } from '../src/modules/project/applicatio
 import { CreateProjectDto } from '../src/modules/project/dto/create-project.dto';
 
 /**
- * 首轮咨询「双重提交」回归（review 2026-08-11 P0）：
+ * 首轮咨询「双重提交」回归 + 多轮上下文改造（review 2026-08-11/12）：
  * - create(llm) 只落首条消息,不再自动触发 AI
- * - createMessage(firstReply=true) 不重复写用户消息、不重复风险评估,只启动一次 AI 流
+ * - createMessage(firstReply=true) 不重复写用户消息、只启动一次 AI 流
+ * - 追问分支也认领 ConsultationRun（每轮幂等）
+ * - 同 idempotencyKey 重复请求复用已有答案，不重复建消息/不重复触发
  * - 短推荐问题(≥5 字)可通过建单校验
  */
 
@@ -47,15 +50,29 @@ function makeTransaction(prisma: any) {
 }
 
 function fakeStream() {
-  const emitter = new (require('events').EventEmitter)();
+  const emitter = new EventEmitter();
   return Object.assign(emitter, { stdout: new PassThrough(), thinking: new PassThrough() });
 }
 
-describe('首轮咨询链路（双重提交回归）', () => {
+function buildContextMessages(userText: string) {
+  return {
+    messages: [
+      { role: 'system' as const, content: '规则' },
+      { role: 'user' as const, content: userText },
+    ],
+    includedMessageIds: ['m1'],
+    estimatedInputTokens: 10,
+    summaryVersion: null,
+    contextPolicyVersion: 'v1',
+  };
+}
+
+describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
   let service: ProjectService;
   let prisma: any;
   let risk: any;
-  let codex: any;
+  let consultationChat: any;
+  let contextBuilder: any;
   let dingtalk: any;
 
   beforeEach(() => {
@@ -71,13 +88,15 @@ describe('首轮咨询链路（双重提交回归）', () => {
     };
     makeTransaction(prisma);
     risk = { assess: vi.fn() };
-    codex = { executeStream: vi.fn().mockResolvedValue(fakeStream()) };
+    consultationChat = { stream: vi.fn().mockResolvedValue(fakeStream()) };
+    contextBuilder = {
+      build: vi.fn(async (input: any) => buildContextMessages(`ctx-${input.currentUserMessageId}`)),
+    };
     dingtalk = {
       createGroup: vi.fn(), addMember: vi.fn(), sendNotification: vi.fn(), syncContacts: vi.fn(),
     };
     service = new ProjectService(
       prisma as any,
-      codex as any,
       risk as any,
       { writeBack: vi.fn() } as any,
       dingtalk as any,
@@ -87,6 +106,9 @@ describe('首轮咨询链路（双重提交回归）', () => {
       new ProjectStateMachine() as any,
       { execute: vi.fn() } as any,
       new EscalateProjectToLegalUseCase(prisma) as any,
+      consultationChat as any,
+      contextBuilder as any,
+      { get: vi.fn((_k: string, d: unknown) => d) } as any,
     );
     prisma.project.create.mockResolvedValue(mockProject());
     prisma.project.findUnique.mockResolvedValue(mockProject());
@@ -100,7 +122,7 @@ describe('首轮咨询链路（双重提交回归）', () => {
     // 首条消息由建单落库（create-project.use-case 事务内 projectMessage.create）
     expect(prisma.projectMessage.create).toHaveBeenCalled();
     // 不再在 create 里自动触发 AI
-    expect(codex.executeStream).not.toHaveBeenCalled();
+    expect(consultationChat.stream).not.toHaveBeenCalled();
   });
 
   it('createMessage(firstReply=true) 不重复写用户消息,只启动一次 AI 流', async () => {
@@ -116,8 +138,11 @@ describe('首轮咨询链路（双重提交回归）', () => {
 
     expect(prisma.projectMessage.create).not.toHaveBeenCalled(); // 首条已由建单落库,不重复写
     expect(risk.assess).not.toHaveBeenCalled(); // 不重复风险评估
-    expect(codex.executeStream).toHaveBeenCalledTimes(1); // 只启动一次 AI
-    expect(codex.executeStream.mock.calls[0][0]).toContain('这是首条消息'); // 用首条消息作 prompt
+    expect(consultationChat.stream).toHaveBeenCalledTimes(1); // 只启动一次 AI
+    // 上下文经 ConsultationContextBuilder 重建（不传原始文本）
+    expect(contextBuilder.build).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: 'p-1', currentUserMessageId: 'm1' }),
+    );
     expect(prisma.consultationRun.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ userMessageId: 'm1', status: 'running' }) }),
     );
@@ -137,8 +162,7 @@ describe('首轮咨询链路（双重提交回归）', () => {
       service.createMessage('p-1', { text: '这是首条消息', firstReply: true }, { id: 'u-biz', role: 'business' }),
     ]);
 
-    expect(codex.executeStream).toHaveBeenCalledTimes(1); // 只有一个请求获得执行权
-    // 两个请求都尝试认领(create),但唯一约束只让一个成功,另一个 P2002 → 库里只有一条 run
+    expect(consultationChat.stream).toHaveBeenCalledTimes(1); // 只有一个请求获得执行权
     expect(prisma.consultationRun.create).toHaveBeenCalledTimes(2);
   });
 
@@ -155,18 +179,69 @@ describe('首轮咨询链路（双重提交回归）', () => {
       { id: 'u-biz', role: 'business' },
     );
 
-    expect(codex.executeStream).not.toHaveBeenCalled();
+    expect(consultationChat.stream).not.toHaveBeenCalled();
     expect(result.message).toMatchObject({ id: 'a1', text: '已有答案' });
   });
 
-  it('createMessage(普通追问) 仍写消息 + 触发 AI（一次）', async () => {
+  it('追问分支：写消息 + 认领 ConsultationRun + 上下文重建 + 触发一次 AI', async () => {
     prisma.projectMessage.create.mockResolvedValue({ id: 'm2', text: '追问' });
+    prisma.consultationRun.findUnique.mockResolvedValue(null);
+    prisma.consultationRun.create.mockResolvedValue({ id: 'run-2', status: 'running' });
     risk.assess.mockResolvedValue({ risk: 'P2', route: 'llm', domain: null });
 
-    await service.createMessage('p-1', { text: '追问' }, { id: 'u-biz', role: 'business' });
+    const result = await service.createMessage('p-1', { text: '追问' }, { id: 'u-biz', role: 'business' });
 
     expect(prisma.projectMessage.create).toHaveBeenCalledTimes(1);
-    expect(codex.executeStream).toHaveBeenCalledTimes(1);
+    expect(prisma.consultationRun.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ projectId: 'p-1', userMessageId: 'm2' }) }),
+    );
+    expect(contextBuilder.build).toHaveBeenCalledWith(
+      expect.objectContaining({ currentUserMessageId: 'm2' }),
+    );
+    expect(consultationChat.stream).toHaveBeenCalledTimes(1);
+    expect(result.route).toBe('llm');
+  });
+
+  it('追问已 succeeded 返回已有答案，不二次触发（每轮幂等）', async () => {
+    prisma.projectMessage.create.mockResolvedValue({ id: 'm2', text: '追问' });
+    prisma.projectMessage.findUnique.mockResolvedValue({ id: 'a2', role: 'assistant', text: '已有追问答案' });
+    prisma.consultationRun.findUnique.mockResolvedValue({
+      id: 'run-2', status: 'succeeded', answerMessageId: 'a2',
+    });
+    risk.assess.mockResolvedValue({ risk: 'P2', route: 'llm', domain: null });
+
+    const result = await service.createMessage('p-1', { text: '追问' }, { id: 'u-biz', role: 'business' });
+
+    expect(consultationChat.stream).not.toHaveBeenCalled();
+    expect(result.message).toMatchObject({ id: 'a2', text: '已有追问答案' });
+  });
+
+  it('同 idempotencyKey 重复请求：返回已有答案，不重复建消息/不重复触发', async () => {
+    // 第一次：无既有消息 → 事务建消息 → 认领 run → 触发
+    prisma.projectMessage.findUnique.mockResolvedValue(null); // clientKey 查询：无
+    prisma.consultationRun.findUnique.mockResolvedValue(null);
+    prisma.consultationRun.create.mockResolvedValue({ id: 'run-3', status: 'running' });
+    prisma.projectMessage.create.mockResolvedValue({ id: 'm3', text: '问题' });
+    risk.assess.mockResolvedValue({ risk: 'P2', route: 'llm', domain: null });
+
+    await service.createMessage('p-1', { text: '问题', idempotencyKey: 'key-1' }, { id: 'u-biz', role: 'business' });
+    expect(consultationChat.stream).toHaveBeenCalledTimes(1);
+
+    // 第二次（同 key）：clientKey 命中已有消息 → run succeeded → 返回已有答案
+    consultationChat.stream.mockClear();
+    prisma.consultationRun.findUnique.mockResolvedValue({
+      id: 'run-3', status: 'succeeded', answerMessageId: 'a3',
+    });
+    // 第 1 次 projectMessage.findUnique = clientKey 查询 → m3；后续 = answerMessageId 查询 → a3
+    prisma.projectMessage.findUnique
+      .mockResolvedValueOnce({ id: 'm3', projectId: 'p-1', role: 'user', text: '问题' })
+      .mockResolvedValue({ id: 'a3', role: 'assistant', text: '答案' });
+
+    const result = await service.createMessage('p-1', { text: '问题', idempotencyKey: 'key-1' }, { id: 'u-biz', role: 'business' });
+
+    expect(prisma.projectMessage.create).toHaveBeenCalledTimes(1); // 不重复建消息
+    expect(consultationChat.stream).not.toHaveBeenCalled(); // 不重复触发
+    expect(result.message).toMatchObject({ id: 'a3', text: '答案' });
   });
 
   it('短推荐问题(≥5 字)可通过建单校验(10→5)', async () => {

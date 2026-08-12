@@ -262,6 +262,9 @@ model ProjectMessage {
   role      String   @db.VarChar(32) // user | assistant | legal | event
   text      String   @db.Text
   label     String?  @db.VarChar(256)
+  // 2026-08-12 客户端幂等键：前端每个问题生成一个 key，防双重提交/网络重试
+  // 产生重复消息与重复回答（与 ConsultationRun.userMessageId 配合）。
+  clientKey String?  @unique @map("client_key")
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([projectId])

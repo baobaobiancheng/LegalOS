@@ -60,6 +60,14 @@ export class CreateProjectMessageDto {
   @IsOptional()
   @IsBoolean()
   firstReply?: boolean;
+
+  // 客户端幂等键（2026-08-12 多轮上下文改造）：前端每个问题生成一个 key，
+  // 服务端按 clientKey 去重建消息（unique），再按消息 id 认领 ConsultationRun，
+  // 防双重提交 / 网络重试产生重复消息与重复 AI 回答。
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey?: string;
 }
 
 export class ReplyProjectDto {

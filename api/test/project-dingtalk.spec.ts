@@ -48,7 +48,6 @@ describe('ProjectService 钉钉拉群链路', () => {
   let service: ProjectService;
   let prisma: any;
   let risk: any;
-  let codex: any;
   let dingtalk: any;
 
   beforeEach(() => {
@@ -63,7 +62,6 @@ describe('ProjectService 钉钉拉群链路', () => {
     };
     makeTransaction(prisma);
     risk = { assess: vi.fn() };
-    codex = { executeStream: vi.fn() };
     dingtalk = {
       createGroup: vi.fn().mockResolvedValue({ chatId: 'c1', title: '群', members: ['u1'] }),
       addMember: vi.fn().mockResolvedValue(undefined),
@@ -72,7 +70,6 @@ describe('ProjectService 钉钉拉群链路', () => {
     };
     service = new ProjectService(
       prisma as any,
-      codex as any,
       risk as any,
       { writeBack: vi.fn() } as any,
       dingtalk as any,
@@ -82,6 +79,9 @@ describe('ProjectService 钉钉拉群链路', () => {
       new ProjectStateMachine() as any,
       { execute: vi.fn() } as any,
       new EscalateProjectToLegalUseCase(prisma) as any,
+      { stream: vi.fn() } as any,
+      { build: vi.fn() } as any,
+      { get: vi.fn((_k: string, d: unknown) => d) } as any,
     );
 
     prisma.project.create.mockResolvedValue(mockProject());

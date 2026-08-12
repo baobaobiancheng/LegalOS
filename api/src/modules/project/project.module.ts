@@ -15,6 +15,7 @@ import { ProjectQueryService } from './queries/project-query.service';
 import { ProjectStateMachine } from './domain/project-state-machine';
 import { ClaimProjectUseCase } from './application/claim-project.use-case';
 import { EscalateProjectToLegalUseCase } from './application/escalate-project-to-legal.use-case';
+import { ConsultationContextBuilder } from './application/consultation-context-builder';
 
 @Module({
   imports: [PrismaModule, DingTalkAdapterModule],
@@ -30,6 +31,7 @@ import { EscalateProjectToLegalUseCase } from './application/escalate-project-to
     ProjectStateMachine,
     ClaimProjectUseCase,
     EscalateProjectToLegalUseCase,
+    ConsultationContextBuilder,
     { provide: CRM_ADAPTER, useClass: MockCrmAdapter },
   ],
   exports: [ProjectService],

@@ -7,8 +7,9 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Inject } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CodexAppServerService } from '../../common/services/codex-app-server.service';
+import { ConsultationChatService } from '../../common/services/consultation-chat.service';
 import { LLMRiskService } from '../../common/services/llm-risk.service';
 import {
   CrmAdapter,
@@ -18,9 +19,9 @@ import {
 } from './adapters/adapter.interfaces';
 import { CreateProjectDto, CreateProjectMessageDto, ReplyProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
-import { ChildProcess } from 'child_process';
 import { Prisma } from '@prisma/client';
-import { injectSkillSection } from '../../common/utils/skill-prompt';
+import { buildSkillSection } from '../../common/utils/skill-prompt';
+import { ConsultationContextBuilder } from './application/consultation-context-builder';
 import { ProjectAccessPolicy } from './domain/project-access.policy';
 import { ProjectAction, ProjectActor } from './domain/project-access.types';
 import {
@@ -42,7 +43,6 @@ export class ProjectService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly appServer: CodexAppServerService,
     private readonly riskService: LLMRiskService,
     @Inject(CRM_ADAPTER) private readonly crm: CrmAdapter,
     @Inject(DINGTALK_ADAPTER) private readonly dingtalk: DingTalkAdapter,
@@ -52,6 +52,9 @@ export class ProjectService {
     private readonly stateMachine: ProjectStateMachine,
     private readonly claimProject: ClaimProjectUseCase,
     private readonly escalateToLegal: EscalateProjectToLegalUseCase,
+    private readonly consultationChat: ConsultationChatService,
+    private readonly contextBuilder: ConsultationContextBuilder,
+    private readonly config: ConfigService,
   ) {}
 
   // ═══════════════════════════════════════════
@@ -355,7 +358,7 @@ export class ProjectService {
     dto: CreateProjectMessageDto,
     actor: ProjectActor,
     signal?: AbortSignal,
-  ): Promise<{ message: any; stream?: ChildProcess; route: string }> {
+  ): Promise<{ message: any; stream?: any; route: string }> {
     const role = actor.role === 'business' ? 'user' : 'legal';
 
     // 0. 首轮回答（review 2026-08-11 P0/P1）：首条消息已在建单时落库。
@@ -372,53 +375,90 @@ export class ProjectService {
       });
       if (!first) throw new BadRequestException('工单没有首条消息');
 
-      // 幂等：一条 userMessageId 最多一个生成任务
-      const existingRun = await this.prisma.consultationRun.findUnique({
-        where: { userMessageId: first.id },
-      });
-      if (existingRun?.status === 'succeeded') {
-        const answer = existingRun.answerMessageId
-          ? await this.prisma.projectMessage.findUnique({ where: { id: existingRun.answerMessageId } })
-          : null;
-        if (answer) return { message: answer, route: 'llm', stream: undefined };
+      const claimed = await this.claimConsultationRun(projectId, first.id);
+      if (claimed.status === 'succeeded' && claimed.answer) {
+        return { message: claimed.answer, route: 'llm', stream: undefined };
       }
-      if (existingRun && (existingRun.status === 'running' || existingRun.status === 'queued')) {
+      if (claimed.status === 'running') {
         return { message: first, route: 'llm', stream: undefined }; // 已在跑,不再启动第二个
-      }
-
-      // 原子认领：唯一约束兜并发,只有一个请求能创建成功
-      let run;
-      try {
-        run = await this.prisma.consultationRun.create({
-          data: { projectId, userMessageId: first.id, status: 'running' },
-        });
-      } catch (e: any) {
-        if (e?.code === 'P2002') {
-          return { message: first, route: 'llm', stream: undefined }; // 并发方已建 run
-        }
-        throw e;
       }
       return {
         message: first,
         route: 'llm',
-        stream: await this.triggerAIResponse(projectId, first.text, signal, run.id),
+        stream: await this.triggerAIResponse(projectId, first.id, signal, claimed.runId),
       };
+    }
+
+    // 0.5 客户端幂等键去重（2026-08-12）：同 key 已建消息 → 复用其结果/等待，
+    //     防双重提交、网络重试产生重复消息与重复 AI 回答。
+    if (dto.idempotencyKey) {
+      const existing = await this.prisma.projectMessage
+        .findUnique({ where: { clientKey: dto.idempotencyKey } })
+        .catch(() => null);
+      if (existing && existing.projectId === projectId) {
+        const claimed = await this.claimConsultationRun(projectId, existing.id);
+        if (claimed.status === 'succeeded' && claimed.answer) {
+          return { message: claimed.answer, route: 'llm', stream: undefined };
+        }
+        if (claimed.status === 'running') {
+          return { message: existing, route: 'llm', stream: undefined };
+        }
+        // 无 run / 失败 / 已取消：重新回答该消息（不重复建消息）
+        return {
+          message: existing,
+          route: 'llm',
+          stream: await this.triggerAIResponse(projectId, existing.id, signal, claimed.runId),
+        };
+      }
     }
 
     // 1. 锁定工单后鉴权并写消息。MySQL 生产路径使用 FOR UPDATE，避免
     // 检查 assignment 后到 INSERT 之间被转派/撤销；全部本地写入同事务。
-    const { project, message } = await this.prisma.$transaction(async (tx) => {
-      if (typeof tx.$queryRaw === 'function') {
-        await tx.$queryRaw`SELECT id FROM projects WHERE id = ${projectId} FOR UPDATE`;
-      }
-      const lockedProject = await tx.project.findUnique({ where: { id: projectId } });
-      if (!lockedProject) throw new NotFoundException('工单不存在');
-      this.accessPolicy.assertCan(actor, ProjectAction.SendMessage, lockedProject);
-      const createdMessage = await tx.projectMessage.create({
-        data: { projectId, role, text: dto.text },
+    // clientKey unique 兜并发：同 key 两个并发请求只有一个能建消息成功。
+    let project: any;
+    let message: any;
+    try {
+      const result = await this.prisma.$transaction(async (tx) => {
+        if (typeof tx.$queryRaw === 'function') {
+          await tx.$queryRaw`SELECT id FROM projects WHERE id = ${projectId} FOR UPDATE`;
+        }
+        const lockedProject = await tx.project.findUnique({ where: { id: projectId } });
+        if (!lockedProject) throw new NotFoundException('工单不存在');
+        this.accessPolicy.assertCan(actor, ProjectAction.SendMessage, lockedProject);
+        const createdMessage = await tx.projectMessage.create({
+          data: {
+            projectId,
+            role,
+            text: dto.text,
+            ...(dto.idempotencyKey ? { clientKey: dto.idempotencyKey } : {}),
+          },
+        });
+        return { project: lockedProject, message: createdMessage };
       });
-      return { project: lockedProject, message: createdMessage };
-    });
+      ({ project, message } = result);
+    } catch (e: any) {
+      if (e?.code === 'P2002' && dto.idempotencyKey) {
+        // 并发方同 key 先建成功：复用其消息（校验归属同工单，防跨工单 key 碰撞）
+        const winner = await this.prisma.projectMessage
+          .findUnique({ where: { clientKey: dto.idempotencyKey } })
+          .catch(() => null);
+        if (winner && winner.projectId === projectId) {
+          const claimed = await this.claimConsultationRun(projectId, winner.id);
+          if (claimed.status === 'succeeded' && claimed.answer) {
+            return { message: claimed.answer, route: 'llm', stream: undefined };
+          }
+          if (claimed.status === 'running') {
+            return { message: winner, route: 'llm', stream: undefined };
+          }
+          return {
+            message: winner,
+            route: 'llm',
+            stream: await this.triggerAIResponse(projectId, winner.id, signal, claimed.runId),
+          };
+        }
+      }
+      throw e;
+    }
 
     // 2. 根据路由决定后续
     if (project.route === 'llm' && role === 'user') {
@@ -440,7 +480,19 @@ export class ProjectService {
         return { message, route: 'legalbp' };
       }
 
-      return { message, route: 'llm', stream: await this.triggerAIResponse(projectId, dto.text, signal) };
+      // 认领 run（userMessageId=message.id）：确保每轮只启动一次模型
+      const claimed = await this.claimConsultationRun(projectId, message.id);
+      if (claimed.status === 'succeeded' && claimed.answer) {
+        return { message: claimed.answer, route: 'llm', stream: undefined };
+      }
+      if (claimed.status === 'running') {
+        return { message, route: 'llm', stream: undefined };
+      }
+      return {
+        message,
+        route: 'llm',
+        stream: await this.triggerAIResponse(projectId, message.id, signal, claimed.runId),
+      };
     }
 
     return { message, route: project.route };
@@ -511,10 +563,10 @@ export class ProjectService {
   // 内部方法
   // ═══════════════════════════════════════════
 
-  /** 触发 AI 生成答复 — 经共享 Codex 队列，app-server 双路流(思考+内容)供 SSE 流式 */
+  /** 触发 AI 生成答复 — 直连网关双路流(思考+内容)，上下文由 ConsultationContextBuilder 从数据库重建 */
   private async triggerAIResponse(
     projectId: string,
-    userQuery: string,
+    currentUserMessageId: string,
     signal?: AbortSignal,
     runId?: string,
   ): Promise<any> {
@@ -525,16 +577,26 @@ export class ProjectService {
       })
       .catch(() => null);
     const skillPrompt = (project?.extra as any)?.skillPrompt ?? null;
-    const prompt = this.buildConsultPrompt(
-      userQuery,
-      project?.skillName ?? undefined,
-      skillPrompt ?? undefined,
-    );
+    const skillName = project?.skillName ?? null;
 
-    const child = await this.appServer.executeStream(prompt, {
+    let context;
+    try {
+      context = await this.contextBuilder.build({
+        projectId,
+        currentUserMessageId,
+        // 技能段复用共享 util：剥边界标记 + 硬边界模板（防 prompt 注入）
+        skillPrompt: skillName && skillPrompt ? buildSkillSection(skillName, skillPrompt) : undefined,
+      });
+    } catch (e) {
+      this.logger.error(`咨询上下文构建失败（${projectId}/${currentUserMessageId}）：${e}`);
+      throw new BadRequestException('咨询上下文构建失败，请重试');
+    }
+
+    const child = await this.consultationChat.stream(context.messages, {
       timeout: 120_000,
-      sessionId: projectId,
       signal,
+      runId,
+      projectId,
     });
     let fullText = '';
 
@@ -543,9 +605,16 @@ export class ProjectService {
     });
 
     child.on('close', async (code) => {
-      // 连接断开主动取消 → 不写失败状态（刷新 ≠ 生成失败）
-      if ((child as any).__cancelled) return;
-      // 权威文本优先用 app-server 选定的 finalText（item 感知组装），流式累计仅兜底
+      // 连接断开主动取消 → 不写失败状态（刷新 ≠ 生成失败）；run 标记 cancelled 以便重试
+      if ((child as any).__cancelled) {
+        if (runId) {
+          await this.prisma.consultationRun
+            .update({ where: { id: runId }, data: { status: 'cancelled', completedAt: new Date() } })
+            .catch(() => undefined);
+        }
+        return;
+      }
+      // 权威文本优先用网关 content 增量累计（__finalText），流式累计仅兜底
       const finalText = String((child as any).__finalText ?? fullText).trim();
       if (code === 0 && finalText) {
         try {
@@ -579,7 +648,7 @@ export class ProjectService {
           }
         }
       } else {
-        this.logger.error(`Codex 进程异常退出，code=${code}`);
+        this.logger.error(`咨询网关流异常退出，code=${code}`);
         try {
           await this.prisma.project.update({
             where: { id: projectId },
@@ -601,7 +670,7 @@ export class ProjectService {
     });
 
     child.on('error', async (err) => {
-      this.logger.error(`Codex spawn 失败：${err.message}`);
+      this.logger.error(`咨询网关流错误：${err.message}`);
       try {
         await this.prisma.project.update({
           where: { id: projectId },
@@ -624,39 +693,64 @@ export class ProjectService {
     return child;
   }
 
-  /** 构建业务咨询 prompt（技能指令段注入顶部，工程评审决策 #3/#5） */
-  private buildConsultPrompt(userQuery: string, skillName?: string, skillPrompt?: string): string {
-    const base = `## Role
-你是一名企业法务顾问，为业务人员提供法律咨询答复。
+  /** 认领/复用咨询运行（2026-08-12）：一条 userMessageId 最多一个生成任务。
+   *   succeeded → 返回已有答案；running/queued → 不二次启动；
+   *   超 CONSULT_RUN_STALE_MS 的卡死 run 重置重跑；failed/cancelled → 复用同 run 重跑。
+   *   P2002（并发同时建）→ 读并发方 run 状态决定返回答案还是等待。 */
+  private async claimConsultationRun(
+    projectId: string,
+    userMessageId: string,
+  ): Promise<{ runId: string; status: 'succeeded' | 'running' | 'new'; answer?: any }> {
+    const staleMs =
+      Number.parseInt(String(this.config.get('CONSULT_RUN_STALE_MS', '600000')), 10) || 600_000;
 
-## Output Format（严格按四段式输出）
-### 核心结论
-一句话总结你的法律判断。
+    const existing = await this.prisma.consultationRun
+      .findUnique({ where: { userMessageId } })
+      .catch(() => null);
+    if (existing) {
+      if (existing.status === 'succeeded') {
+        const answer = existing.answerMessageId
+          ? await this.prisma.projectMessage
+              .findUnique({ where: { id: existing.answerMessageId } })
+              .catch(() => null)
+          : null;
+        return { runId: existing.id, status: 'succeeded', answer: answer ?? undefined };
+      }
+      if (existing.status === 'running' || existing.status === 'queued') {
+        const age = Date.now() - new Date(existing.updatedAt).getTime();
+        if (age < staleMs) return { runId: existing.id, status: 'running' };
+        this.logger.warn(`run ${existing.id} 卡在 ${existing.status} 超 ${staleMs}ms，重置重跑`);
+        await this.prisma.consultationRun
+          .update({ where: { id: existing.id }, data: { status: 'running', errorMessage: null } })
+          .catch(() => undefined);
+        return { runId: existing.id, status: 'new' };
+      }
+      // failed / cancelled：复用同 run 重跑
+      await this.prisma.consultationRun
+        .update({ where: { id: existing.id }, data: { status: 'running', errorMessage: null } })
+        .catch(() => undefined);
+      return { runId: existing.id, status: 'new' };
+    }
 
-### 重点风险
-列出 2-3 个最关键的法律风险点，每条不超过两句话。
-
-### 建议动作
-给出具体可执行的下一步行动建议。
-
-### 需补充确认
-列出需要进一步确认的事实或信息（如有）。如果信息足够，写"无，以上判断基于现有信息可执行"。
-
-## Rules
-- 不要自我介绍、不要寒暄，直接回答用户问题
-- 不要重复或复述用户的问题原文
-- 只输出一份四段式回答，不要针对同一问题输出多份回答
-- 若回答接近长度上限，主动收束为简洁结论，不要中断在半句话
-- 免责声明只在答复末尾出现一次
-- 不引用具体法条号（除非用户追问或所选技能明确要求援引）
-- 只说你能确定的事，不确定的事项放在"需补充确认"
-- 如果问题超出法务范围（如税务、财务），明确告知并建议联系对应部门
-- 每条答复末尾追加免责声明："> ⚠️ 本答复由AI生成，不构成正式法律意见。如需正式法务意见，请联系法务BP确认。"
-
-## User Query
-${userQuery}`;
-    // 技能段由共享 util 注入（含边界标记剥除）；无技能时原样返回
-    return injectSkillSection(base, skillName ?? '', skillPrompt ?? '');
+    try {
+      const run = await this.prisma.consultationRun.create({
+        data: { projectId, userMessageId, status: 'running' },
+      });
+      return { runId: run.id, status: 'new' };
+    } catch (e: any) {
+      if (e?.code === 'P2002') {
+        // 并发方已建 run：读其状态
+        const winner = await this.prisma.consultationRun.findUnique({ where: { userMessageId } });
+        if (winner?.status === 'succeeded' && winner.answerMessageId) {
+          const answer = await this.prisma.projectMessage
+            .findUnique({ where: { id: winner.answerMessageId } })
+            .catch(() => null);
+          return { runId: winner.id, status: 'succeeded', answer: answer ?? undefined };
+        }
+        return { runId: winner?.id ?? '', status: 'running' };
+      }
+      throw e;
+    }
   }
 
   // ═══════════════════════════════════════════

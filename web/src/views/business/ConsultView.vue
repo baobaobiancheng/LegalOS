@@ -149,6 +149,19 @@ const suggestedQuestions = [
   '劳动用工有哪些法律风险',
 ]
 
+/** 客户端幂等键（2026-08-12 多轮上下文改造）：每次发送生成一个，防双重提交/网络重试产生重复回答。
+ *  非安全上下文(http://IP)没有 crypto.randomUUID，用 getRandomValues 兜底。 */
+const genIdempotencyKey = (): string => {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID()
+    }
+  } catch { /* 落到兜底 */ }
+  const arr = new Uint8Array(16)
+  crypto.getRandomValues(arr)
+  return Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 const sendSuggested = (q: string) => {
   handleSend(q, [])
 }
@@ -160,6 +173,8 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
   const displayText = buildDisplayText(text, files)
   // 首条消息：建单已落库,后续 /messages 只启动首轮回答(firstReply=true,不重复写消息/评估)
   const firstReply = !projectId.value
+  // 客户端幂等键：同一次发送若被重复提交，后端按 key 去重，只启动一次 AI
+  const idempotencyKey = genIdempotencyKey()
 
   sending.value = true
   lastError.value = null
@@ -205,7 +220,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
       let aiMsg: any | undefined
       const data = await requestStreamOrJson<{ route?: string; done?: boolean; error?: boolean; text?: string; thinking?: string; finalText?: string; answerItemId?: string }>(`/projects/${projectId.value}/messages`, {
         method: 'POST',
-        body: { text: fullInput, role: 'user', firstReply },
+        body: { text: fullInput, role: 'user', firstReply, idempotencyKey },
       }, (d) => {
         // 思考过程独立流（app-server 双路）：增量累积,不混入答案；框内自动滚到底
         if (d.thinking) {
@@ -295,6 +310,13 @@ const handleUpgrade = async () => {
         ＋ 新建会话
       </button>
     </template>
+    <!-- 多轮上下文轻提示（2026-08-12）：会话内追问参考此前问答，新建会话才重新开始 -->
+    <div
+      v-if="projectId && messages.length > 0"
+      class="ctx-tip"
+    >
+      本会话内的后续问题会参考此前问答；新建会话后上下文将重新开始。
+    </div>
     <div
       v-if="messages.length === 0 && !expectingAI"
       class="welcome-hero"
@@ -600,6 +622,8 @@ const handleUpgrade = async () => {
 .tb-badge.escalated { background: rgba(255,149,0,0.08); color: #FF9500; }
 .tb-new-btn { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--blue); background: rgba(0,113,227,0.08); border: none; padding: 5px 12px; border-radius: 999px; cursor: pointer; }
 .tb-new-btn:hover { background: rgba(0,113,227,0.15); }
+/* 多轮上下文轻提示（2026-08-12） */
+.ctx-tip { font-size: 11px; color: var(--text-tertiary); padding: 6px 16px 0; text-align: center; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 .chat-content { max-width: 860px; padding: 0; }
 .msg-scroll { padding: 24px 32px 8px; }

@@ -47,7 +47,6 @@ describe('ProjectService.create 技能解析', () => {
   let service: ProjectService;
   let prisma: any;
   let risk: any;
-  let codex: any;
   let crm: any;
   let dingtalk: any;
 
@@ -68,7 +67,6 @@ describe('ProjectService.create 技能解析', () => {
     };
     makeTransaction(prisma);
     risk = { assess: vi.fn().mockResolvedValue({ risk: 'P1', route: 'legalbp', domain: null }) }; // legalbp 避免触发 AI
-    codex = { executeStream: vi.fn() };
     crm = { writeBack: vi.fn() };
     dingtalk = {
       createGroup: vi.fn().mockResolvedValue({ chatId: 'c1', members: ['m1'] }),
@@ -76,7 +74,6 @@ describe('ProjectService.create 技能解析', () => {
     };
     service = new ProjectService(
       prisma as any,
-      codex as any,
       risk as any,
       crm as any,
       dingtalk as any,
@@ -86,6 +83,9 @@ describe('ProjectService.create 技能解析', () => {
       new ProjectStateMachine() as any,
       { execute: vi.fn() } as any,
       new EscalateProjectToLegalUseCase(prisma) as any,
+      { stream: vi.fn() } as any,
+      { build: vi.fn() } as any,
+      { get: vi.fn((_k: string, d: unknown) => d) } as any,
     );
     prisma.project.create.mockResolvedValue(mockProject());
   });

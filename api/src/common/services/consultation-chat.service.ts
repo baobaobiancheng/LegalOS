@@ -1,0 +1,234 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
+
+/**
+ * 咨询直连网关流式客户端（2026-08-12，多轮会话上下文改造）：
+ * 法务咨询直接调用公司大模型网关 /v1/chat/completions，不再经 Codex app-server。
+ *
+ * 依据《咨询直连网关-契约记录》(2026-08-12 服务器实测钉死)：
+ *   C3  `delta.reasoning`  —— 思考过程，增量，先于内容
+ *   C4  `delta.content`    —— 正式答案，增量，在思考之后
+ *   C5  reasoning 与 content 永不同帧（前后两段）
+ *   C6  SSE 帧：`data: {...}` 换行分隔、帧间空行、末尾 `data: [DONE]`、无 event: 行
+ *   C7  首帧 `delta:{role:"assistant",content:""}` 角色标记帧，不产生输出
+ *   C8  max_tokens = 思考 + 答案合计；思考会吃满预算导致 content=null
+ *   C9  不打印 prompt/messages/key；日志只记 projectId/runId/耗时/token/HTTP 状态/请求 id
+ *
+ * 返回与 CodexAppServerService 同构的 stream 对象（stdout/thinking/close/__finalText），
+ * sendSSE 可直接复用，前端 SSE 协议零改动。
+ */
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface ConsultationChatStreamOptions {
+  /** 输出 token 预算（含思考，见 C8）；默认取 CONSULT_OUTPUT_TOKEN_RESERVE */
+  maxTokens?: number;
+  /** 请求级超时（毫秒），默认 120s */
+  timeout?: number;
+  /** 调用方取消信号（SSE 连接断开） */
+  signal?: AbortSignal;
+  /** 审计标识（仅用于日志，不发送到网关） */
+  runId?: string;
+  projectId?: string;
+}
+
+/** 不可用/被拦截时返回的伪流：close(1) 走失败路径（转人工） */
+function failedStream(): any {
+  const emitter = new EventEmitter();
+  const stdout = new PassThrough();
+  const thinking = new PassThrough();
+  const stream = Object.assign(emitter, { stdout, thinking });
+  setImmediate(() => {
+    stdout.end();
+    thinking.end();
+    emitter.emit('close', 1);
+  });
+  return stream;
+}
+
+@Injectable()
+export class ConsultationChatService {
+  private readonly logger = new Logger(ConsultationChatService.name);
+  private readonly baseUrl: string;
+  private readonly apiKey: string;
+  private readonly model: string;
+  private readonly outputTokenReserve: number;
+
+  constructor(private readonly config: ConfigService) {
+    this.baseUrl = String(config.get('LLM_BASE_URL', '')).replace(/\/+$/, '');
+    // 共享 key 场景：LLM_API_KEY 优先，回退 CODEX_API_KEY（网关文档 §0 共享 key）
+    this.apiKey = String(config.get('LLM_API_KEY', '') || config.get('CODEX_API_KEY', ''));
+    this.model = String(config.get('LLM_MODEL', 'glm-5-2'));
+    this.outputTokenReserve =
+      Number.parseInt(String(config.get('CONSULT_OUTPUT_TOKEN_RESERVE', '4096')), 10) || 4096;
+    this.logger.log(
+      `咨询直连网关：model=${this.model} base=${this.baseUrl || '(未配置 LLM_BASE_URL)'} ` +
+        `输出预算=${this.outputTokenReserve} AI执行=${this.aiEnabled() ? '允许' : '禁用'}`,
+    );
+  }
+
+  /** AI Kill Switch：与 CodexService/CodexAppServerService 同开关 */
+  private aiEnabled(): boolean {
+    const v = String(this.config.get('AI_EXECUTION_ENABLED', 'true')).toLowerCase();
+    return !['false', '0', 'off', 'no', 'disabled'].includes(v);
+  }
+
+  /**
+   * 直连网关流式生成（thinking + content 双路）。
+   * messages 由 ConsultationContextBuilder 构建（system 规则 + 历史 + 当前问题）。
+   */
+  async stream(messages: ChatMessage[], options?: ConsultationChatStreamOptions): Promise<any> {
+    const opts = options ?? {};
+    if (!this.aiEnabled()) {
+      this.logger.warn('咨询直连网关被拦截：AI_EXECUTION_ENABLED=false');
+      return failedStream();
+    }
+    if (!this.baseUrl) {
+      this.logger.error('咨询直连网关未配置 LLM_BASE_URL，拒绝请求');
+      return failedStream();
+    }
+    if (!this.apiKey) {
+      this.logger.error('咨询直连网关未配置 LLM_API_KEY/CODEX_API_KEY，拒绝请求');
+      return failedStream();
+    }
+    if (!messages?.length) {
+      this.logger.warn('咨询直连网关收到空 messages，拒绝请求');
+      return failedStream();
+    }
+
+    const maxTokens = opts.maxTokens ?? this.outputTokenReserve;
+    const timeoutMs = opts.timeout ?? 120_000;
+
+    const emitter = new EventEmitter();
+    const stdout = new PassThrough();
+    const thinking = new PassThrough();
+    const stream: any = Object.assign(emitter, { stdout, thinking });
+
+    const controller = new AbortController();
+    let finalized = false;
+    let fullText = '';
+    let fullThinking = '';
+    let gatewayRequestId: string | undefined;
+
+    const finalize = (code: number) => {
+      if (finalized) return;
+      finalized = true;
+      // 权威最终文本交给 sendSSE 的 done 事件（与 app-server 的 __finalText 语义一致）
+      if (code === 0 && fullText) stream.__finalText = fullText;
+      stdout.end();
+      thinking.end();
+      emitter.emit('close', code);
+    };
+
+    // 客户端断开 / 超时 → 中止 fetch
+    const timeoutTimer = setTimeout(() => controller.abort(), timeoutMs);
+    timeoutTimer.unref?.();
+    const abortHandler = () => controller.abort();
+    if (opts.signal) {
+      if (opts.signal.aborted) controller.abort();
+      else opts.signal.addEventListener('abort', abortHandler, { once: true });
+    }
+    const cleanup = () => {
+      clearTimeout(timeoutTimer);
+      opts.signal?.removeEventListener('abort', abortHandler);
+    };
+
+    (async () => {
+      const t0 = Date.now();
+      const tag = `project=${opts.projectId ?? '-'} run=${opts.runId ?? '-'}`;
+      try {
+        const resp = await fetch(`${this.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: this.model,
+            messages,
+            stream: true,
+            max_tokens: maxTokens,
+          }),
+          signal: controller.signal,
+        });
+
+        if (!resp.ok) {
+          const bodyText = (await resp.text()).slice(0, 500);
+          this.logger.error(`[consult-chat] HTTP ${resp.status} ${tag} 响应=${bodyText}`);
+          finalize(1);
+          return;
+        }
+        if (!resp.body) {
+          this.logger.error(`[consult-chat] 网关无响应体 ${tag}`);
+          finalize(1);
+          return;
+        }
+
+        // ── SSE 逐行解析（契约 C3/C4/C5/C6/C7）──
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        let sawDone = false;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx: number;
+          while ((idx = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.slice(0, idx).trim();
+            buffer = buffer.slice(idx + 1);
+            if (!line || !line.startsWith('data:')) continue; // 空行 / 非 data 行忽略
+            const payload = line.slice(5).trim();
+            if (payload === '[DONE]') {
+              sawDone = true;
+              break;
+            }
+            let msg: any;
+            try {
+              msg = JSON.parse(payload);
+            } catch {
+              continue; // 坏帧忽略
+            }
+            if (msg?.id && !gatewayRequestId) gatewayRequestId = String(msg.id);
+            const delta = msg?.choices?.[0]?.delta;
+            if (delta?.reasoning) {
+              fullThinking += delta.reasoning;
+              thinking.write(delta.reasoning);
+            }
+            if (delta?.content) {
+              fullText += delta.content;
+              stdout.write(delta.content);
+            }
+          }
+          if (sawDone) break;
+        }
+        this.logger.debug(
+          `[consult-chat] 完成 ${tag} elapsed=${Date.now() - t0}ms ` +
+            `tokens(估算)≈${Math.ceil((fullThinking.length + fullText.length) / 1.5)} req=${gatewayRequestId ?? '-'}`,
+        );
+        finalize(0);
+      } catch (e) {
+        if (controller.signal.aborted) {
+          // 超时或客户端断开：取消 ≠ 生成失败
+          stream.__cancelled = true;
+          this.logger.warn(`[consult-chat] 已中止 ${tag} elapsed=${Date.now() - t0}ms req=${gatewayRequestId ?? '-'}`);
+          finalize(0);
+        } else {
+          this.logger.error(
+            `[consult-chat] 请求失败 ${tag} elapsed=${Date.now() - t0}ms ${e instanceof Error ? e.message : e}`,
+          );
+          finalize(1);
+        }
+      } finally {
+        cleanup();
+      }
+    })();
+
+    return stream;
+  }
+}
