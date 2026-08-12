@@ -84,7 +84,9 @@ export class ProjectService {
     }
 
     // 1. 风险判定 + 领域标签（事务前：外部 LLM 调用；P1-11 带回规则下限证据）
-    const { risk, route, domain, evidence } = await this.riskService.assess(dto.input);
+    //    附件参与分级（受限正文），避免「请审查附件」因附件有诉讼/违约却路由为普通 P2
+    const riskInput = await this.buildRiskInput(dto.input, dto.attachmentIds);
+    const { risk, route, domain, evidence } = await this.riskService.assess(riskInput);
 
     // 1.5 技能服务端解析（仅解析 active 的公有技能或创建者自己的私有技能）
     let skillId: string | null = null;
@@ -519,7 +521,8 @@ export class ProjectService {
     // 2. 根据路由决定后续
     if (txProject.route === 'llm' && role === 'user') {
       // P2 追问：重新风险判定
-      const { risk, route, domain } = await this.riskService.assess(dto.text);
+      const riskInput = await this.buildRiskInput(dto.text, dto.attachmentIds);
+      const { risk, route, domain } = await this.riskService.assess(riskInput);
 
       if (route === 'legalbp') {
         // 追问触发升级：匹配、条件切换、事件、Outbox 全部由统一用例完成。
@@ -801,6 +804,14 @@ export class ProjectService {
 
     // P0-4：completion 供 sendConsultSSE 门控 message_end（落库成功才发）
     return { stream: child, completion };
+  }
+
+  /** 风险分级输入：附上受限长度的附件正文（review 2026-08-12 P1-4），防「请审查附件」被路由为普通 P2 */
+  private async buildRiskInput(text: string, attachmentIds: string[] | undefined): Promise<string> {
+    if (!attachmentIds?.length) return text;
+    const texts = await this.attachmentService.getTexts(attachmentIds).catch(() => [] as string[]);
+    if (!texts.length) return text;
+    return `${text}\n\n【附件内容摘要】\n${texts.join('\n').slice(0, 2000)}`;
   }
 
   /** 认领/复用咨询运行（2026-08-12）：一条 userMessageId 最多一个生成任务。

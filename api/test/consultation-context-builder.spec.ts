@@ -52,6 +52,23 @@ describe('ConsultationContextBuilder', () => {
     expect(last.content).toContain('这是附件里的法律答复正文');
   });
 
+  it('P2-6：历史用户消息也注入其附件正文（追问仍能看到原文）', async () => {
+    const q1 = msg('q1', 'user', '请分析附件', 1, { attachmentIds: ['att-1'] });
+    const a1 = msg('a1', 'assistant', '第一轮答复', 2);
+    const cur = msg('cur', 'user', '继续分析', 3);
+    prisma.consultationRun.findMany.mockResolvedValue([{ userMessageId: 'q1', answerMessageId: 'a1' }]);
+    prisma.projectMessage.findMany.mockResolvedValue([q1, a1, cur]);
+    prisma.consultationAttachment.findMany.mockResolvedValue([
+      { id: 'att-1', fileName: '合同.docx', extractedText: '合同里有一条违约金条款' },
+    ]);
+
+    const result = await builder.build({ projectId: 'p1', currentUserMessageId: 'cur' });
+
+    const qEntry = result.messages.find((m) => m.role === 'user' && m.content.includes('请分析附件'));
+    expect(qEntry!.content).toContain('【附件 合同.docx】');
+    expect(qEntry!.content).toContain('违约金条款');
+  });
+
   it('P1-1：P2 system prompt 不强制四段式固定模板（自然回答）', () => {
     expect(CONSULT_SYSTEM_PROMPT).not.toContain('严格按四段式输出');
     expect(CONSULT_SYSTEM_PROMPT).not.toContain('### 核心结论');

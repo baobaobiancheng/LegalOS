@@ -281,7 +281,7 @@ model ConsultationAttachment {
   fileSize       Int      @map("file_size")
   mimeType       String?  @map("mime_type")
   status         String   @default("ready") @db.VarChar(16) // ready | warning | failed
-  extractedText  String?  @map("extracted_text") @db.Text
+  extractedText  String?  @map("extracted_text") @db.MediumText // 50k 中文字符≈150KB，TEXT(65KB)不够
   extractedChars Int      @default(0) @map("extracted_chars")
   warning        String?  @db.VarChar(256)
   expiresAt      DateTime @map("expires_at")

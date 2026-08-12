@@ -23,7 +23,9 @@ const canSend = () =>
 
 const handleSend = () => {
   if (!canSend()) return
-  emit('send', input.value.trim(), [...files.value])
+  // P1-1：仅附件发送（空文本）时自动生成非空问题，后端 DTO 禁止空文本
+  const text = input.value.trim() || '请分析所附文件'
+  emit('send', text, [...files.value])
   input.value = ''
   clearFiles()
 }
@@ -51,8 +53,8 @@ const handleSend = () => {
           <span class="fc-meta">
             {{ f.type.includes('word') || f.name.toLowerCase().endsWith('.docx') ? 'DOCX' : f.name.toLowerCase().endsWith('.md') ? 'MD' : 'TXT' }}
             · {{ formatSize(f.size) }}
-            <template v-if="f.status === 'ready'"> · ✓ 已解析 {{ f.extractedChars?.toLocaleString() }} 字</template>
-            <template v-else-if="f.status === 'warning'"> · ⚠ {{ f.warning || '部分内容可能缺失' }}</template>
+            <template v-if="f.warning"> · ⚠ {{ f.warning }}</template>
+            <template v-else-if="f.status === 'ready'"> · ✓ 已解析 {{ f.extractedChars?.toLocaleString() }} 字</template>
             <template v-else-if="f.status === 'uploading'"> · 上传中…</template>
             <template v-else-if="f.status === 'failed'"> · {{ f.warning || '上传失败' }}</template>
           </span>

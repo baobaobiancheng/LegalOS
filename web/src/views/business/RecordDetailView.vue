@@ -3,7 +3,7 @@ import { ref, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { RequestError, request } from '../../api/client'
-import { requestStreamOrJson } from '../../api/sse'
+import { requestStreamOrJson, type ConsultStreamEvent } from '../../api/sse'
 import { useFileUpload } from '../../composables/useFileUpload'
 import type { AttachedFile } from '../../composables/useFileUpload'
 import MarkdownContent from '../../components/MarkdownContent.vue'
@@ -77,18 +77,27 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
   try {
     streaming.value = ''
     let aiMsg: any | undefined
-    const data = await requestStreamOrJson<{ route?: string; done?: boolean; error?: boolean; text?: string }>(`/projects/${id}/messages`, {
+    const attachmentIds = files.filter(f => f.status === 'ready' || f.status === 'warning').map(f => f.id)
+    const data = (await requestStreamOrJson<ConsultStreamEvent | { route?: string }>(`/projects/${id}/messages`, {
       method: 'POST',
-      body: { text: fullInput, role: 'user' },
+      body: { text: fullInput, attachmentIds },
     }, (d) => {
-      if (d.done === true) void refreshMessages()
-      if (d.error === true || typeof d.text === 'string') {
-        aiMsg ??= { id: 'streaming', role: 'assistant', text: '', createdAt: new Date().toISOString() }
-        if (messages.value[messages.value.length - 1] !== aiMsg) messages.value.push(aiMsg)
+      // 有身份流式协议（review 2026-08-12）：与咨询页一致
+      if (!('type' in d)) return
+      const evt = d as ConsultStreamEvent
+      if (evt.type === 'message_start') {
+        aiMsg ??= { id: evt.messageId, role: 'assistant', text: '' }
+        if (!messages.value.some(m => m.id === evt.messageId)) messages.value.push(aiMsg)
+      } else if (evt.type === 'text_delta') {
+        if (aiMsg) { streaming.value += evt.delta; aiMsg.text = streaming.value; scrollBottom() }
+      } else if (evt.type === 'message_end') {
+        streaming.value = evt.finalText
+        if (aiMsg) aiMsg.text = evt.finalText
+        void refreshMessages()
+      } else if (evt.type === 'error') {
+        if (aiMsg) aiMsg.text = '⚠️ AI 答复生成失败，已通知法务BP处理'
       }
-      if (d.error === true) aiMsg!.text = '⚠️ AI 答复生成失败，已通知法务BP处理'
-      else if (typeof d.text === 'string') { streaming.value += d.text; aiMsg!.text = streaming.value; scrollBottom() }
-    })
+    })) as { route?: string } | undefined
     if (data?.route === 'legalbp') {
       messages.value.push({ id: 'ev-' + Date.now(), _event: true, text: '风险升级，已通知法务 BP 人工处理', createdAt: new Date().toISOString() } as any)
       scrollBottom()

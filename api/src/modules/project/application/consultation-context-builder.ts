@@ -130,9 +130,11 @@ export class ConsultationContextBuilder {
         if (!answerId) continue; // 未完成的问答排除
         const answerText = answerTextById.get(answerId);
         if (!answerText) continue;
+        // P2-6：历史用户消息也带上其附件正文（追问「继续分析刚才附件的第二条」时模型仍能看到原文）
+        const attText = await this.fetchAttachmentTexts(m.attachmentIds);
         history.push({
           type: 'qa',
-          userText: m.text,
+          userText: attText ? `${m.text}\n\n${attText}` : m.text,
           assistantText: answerText,
           messageIds: [m.id, answerId],
         });

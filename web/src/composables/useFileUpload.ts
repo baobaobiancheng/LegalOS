@@ -68,12 +68,13 @@ export function useFileUpload() {
         })
         const idx = files.value.findIndex(x => x.id === localKey)
         if (idx >= 0) {
+          // P2-7：处理状态恒 ready；警告走独立 warning 字段（前端据此显示黄提示）
           files.value[idx] = {
             id: meta.id,
             name: meta.name,
             size: meta.size,
             type: f.type,
-            status: meta.status === 'warning' ? 'warning' : 'ready',
+            status: 'ready',
             warning: meta.warning ?? undefined,
             extractedChars: meta.extractedChars,
           }

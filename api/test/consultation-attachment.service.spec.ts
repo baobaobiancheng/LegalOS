@@ -10,7 +10,7 @@ import { ConsultationAttachmentService } from '../src/common/services/consultati
 
 function makeFile(over: any = {}): Express.Multer.File {
   return {
-    originalname: '测试.docx',
+    originalname: 'doc.docx', // ASCII 名（decodeFilename 对 ASCII 无损）
     mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     size: 1000,
     buffer: Buffer.from([0x50, 0x4b, 0x03, 0x04]), // PK\x03\x04
@@ -25,13 +25,26 @@ describe('ConsultationAttachmentService', () => {
 
   beforeEach(() => {
     prisma = {
-      consultationAttachment: { create: vi.fn(), findMany: vi.fn(), updateMany: vi.fn() },
+      consultationAttachment: {
+        create: vi.fn(), findMany: vi.fn(), updateMany: vi.fn(),
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
     };
     extractor = { extract: vi.fn() };
     service = new ConsultationAttachmentService(prisma as any, extractor as any);
     extractor.extract.mockResolvedValue({ text: '正文内容，这是从 docx 提取的法律答复。' });
     prisma.consultationAttachment.create.mockImplementation(({ data }: any) =>
       Promise.resolve({ id: 'att-1', ...data }),
+    );
+  });
+
+  it('中文文件名 UTF-8 还原（multer Latin-1 解释 bug）', async () => {
+    // 浏览器以 UTF-8 发送「合同 附件.docx」，multer 按 latin1 解释 → 乱码；服务端需还原
+    const mangled = Buffer.from('合同 附件.docx', 'utf8').toString('latin1');
+    const meta = await service.upload(makeFile({ originalname: mangled }), 'u-1');
+    expect(meta.name).toBe('合同 附件.docx');
+    expect(prisma.consultationAttachment.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ fileName: '合同 附件.docx' }) }),
     );
   });
 
@@ -44,7 +57,7 @@ describe('ConsultationAttachmentService', () => {
         data: expect.objectContaining({ creatorId: 'u-1', status: 'ready', extractedChars: expect.any(Number) }),
       }),
     );
-    expect(meta).toMatchObject({ id: 'att-1', name: '测试.docx', status: 'ready', extractedChars: expect.any(Number) });
+    expect(meta).toMatchObject({ id: 'att-1', name: 'doc.docx', status: 'ready', extractedChars: expect.any(Number) });
     expect(meta).not.toHaveProperty('extractedText'); // 正文不回传前端
   });
 

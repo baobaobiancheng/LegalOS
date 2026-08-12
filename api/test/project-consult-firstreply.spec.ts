@@ -73,6 +73,7 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
   let risk: any;
   let consultationChat: any;
   let contextBuilder: any;
+  let attachmentService: any;
   let dingtalk: any;
 
   beforeEach(() => {
@@ -92,6 +93,7 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
     contextBuilder = {
       build: vi.fn(async (input: any) => buildContextMessages(`ctx-${input.currentUserMessageId}`)),
     };
+    attachmentService = { validateForUser: vi.fn(), bind: vi.fn(), getTexts: vi.fn(), upload: vi.fn() };
     dingtalk = {
       createGroup: vi.fn(), addMember: vi.fn(), sendNotification: vi.fn(), syncContacts: vi.fn(),
     };
@@ -109,7 +111,7 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
       consultationChat as any,
       contextBuilder as any,
       { get: vi.fn((_k: string, d: unknown) => d) } as any,
-      { validateForUser: vi.fn(), bind: vi.fn(), getTexts: vi.fn(), upload: vi.fn() } as any,
+      attachmentService as any,
     );
     prisma.project.create.mockResolvedValue(mockProject());
     prisma.project.findUnique.mockResolvedValue(mockProject());
@@ -124,6 +126,21 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
     expect(prisma.projectMessage.create).toHaveBeenCalled();
     // 不再在 create 里自动触发 AI
     expect(consultationChat.stream).not.toHaveBeenCalled();
+  });
+
+  it('风险分级包含受限附件正文（P1-4）：附件有重大违约则升级', async () => {
+    risk.assess.mockResolvedValue({ risk: 'P1', route: 'legalbp', domain: '合同与交易' });
+    attachmentService.getTexts.mockResolvedValue(['附件正文：合同约定违约金为合同总价 50%']);
+    prisma.bpDomainMap.findMany.mockResolvedValue([]); // legalbp 需要匹配 BP
+
+    await service.create(
+      { kind: 'consult', title: '审查附件', input: '请审查附件', attachmentIds: ['att-1'] },
+      'u-biz',
+    );
+
+    expect(attachmentService.validateForUser).toHaveBeenCalledWith(['att-1'], 'u-biz');
+    expect(risk.assess).toHaveBeenCalledWith(expect.stringContaining('违约金'));
+    expect(risk.assess).toHaveBeenCalledWith(expect.stringContaining('附件正文'));
   });
 
   it('createMessage(firstReply=true) 不重复写用户消息,只启动一次 AI 流', async () => {
