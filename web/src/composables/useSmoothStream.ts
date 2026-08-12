@@ -33,6 +33,13 @@ export function useSmoothStream() {
   /** 当前已渲染文本（供异常/未完成时兜底） */
   const current = () => renderedText
 
+  /** 取消待执行动画帧并清空缓冲（组件卸载/新建会话/网络异常时兜底，防陈旧绘制） */
+  const cancel = () => {
+    if (frameId !== null) cancelAnimationFrame(frameId)
+    frameId = null
+    receivedChunks = []
+  }
+
   function schedule() {
     if (frameId !== null) return
     frameId = requestAnimationFrame((now) => {
@@ -55,5 +62,5 @@ export function useSmoothStream() {
     })
   }
 
-  return { setListener, enqueue, finish, current }
+  return { setListener, enqueue, finish, cancel, current }
 }

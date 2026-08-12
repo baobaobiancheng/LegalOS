@@ -113,7 +113,8 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
         streamRenderer.finish(evt.finalText)
         void refreshMessages()
       } else if (evt.type === 'error') {
-        if (aiMsg) aiMsg.text = '⚠️ AI 答复生成失败，已通知法务BP处理'
+        // P2（review 2026-08-12）：终止平滑渲染器（取消待执行帧），避免缓冲正文覆盖错误提示
+        streamRenderer.finish('⚠️ AI 答复生成失败，已通知法务BP处理')
       }
     })) as { route?: string } | undefined
     if (data?.route === 'legalbp') {
@@ -121,6 +122,8 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
       scrollBottom()
     }
   } catch (error) {
+    // P2：网络异常也终止渲染器（清缓冲/取消待执行帧），避免请求结束后继续更新旧消息
+    streamRenderer.finish(streamRenderer.current())
     actionError.value = error instanceof RequestError
       ? error
       : new RequestError({ error: '消息发送失败，请重试', code: 'UNKNOWN', statusCode: 0 })

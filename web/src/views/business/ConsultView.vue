@@ -358,6 +358,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
       }
     } catch (error) {
       if (gen !== sessionGen) return // 新建会话已清空，丢弃过期响应
+      streamRenderer.cancel() // 兜底取消待执行帧，防陈旧绘制
       const reqErr = error instanceof RequestError
         ? error
         : new RequestError({ error: '消息发送失败，请重试', code: 'UNKNOWN', statusCode: 0 })
