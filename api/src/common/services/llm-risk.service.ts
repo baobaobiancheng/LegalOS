@@ -43,13 +43,14 @@ export class LLMRiskService {
     @Optional() private readonly config?: ConfigService,
     @Optional() private readonly prisma?: PrismaService,
   ) {
-    // 分类直连网关：预算给足 + 超时放宽（2026-08-12，绕开 Codex CLI）。超时必须仍早于建单请求超时(45s)。
-    // 契约 C8：max_tokens 含思考——预算过小思考吃满 → content=null → 走 P1 兜底(全部进人工)。
-    // 用户决策：不怕耗 token 就怕不能跑；服务器实测 200 时 content=null，故预算拉满接近上限。
+    // 分类直连网关（2026-08-13 压测调优）：分类只输出一行 JSON，预算 4000 足够思考+正文，
+    // 思考时长上界显著缩小——服务器实测 12000 时分类波动 1.3~30s(顶满超时)，4000 稳定在 3-6s。
+    // 契约 C8：max_tokens 含思考——200 太小会 content=null 全进人工；4000 是压测出的平衡点。
+    // 超时 20s：给足余量但早于建单请求超时(45s)。
     this.classifyTimeoutMs =
-      Number.parseInt(String(this.config?.get('RISK_CLASSIFY_TIMEOUT_MS', '30000') ?? 30000), 10) || 30_000;
+      Number.parseInt(String(this.config?.get('RISK_CLASSIFY_TIMEOUT_MS', '20000') ?? 20000), 10) || 20_000;
     this.classifyMaxTokens =
-      Number.parseInt(String(this.config?.get('RISK_CLASSIFY_MAX_TOKENS', '12000') ?? 12000), 10) || 12000;
+      Number.parseInt(String(this.config?.get('RISK_CLASSIFY_MAX_TOKENS', '4000') ?? 4000), 10) || 4000;
   }
 
   /**

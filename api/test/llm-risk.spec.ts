@@ -71,7 +71,7 @@ describe('LLMRiskService JSON 解析', () => {
     expect(r.evidence.matchedRuleIds.length).toBeGreaterThan(0);
   });
 
-  it('直连网关分类（2026-08-12）：单条 user 消息 + 短超时 + 足量 maxTokens', async () => {
+  it('直连网关分类（2026-08-12）：单条 user 消息 + 短超时 + 平衡 maxTokens', async () => {
     const chat = mockChat('{"risk":"P2","domain":"合同与交易","reason":"条款询问"}');
     const service = new LLMRiskService(chat, noConfig);
     await service.assess('合同条款是什么意思');
@@ -79,8 +79,8 @@ describe('LLMRiskService JSON 解析', () => {
     expect(messages).toHaveLength(1);
     expect(messages[0].role).toBe('user');
     expect(String(messages[0].content)).toContain('只输出一行 JSON');
-    expect(options.timeout).toBe(30_000); // 默认 30s，早于前端建单超时 45s
-    expect(options.maxTokens).toBe(12_000); // 给足预算防思考吃满 → content=null → 全进人工
+    expect(options.timeout).toBe(20_000); // 默认 20s，早于前端建单超时 45s
+    expect(options.maxTokens).toBe(4_000); // 压测调优:分类只出 JSON,4000 平衡思考时长与 content 非空
   });
 });
 
