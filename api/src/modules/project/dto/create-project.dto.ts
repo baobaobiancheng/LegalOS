@@ -9,15 +9,13 @@ export class CreateProjectDto {
 
   @IsString()
   @IsNotEmpty()
-  @MinLength(5)
   @MaxLength(256)
   title: string;
 
   @IsString()
   @IsNotEmpty()
-  @MinLength(5)
   @MaxLength(5000)
-  input: string; // 用户第一条消息内容（咨询问题,review 2026-08-11 短推荐问题 10→5）
+  input: string; // 用户第一条消息内容（咨询问题,2026-08-13 完全取消 ≥5 字限制,只留非空）
 
   @IsOptional()
   @IsString()
