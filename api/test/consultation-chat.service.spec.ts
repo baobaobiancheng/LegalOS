@@ -314,6 +314,8 @@ describe('ConsultationChatService.complete（非流式，2026-08-12 风险分类
     expect(body.max_tokens).toBe(200);
     expect(body.messages).toEqual([{ role: 'user', content: '分类' }]);
     expect(String(init.headers.authorization)).toBe('Bearer sk-test');
+    // 2026-08-13：分类关闭思考模式（vLLM 后端 chat_template_kwargs.enable_thinking=false）
+    expect(body.chat_template_kwargs).toEqual({ enable_thinking: false });
   });
 
   it('max_tokens 显式生效（非流式也传，P1：不再有"传了但没用"的假配置）', async () => {

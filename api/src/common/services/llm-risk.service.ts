@@ -43,14 +43,12 @@ export class LLMRiskService {
     @Optional() private readonly config?: ConfigService,
     @Optional() private readonly prisma?: PrismaService,
   ) {
-    // 分类直连网关（2026-08-13 压测调优）：分类只输出一行 JSON，预算 4000 足够思考+正文，
-    // 思考时长上界显著缩小——服务器实测 12000 时分类波动 1.3~30s(顶满超时)，4000 稳定在 3-6s。
-    // 契约 C8：max_tokens 含思考——200 太小会 content=null 全进人工；4000 是压测出的平衡点。
-    // 超时 20s：给足余量但早于建单请求超时(45s)。
+    // 分类直连网关（2026-08-13 压测调优）：已通过 chat_template_kwargs.enable_thinking=false 关闭思考，
+    // 分类秒回(实测 0.7s、completion 7 token)。预算给足余量即可，超时 10s 早于建单请求超时(45s)。
     this.classifyTimeoutMs =
-      Number.parseInt(String(this.config?.get('RISK_CLASSIFY_TIMEOUT_MS', '20000') ?? 20000), 10) || 20_000;
+      Number.parseInt(String(this.config?.get('RISK_CLASSIFY_TIMEOUT_MS', '10000') ?? 10000), 10) || 10_000;
     this.classifyMaxTokens =
-      Number.parseInt(String(this.config?.get('RISK_CLASSIFY_MAX_TOKENS', '4000') ?? 4000), 10) || 4000;
+      Number.parseInt(String(this.config?.get('RISK_CLASSIFY_MAX_TOKENS', '1000') ?? 1000), 10) || 1000;
   }
 
   /**

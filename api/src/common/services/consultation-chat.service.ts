@@ -129,6 +129,10 @@ export class ConsultationChatService {
           messages,
           stream: false,
           max_tokens: maxTokens,
+          // 2026-08-13 压测调优：分类关闭思考模式。vLLM 后端 GLM-5 用 chat_template_kwargs.enable_thinking=false，
+          // 服务器实测：reasoning=null、content 直接出 JSON、completion 7 token、耗时 0.7s(之前 8-11s)。
+          // thinking.type/disable_thinking/reasoning_effort 均无效，仅 chat_template_kwargs 生效。
+          chat_template_kwargs: { enable_thinking: false },
         }),
         signal: controller.signal,
       });
