@@ -165,4 +165,11 @@ npm run codex:baijian-gate -- law '劳动合同解除经济补偿'
 npm run codex:baijian-gate -- case '劳动合同违法解除经济补偿的中国类似案例'
 ```
 
+如需验证推理平台提供的候选 Agent 模型名，只覆盖本次命令，不要修改系统默认模型：
+
+```bash
+CODEX_AGENT_MODEL='glm-5.2' npm run codex:baijian-gate -- law '劳动合同解除经济补偿'
+CODEX_AGENT_MODEL='glm-5.2' npm run codex:baijian-gate -- case '劳动合同违法解除经济补偿的中国类似案例'
+```
+
 先将 `deploy/codex/requirements.toml.example` 以 root 安装为 `/etc/codex/requirements.toml`，建议权限 `0644` 或更严格；不要在服务器上手工重写策略。策略使用 `legalos_ai` 只读权限档案，仅允许读取本次工作区；不在系统层全局关闭 shell，因为现有合同起草需要用它只读读取 `templates/*.md`。法律检索 Agent 会在单次命令行中用 `--disable shell_tool` 关闭 shell。`CODEX_MANAGED_REQUIREMENTS_PATH` 只覆盖预检脚本的检查路径，真实 Agent 闸门固定验证 Codex CLI 实际加载的 `/etc/codex/requirements.toml`。Agent 命令行只配置 `env_http_headers` 的环境变量名称，不包含凭证值；每次运行只把 `lawstar_data_professional_query` 或 `ldh_search` 之一放入 `enabled_tools`，并设置 `required=true`。任何未观察到必需工具结果、出现额外工具、坏 JSONL、结果文件缺失、有命中却无权威 ID 引用，或受管策略缺失都视为闸门失败，不得启用咨询 Agent。

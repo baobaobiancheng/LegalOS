@@ -53,6 +53,7 @@ async function main() {
   if (requirements.failures.length) throw new Error(requirements.failures.join('；'));
 
   const mode = process.argv[2] ?? 'law';
+  const agentModel = optionalEnv('CODEX_AGENT_MODEL');
   const question = process.argv.slice(3).join(' ').trim()
     || (mode === 'case' ? '劳动合同违法解除经济补偿的中国类似案例' : '劳动合同解除经济补偿');
   const enabledTool = mode === 'case' ? BAIJIAN_CASE_SEARCH_TOOL : BAIJIAN_LAW_SEARCH_TOOL;
@@ -70,6 +71,7 @@ async function main() {
 
   const handle = await service.executeAgent<GateFinal>(prompt, {
     sessionId: `pr0-gate-${mode}`,
+    model: agentModel,
     timeout: 180_000,
     outputSchema: OUTPUT_SCHEMA,
     validateFinal: validateFinal,
@@ -122,6 +124,7 @@ async function main() {
     gate: 'codex-baijian-agent',
     status: 'passed',
     executionId: handle.executionId,
+    model: agentModel ?? 'managed-default',
     enabledTool,
     observedTools,
     eventTypes: [...new Set(completion.events.map((event) => event.type))],
@@ -265,6 +268,15 @@ function describeShape(value: unknown, depth = 0): unknown {
 
 function requireEnv(name: string): void {
   if (!process.env[name]) throw new Error(`缺少环境变量 ${name}`);
+}
+
+function optionalEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  if (!value) return undefined;
+  if (value.length > 128 || !/^[a-zA-Z0-9._:-]+$/.test(value)) {
+    throw new Error(`${name} 格式无效`);
+  }
+  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
