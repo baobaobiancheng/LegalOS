@@ -59,13 +59,20 @@ scp -r api/storage/contract-templates user@server:/path/to/LegalOS/api/storage/
 ## 五、安装 + 数据库
 
 ```bash
-cd api
+# mv162p170 固定路径
+cd ~/LegalOS/LegalOS/api
+
+# 该服务器使用 npm install，不使用 npm ci。
 npm install
+
+# 安装后批准 bcrypt / Prisma / esbuild 所需的原生构建脚本；
+# 审批会持久化，后续安装可直接复用。不要用 JSON 内容覆盖 .npmrc。
+npm approve-scripts bcrypt @prisma/client @prisma/engines prisma esbuild
 
 # 1. 建库（migrate 只建表不建库）
 mysql -u root -p -e "CREATE DATABASE legal_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 
-# 2. 生成 Prisma Client
+# 2. 每次部署都重新生成 Prisma Client
 npx prisma generate
 
 # 3. 应用全部 migration 建表（7 个，含技能库/钉钉）
@@ -82,8 +89,9 @@ npx prisma db seed
 npm run build
 npm test                      # 全部单测通过(数量随代码变化,以 vitest 输出为准)
 
-# 后端启动（api/ 目录）
-npm run start:prod
+# 后端由 PM2 托管（api/ 目录）
+pm2 restart legalos-api
+pm2 list | grep legalos-api
 
 # 前端（web/ 目录，若同机部署）
 cd ../web && npm install && npm run build

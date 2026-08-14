@@ -131,8 +131,22 @@ function extractToolResult(event: AgentExecutionEvent): AgentToolResult | null {
     ?? stringAt(raw, ['toolName']);
   if (!toolName) return null;
 
-  const result = candidate.result ?? candidate.output ?? raw.result ?? raw.output;
-  if (result === undefined) return null;
+  const resultValue = firstDefined(
+    candidate.result,
+    candidate.output,
+    raw.result,
+    raw.output,
+  );
+  const errorValue = firstDefined(
+    candidate.error,
+    raw.error,
+  );
+  // Failed MCP calls can complete with result=null and an error payload. Keep
+  // those as authoritative tool outcomes instead of misreporting "no tool call".
+  if (resultValue === undefined && errorValue === undefined) return null;
+  const result = resultValue === null || resultValue === undefined
+    ? errorValue
+    : resultValue;
 
   return {
     eventId: event.id,
@@ -145,12 +159,16 @@ function extractToolResult(event: AgentExecutionEvent): AgentToolResult | null {
     isError: Boolean(
       candidate.is_error
       ?? candidate.isError
-      ?? candidate.error
+      ?? errorValue
       ?? raw.is_error
       ?? raw.isError
-      ?? raw.error,
+      ?? false,
     ),
   };
+}
+
+function firstDefined(...values: unknown[]): unknown {
+  return values.find((value) => value !== undefined);
 }
 
 function stringAt(record: Record<string, unknown>, keys: string[]): string | undefined {

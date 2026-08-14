@@ -315,6 +315,36 @@ describe('CodexService AgentExecutionHandle', () => {
     });
   });
 
+  it('保留 result=null 但含 error 的 MCP 失败结果', async () => {
+    const svc = makeService(makeConfig({ AI_EXECUTION_ENABLED: 'true', CODEX_HARDENED: 'true' }));
+    const handle = await svc.executeAgent('请检索', agentOptions);
+    const [, args] = spawnMock.mock.calls[0];
+    const resultPath = args[args.indexOf('--output-last-message') + 1];
+    writeFileSync(resultPath, JSON.stringify({ answer: '检索失败' }));
+    const child = spawnMock.mock.results[0].value as any;
+    child.stdout.write(`${JSON.stringify({
+      type: 'item.completed',
+      item: {
+        id: 'tool-error-1',
+        type: 'mcp_tool_call',
+        server: 'baijian',
+        tool: 'lawstar_data_professional_query',
+        result: null,
+        error: { code: 401, message: 'unauthorized' },
+      },
+    })}\n`);
+    child.emit('close', 0);
+
+    await expect(handle.completion).resolves.toMatchObject({
+      toolResults: [{
+        callId: 'tool-error-1',
+        toolName: 'lawstar_data_professional_query',
+        isError: true,
+        result: { code: 401, message: 'unauthorized' },
+      }],
+    });
+  });
+
   it('坏 JSONL 终止进程并返回 AGENT_BAD_JSONL', async () => {
     const svc = makeService(makeConfig({ AI_EXECUTION_ENABLED: 'true', CODEX_HARDENED: 'true' }));
     const handle = await svc.executeAgent('坏行测试', agentOptions);

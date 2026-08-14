@@ -51,4 +51,16 @@ describe('Codex 百鉴 Agent 真实闸门', () => {
       BAIJIAN_LAW_SEARCH_TOOL,
     )).toThrow('不存在的 ID');
   });
+
+  it('保留 MCP 失败详情并映射类型化错误', () => {
+    expect(() => assertAuthoritativeSources(
+      [{
+        toolName: BAIJIAN_LAW_SEARCH_TOOL,
+        isError: true,
+        result: { code: 401, message: 'unauthorized' },
+      }],
+      { answer: '检索失败', sourceUses: [] },
+      BAIJIAN_LAW_SEARCH_TOOL,
+    )).toThrow(expect.objectContaining({ code: 'BAIJIAN_AUTH_FAILED' }));
+  });
 });

@@ -92,7 +92,15 @@ async function main() {
   });
   const completion = await handle.completion;
   const observedTools = [...new Set(completion.toolResults.map((result) => result.toolName))];
-  if (!observedTools.includes(enabledTool)) throw new Error(`未观察到必需工具结果：${enabledTool}`);
+  if (!observedTools.includes(enabledTool)) {
+    console.error(JSON.stringify({
+      gate: 'codex-baijian-agent-diagnostic',
+      eventTypes: [...new Set(completion.events.map((event) => event.type))],
+      itemSummaries: summarizeItems(completion.events),
+      stderrSummary: completion.stderrSummary,
+    }, null, 2));
+    throw new Error(`未观察到必需工具结果：${enabledTool}`);
+  }
   if (observedTools.some((tool) => tool !== enabledTool)) {
     throw new Error(`观察到白名单外工具：${observedTools.join(', ')}`);
   }
@@ -146,11 +154,13 @@ function toRawToolResult(
   if (!isRecord(toolResult.result)) {
     return { toolName, content: toolResult.result, isError: toolResult.isError };
   }
+  const isError = toolResult.isError || Boolean(toolResult.result.isError ?? toolResult.result.error);
   return {
     toolName,
-    content: toolResult.result.content,
+    content: toolResult.result.content
+      ?? (isError ? JSON.stringify(toolResult.result.error ?? toolResult.result) : undefined),
     structuredContent: toolResult.result.structuredContent,
-    isError: toolResult.isError || Boolean(toolResult.result.isError ?? toolResult.result.error),
+    isError,
   };
 }
 
@@ -165,6 +175,20 @@ export function validateFinal(value: unknown): GateFinal {
     }
   }
   return { answer: final.answer, sourceUses: final.sourceUses };
+}
+
+function summarizeItems(events: Array<{ raw: Record<string, unknown> }>): Array<Record<string, unknown>> {
+  return events.slice(0, 50).map(({ raw }) => {
+    const item = isRecord(raw.item) ? raw.item : undefined;
+    return {
+      eventType: typeof raw.type === 'string' ? raw.type : 'unknown',
+      itemType: item && typeof item.type === 'string' ? item.type : undefined,
+      server: item && typeof item.server === 'string' ? item.server : undefined,
+      tool: item && typeof item.tool === 'string' ? item.tool : undefined,
+      hasResult: Boolean(item && Object.prototype.hasOwnProperty.call(item, 'result')),
+      hasError: Boolean(item && Object.prototype.hasOwnProperty.call(item, 'error')),
+    };
+  });
 }
 
 function requireEnv(name: string): void {
