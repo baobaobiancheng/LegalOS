@@ -104,7 +104,20 @@ async function main() {
   if (observedTools.some((tool) => tool !== enabledTool)) {
     throw new Error(`观察到白名单外工具：${observedTools.join(', ')}`);
   }
-  assertAuthoritativeSources(completion.toolResults, completion.final, enabledTool);
+  try {
+    assertAuthoritativeSources(completion.toolResults, completion.final, enabledTool);
+  } catch (error) {
+    console.error(JSON.stringify({
+      gate: 'codex-baijian-agent-result-diagnostic',
+      error: summarizeError(error),
+      toolResults: completion.toolResults.map((result) => ({
+        toolName: result.toolName,
+        isError: result.isError,
+        resultShape: describeShape(result.result),
+      })),
+    }, null, 2));
+    throw error;
+  }
   console.log(JSON.stringify({
     gate: 'codex-baijian-agent',
     status: 'passed',
@@ -159,7 +172,8 @@ function toRawToolResult(
     toolName,
     content: toolResult.result.content
       ?? (isError ? JSON.stringify(toolResult.result.error ?? toolResult.result) : undefined),
-    structuredContent: toolResult.result.structuredContent,
+    structuredContent: toolResult.result.structuredContent
+      ?? toolResult.result.structured_content,
     isError,
   };
 }
@@ -187,8 +201,66 @@ function summarizeItems(events: Array<{ raw: Record<string, unknown> }>): Array<
       tool: item && typeof item.tool === 'string' ? item.tool : undefined,
       hasResult: Boolean(item && Object.prototype.hasOwnProperty.call(item, 'result')),
       hasError: Boolean(item && Object.prototype.hasOwnProperty.call(item, 'error')),
+      error: item?.type === 'error' ? summarizeErrorItem(item) : undefined,
     };
   });
+}
+
+function summarizeErrorItem(item: Record<string, unknown>): Record<string, unknown> {
+  const message = typeof item.message === 'string'
+    ? item.message
+    : isRecord(item.error) && typeof item.error.message === 'string'
+      ? item.error.message
+      : undefined;
+  const code = typeof item.code === 'string' || typeof item.code === 'number'
+    ? item.code
+    : isRecord(item.error) && (typeof item.error.code === 'string' || typeof item.error.code === 'number')
+      ? item.error.code
+      : undefined;
+  return {
+    code,
+    message: message ? redactDiagnosticText(message) : undefined,
+    shape: describeShape(item),
+  };
+}
+
+function summarizeError(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    const code = 'code' in error && (typeof error.code === 'string' || typeof error.code === 'number')
+      ? error.code
+      : undefined;
+    return { code, message: redactDiagnosticText(error.message) };
+  }
+  return { message: redactDiagnosticText(String(error)) };
+}
+
+function redactDiagnosticText(value: string): string {
+  return value
+    .replace(/(authorization|app[-_ ]?key|app[-_ ]?secret|api[-_ ]?key|token)(\s*[:=]\s*)\S+/gi, '$1$2<redacted>')
+    .replace(/[A-Za-z0-9_\-]{32,}/g, '<redacted-long-value>')
+    .slice(0, 500);
+}
+
+function describeShape(value: unknown, depth = 0): unknown {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) {
+    return {
+      type: 'array',
+      length: value.length,
+      item: value.length && depth < 3 ? describeShape(value[0], depth + 1) : undefined,
+    };
+  }
+  if (isRecord(value)) {
+    const keys = Object.keys(value).slice(0, 30);
+    return {
+      type: 'object',
+      keys,
+      fields: depth < 3
+        ? Object.fromEntries(keys.map((key) => [key, describeShape(value[key], depth + 1)]))
+        : undefined,
+    };
+  }
+  return typeof value;
 }
 
 function requireEnv(name: string): void {
