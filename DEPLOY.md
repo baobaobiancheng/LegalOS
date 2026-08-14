@@ -9,7 +9,7 @@
 |------|----------|
 | Node.js | ≥ 18（含 fetch） |
 | MySQL | ≥ 5.7，建议 8.0（utf8mb4） |
-| Codex CLI | AI 服务底层（`npm install -g @openai/codex` + 受管配置(`/etc/codex/*.toml`) + `CODEX_API_KEY`(网关 token)） |
+| Codex CLI | AI 服务底层；法律检索 Agent 首期锁定 `0.146.0`，需受管配置(`/etc/codex/*.toml`) + `CODEX_API_KEY`（网关 token） |
 
 ## 二、获取代码
 
@@ -39,6 +39,8 @@ cp api/.env.example api/.env
 | `DINGTALK_AGENT_ID` | 钉钉 AgentId |
 | `DINGTALK_ROBOT_CODE` | 钉钉机器人 Code |
 | `SEED_ADMIN_PASSWORD` 等 4 个 | 种子账号初始密码（首次 `db seed` 生效，之后改密码不走 seed） |
+| `BAIJIAN_MCP_APP_KEY` | 百鉴 MCP App Key，只进入服务器 Secret，不写入配置文件或命令参数 |
+| `BAIJIAN_MCP_APP_SECRET` | 百鉴 MCP App Secret；已在聊天或本地文档暴露的旧值必须先轮换 |
 
 ### 可保持默认
 
@@ -114,3 +116,45 @@ cd ../web && npm install && npm run build
 | 合同导出无模板 | storage 未复制 | 见"四、合同模板源文件" |
 | 钉钉同步"部门不在授权范围" | 通讯录权限未批 | 见"八、钉钉集成上线检查清单" |
 | 钉钉建群"群主不在可见性内" | 应用可见范围未含群主 | 同上 |
+
+## 十、百鉴 MCP / Codex Agent PR0 技术闸门
+
+法律检索功能启用前，服务器必须先通过下面两层检查。普通 PR CI 只运行脱敏契约夹具；真实检查只在受控服务器或预发布环境运行。
+
+环境变量至少包括：
+
+```text
+CODEX_HARDENED=true
+AI_EXECUTION_ENABLED=true
+CODEX_API_KEY=<公司大模型网关 token>
+BAIJIAN_MCP_URL=https://mcpgateway.100credit.cn/mcp
+BAIJIAN_MCP_APP_KEY=<轮换后的 key>
+BAIJIAN_MCP_APP_SECRET=<轮换后的 secret>
+```
+
+不要使用 `set -x`，不要把 Secret 直接写进 shell 命令、`.env.example`、日志或 CI 产物。推荐由 systemd、容器 Secret 或 CI Secret 注入。
+先安装仓库中锁定版本的受管策略：
+
+```bash
+sudo install -D -o root -g root -m 0644 \
+  deploy/codex/requirements.toml.example \
+  /etc/codex/requirements.toml
+```
+
+```bash
+cd api
+
+# 0. CLI 版本、Secret 存在性、受管策略内容与文件权限
+npm run codex:baijian-preflight
+
+# 1. 官方 MCP TypeScript SDK：initialize + tools/list + 可选真实查询
+npm run baijian:verify -- health
+npm run baijian:verify -- law '劳动合同'
+npm run baijian:verify -- case '劳动合同违法解除经济补偿的中国类似案例'
+
+# 2. Codex Agent：受管策略 + 单工具白名单 + required MCP + JSONL/结构化结果
+npm run codex:baijian-gate -- law '劳动合同解除经济补偿'
+npm run codex:baijian-gate -- case '劳动合同违法解除经济补偿的中国类似案例'
+```
+
+先将 `deploy/codex/requirements.toml.example` 以 root 安装为 `/etc/codex/requirements.toml`，建议权限 `0644` 或更严格；不要在服务器上手工重写策略。策略使用 `legalos_ai` 只读权限档案，仅允许读取本次工作区；不在系统层全局关闭 shell，因为现有合同起草需要用它只读读取 `templates/*.md`。法律检索 Agent 会在单次命令行中用 `--disable shell_tool` 关闭 shell。`CODEX_MANAGED_REQUIREMENTS_PATH` 只覆盖预检脚本的检查路径，真实 Agent 闸门固定验证 Codex CLI 实际加载的 `/etc/codex/requirements.toml`。Agent 命令行只配置 `env_http_headers` 的环境变量名称，不包含凭证值；每次运行只把 `lawstar_data_professional_query` 或 `ldh_search` 之一放入 `enabled_tools`，并设置 `required=true`。任何未观察到必需工具结果、出现额外工具、坏 JSONL、结果文件缺失、有命中却无权威 ID 引用，或受管策略缺失都视为闸门失败，不得启用咨询 Agent。

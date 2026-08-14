@@ -1,0 +1,30 @@
+{
+  "tools": [
+    {
+      "name": "lawstar_data_professional_query",
+      "description": "Sanitized law metadata search fixture",
+      "inputSchema": {
+        "type": "object",
+        "required": ["page", "rows", "keyword"],
+        "properties": {
+          "page": { "type": "integer" },
+          "rows": { "type": "integer" },
+          "keyword": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "ldh_search",
+      "description": "Sanitized similar-case search fixture",
+      "inputSchema": {
+        "type": "object",
+        "required": ["query", "namespace"],
+        "properties": {
+          "query": { "type": "string" },
+          "namespace": { "type": "string" },
+          "top_k": { "type": "integer" }
+        }
+      }
+    }
+  ]
+}

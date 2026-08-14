@@ -12,6 +12,7 @@ import { MembersModule } from './modules/members/members.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { CodexModule } from './common/services/codex.module';
 import { ConsultationChatModule } from './common/services/consultation-chat.module';
+import { BaijianModule } from './common/baijian/baijian.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { ConsultationChatModule } from './common/services/consultation-chat.modu
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     PrismaModule,
     CodexModule,
+    BaijianModule,
     ConsultationChatModule,
     AuthModule,
     ProjectModule,

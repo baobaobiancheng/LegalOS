@@ -1,0 +1,54 @@
+# LegalOS 法律检索 Agent 受管策略（Codex CLI 0.146.0）
+# 服务器上由 root 安装到 /etc/codex/requirements.toml，建议权限 0644 或更严格。
+# 本文件不得写入 App Key、App Secret 或大模型网关 Token。
+
+allowed_approval_policies = ["never"]
+allowed_web_search_modes = ["disabled"]
+allow_login_shell = false
+allow_managed_hooks_only = true
+allow_appshots = false
+allow_remote_control = false
+default_permissions = "legalos_ai"
+
+[allowed_permission_profiles]
+legalos_ai = true
+
+[permissions.legalos_ai]
+description = "LegalOS AI 只读隔离执行（默认拒绝全盘）"
+extends = ":read-only"
+
+[permissions.legalos_ai.filesystem]
+":root" = "deny"
+":minimal" = "read"
+":tmpdir" = "deny"
+":slash_tmp" = "deny"
+
+[permissions.legalos_ai.filesystem.":workspace_roots"]
+"." = "read"
+
+[permissions.legalos_ai.network]
+enabled = false
+
+# 保留现有合同起草读取工作区 templates/*.md 的能力；法律检索 Agent
+# 在单次命令行中通过 --disable shell_tool 关闭 shell，不在系统层全局关闭。
+[feature_requirements]
+multi_agent = false
+memories = false
+
+[permissions.filesystem]
+deny_read = [
+  "/etc/codex",
+  "/etc/shadow",
+  "/proc/self/environ",
+  "/proc/thread-self/environ",
+  "/run/secrets",
+  "/var/run/secrets",
+  "~/.ssh",
+  "~/.aws",
+  "~/.config",
+  "~/.git-credentials",
+]
+
+# 仅允许名为 baijian 的 MCP 配置指向这一确切地址。
+[mcp_servers.baijian]
+identity = { url = "https://mcpgateway.100credit.cn/mcp" }

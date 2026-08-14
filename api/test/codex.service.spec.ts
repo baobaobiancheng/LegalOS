@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { join } from 'path';
-import { existsSync, rmSync } from 'fs';
+import { existsSync, rmSync, writeFileSync } from 'fs';
 
 /**
  * Codex 安全加固单测（2026-08-09 P0-01）+ 并发队列（P1-02）：
@@ -200,5 +200,151 @@ describe('CodexService 本地模式（默认）', () => {
 
     expect(existsSync(join(workspace, 'session-cleanup'))).toBe(false);
     rmSync(workspace, { recursive: true, force: true });
+  });
+});
+
+describe('CodexService AgentExecutionHandle', () => {
+  const agentOptions = {
+    sessionId: 'agent-session',
+    outputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['answer'],
+      properties: { answer: { type: 'string' } },
+    },
+    validateFinal: (value: unknown) => {
+      if (!value || typeof value !== 'object' || typeof (value as any).answer !== 'string') {
+        throw new Error('answer missing');
+      }
+      return value as { answer: string };
+    },
+    mcp: {
+      serverName: 'baijian' as const,
+      url: 'https://mcpgateway.example.test/mcp',
+      enabledTool: 'lawstar_data_professional_query',
+      required: true,
+      envHttpHeaders: {
+        'X-App-Key': 'BAIJIAN_MCP_APP_KEY',
+        'X-App-Secret': 'BAIJIAN_MCP_APP_SECRET',
+      },
+      environment: {
+        BAIJIAN_MCP_APP_KEY: 'test-key',
+        BAIJIAN_MCP_APP_SECRET: 'test-secret',
+      },
+    },
+  };
+
+  it('在清理工作区前解析 JSONL、工具结果和最终结果，命令行不含 Secret', async () => {
+    const workspace = join(process.cwd(), '.tmp', `codex-agent-${Date.now()}`);
+    const svc = makeService(makeConfig({
+      AI_EXECUTION_ENABLED: 'true',
+      CODEX_HARDENED: 'true',
+      CODEX_WORKSPACE: workspace,
+    }));
+    const handle = await svc.executeAgent('请检索', agentOptions);
+    const [, args, opts] = spawnMock.mock.calls[0];
+    expect(args).toContain('--json');
+    expect(args).toContain('--output-schema');
+    expect(args).toContain('--output-last-message');
+    expect(args.join(' ')).toContain('enabled_tools=["lawstar_data_professional_query"]');
+    expect(args.join(' ')).toContain('required=true');
+    expect(args.join(' ')).not.toContain('test-secret');
+    expect((opts.env as NodeJS.ProcessEnv).BAIJIAN_MCP_APP_SECRET).toBe('test-secret');
+
+    const resultPath = args[args.indexOf('--output-last-message') + 1];
+    writeFileSync(resultPath, JSON.stringify({ answer: '检索结论' }));
+    const child = spawnMock.mock.results[0].value as any;
+    const toolEvent = JSON.stringify({
+      type: 'item.completed',
+      item: {
+        id: 'tool-1',
+        type: 'mcp_tool_call',
+        server: 'baijian',
+        tool: 'lawstar_data_professional_query',
+        result: { content: [{ type: 'text', text: '{"code":"200"}' }] },
+      },
+    });
+    child.stdout.write(`${toolEvent}\n${toolEvent}\n`); // duplicate id must be ignored
+    child.emit('close', 0);
+
+    await expect(handle.completion).resolves.toMatchObject({
+      final: { answer: '检索结论' },
+      exitCode: 0,
+      events: [{ id: 'tool-1', type: 'item.completed' }],
+      toolResults: [{ callId: 'tool-1', toolName: 'lawstar_data_professional_query', isError: false }],
+    });
+    expect(existsSync(opts.cwd)).toBe(false);
+    rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it('保留同一 item ID 的 started/completed 生命周期，只忽略重复 completed', async () => {
+    const svc = makeService(makeConfig({ AI_EXECUTION_ENABLED: 'true', CODEX_HARDENED: 'true' }));
+    const handle = await svc.executeAgent('请检索', agentOptions);
+    const [, args] = spawnMock.mock.calls[0];
+    const resultPath = args[args.indexOf('--output-last-message') + 1];
+    writeFileSync(resultPath, JSON.stringify({ answer: '检索结论' }));
+    const child = spawnMock.mock.results[0].value as any;
+    const started = JSON.stringify({
+      type: 'item.started',
+      item: {
+        id: 'tool-lifecycle-1',
+        type: 'mcp_tool_call',
+        server: 'baijian',
+        tool: 'lawstar_data_professional_query',
+      },
+    });
+    const completed = JSON.stringify({
+      type: 'item.completed',
+      item: {
+        id: 'tool-lifecycle-1',
+        type: 'mcp_tool_call',
+        server: 'baijian',
+        tool: 'lawstar_data_professional_query',
+        result: { content: [{ type: 'text', text: '{"code":"200"}' }] },
+      },
+    });
+    child.stdout.write(`${started}\n${completed}\n${completed}\n`);
+    child.emit('close', 0);
+
+    await expect(handle.completion).resolves.toMatchObject({
+      events: [
+        { id: 'tool-lifecycle-1', type: 'item.started' },
+        { id: 'tool-lifecycle-1', type: 'item.completed' },
+      ],
+      toolResults: [{ callId: 'tool-lifecycle-1', toolName: 'lawstar_data_professional_query' }],
+    });
+  });
+
+  it('坏 JSONL 终止进程并返回 AGENT_BAD_JSONL', async () => {
+    const svc = makeService(makeConfig({ AI_EXECUTION_ENABLED: 'true', CODEX_HARDENED: 'true' }));
+    const handle = await svc.executeAgent('坏行测试', agentOptions);
+    const child = spawnMock.mock.results[0].value as any;
+    child.stdout.write('{bad json}\n');
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close', null);
+    await expect(handle.completion).rejects.toMatchObject({ code: 'AGENT_BAD_JSONL' });
+  });
+
+  it('JSONL 单行超限时终止进程并返回 AGENT_OUTPUT_LIMIT', async () => {
+    const svc = makeService(makeConfig({ AI_EXECUTION_ENABLED: 'true', CODEX_HARDENED: 'true' }));
+    const handle = await svc.executeAgent('超限测试', {
+      ...agentOptions,
+      limits: { jsonlLineBytes: 32 },
+    });
+    const rejected = expect(handle.completion).rejects.toMatchObject({ code: 'AGENT_OUTPUT_LIMIT' });
+    const child = spawnMock.mock.results[0].value as any;
+    child.stdout.write(`${JSON.stringify({ type: 'item.completed', payload: 'x'.repeat(64) })}\n`);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close', null);
+    await rejected;
+  });
+
+  it('结果文件缺失时失败，不能把 stdout 当权威最终答案', async () => {
+    const svc = makeService(makeConfig({ AI_EXECUTION_ENABLED: 'true', CODEX_HARDENED: 'true' }));
+    const handle = await svc.executeAgent('缺结果测试', agentOptions);
+    const child = spawnMock.mock.results[0].value as any;
+    child.stdout.write('{"type":"turn.completed"}\n');
+    child.emit('close', 0);
+    await expect(handle.completion).rejects.toMatchObject({ code: 'AGENT_RESULT_MISSING' });
   });
 });
