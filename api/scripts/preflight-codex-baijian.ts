@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { execFileSync } from 'child_process';
 import { readFileSync, statSync } from 'fs';
 

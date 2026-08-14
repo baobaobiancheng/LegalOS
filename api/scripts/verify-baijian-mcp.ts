@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { ConfigService } from '@nestjs/config';
 import { BaijianMcpClientService } from '../src/common/baijian/baijian-mcp-client.service';
 import { BaijianError } from '../src/common/baijian/baijian.types';

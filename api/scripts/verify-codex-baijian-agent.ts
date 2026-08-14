@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { ConfigService } from '@nestjs/config';
 import { CodexExecutionQueueService } from '../src/common/services/codex-execution-queue.service';
 import { CodexService } from '../src/common/services/codex.service';
