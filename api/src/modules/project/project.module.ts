@@ -18,6 +18,7 @@ import { ClaimProjectUseCase } from './application/claim-project.use-case';
 import { EscalateProjectToLegalUseCase } from './application/escalate-project-to-legal.use-case';
 import { ConsultationContextBuilder } from './application/consultation-context-builder';
 import { ConsultationReplyOrchestrator } from './application/consultation-reply.orchestrator';
+import { ConsultationExecutionRouter } from './application/consultation-execution.router';
 
 @Module({
   imports: [PrismaModule, DingTalkAdapterModule],
@@ -35,6 +36,7 @@ import { ConsultationReplyOrchestrator } from './application/consultation-reply.
     EscalateProjectToLegalUseCase,
     ConsultationContextBuilder,
     ConsultationReplyOrchestrator,
+    ConsultationExecutionRouter,
     { provide: CRM_ADAPTER, useClass: MockCrmAdapter },
   ],
   exports: [ProjectService],

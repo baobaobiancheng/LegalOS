@@ -399,12 +399,16 @@ model ConsultationRun {
   status          String   @default("running") @db.VarChar(16) // queued/running/succeeded/failed/cancelled
   answerMessageId String?  @map("answer_message_id")
   errorMessage    String?  @map("error_message") @db.Text
+  capability      String   @default("general") @db.VarChar(32)
+  dshSessionId    String?  @map("dsh_session_id") @db.VarChar(128)
+  researchTrace   Json?    @map("research_trace")
   startedAt       DateTime @default(now()) @map("started_at")
   completedAt     DateTime? @map("completed_at")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   @@index([projectId])
+  @@index([projectId, capability, completedAt])
   @@map("consultation_runs")
 }
 

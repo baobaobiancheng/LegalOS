@@ -1,16 +1,56 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
 import { useFileUpload } from '../composables/useFileUpload'
 import type { AttachedFile } from '../composables/useFileUpload'
 
 const props = defineProps<{
   disabled?: boolean
   placeholder?: string
+  capability?: ConsultationCapability
 }>()
 
 const emit = defineEmits<{
-  send: [text: string, files: AttachedFile[]]
+  send: [text: string, files: AttachedFile[], capability: ConsultationCapability]
+  'update:capability': [capability: ConsultationCapability]
 }>()
+
+type ConsultationCapability = 'general' | 'law_search' | 'similar_case'
+const capabilities: Array<{ id: ConsultationCapability; label: string; description: string }> = [
+  { id: 'general', label: '通用咨询', description: '直接分析并回答，不检索外部法律数据' },
+  { id: 'law_search', label: 'AI 搜法', description: '检索国内法规元数据，暂不核验具体条文' },
+  { id: 'similar_case', label: 'AI 类案', description: '检索相似案例，结果取决于案例库可用性' },
+]
+const menuOpen = ref(false)
+const activeOption = ref(0)
+const trigger = ref<HTMLButtonElement | null>(null)
+const optionRefs = ref<HTMLButtonElement[]>([])
+const selectedCapability = () => props.capability ?? 'general'
+const selected = () => capabilities.find(item => item.id === selectedCapability()) ?? capabilities[0]
+const openMenu = async () => {
+  if (props.disabled) return
+  activeOption.value = Math.max(0, capabilities.findIndex(item => item.id === selectedCapability()))
+  menuOpen.value = true
+  await nextTick()
+  optionRefs.value[activeOption.value]?.focus()
+}
+const closeMenu = (restoreFocus = true) => {
+  menuOpen.value = false
+  if (restoreFocus) nextTick(() => trigger.value?.focus())
+}
+const selectCapability = (capability: ConsultationCapability) => {
+  emit('update:capability', capability)
+  closeMenu()
+}
+const onMenuKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Escape') return closeMenu()
+  if (event.key === 'Tab') return closeMenu(false)
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  if (event.key === 'Home') activeOption.value = 0
+  else if (event.key === 'End') activeOption.value = capabilities.length - 1
+  else activeOption.value = (activeOption.value + (event.key === 'ArrowDown' ? 1 : -1) + capabilities.length) % capabilities.length
+  optionRefs.value[activeOption.value]?.focus()
+}
 
 const input = ref('')
 const { files, fileInput, triggerFilePick, removeFile, formatSize, handleFiles, hasPending, clearFiles } = useFileUpload()
@@ -27,7 +67,7 @@ const handleSend = () => {
   if (!canSend()) return
   // P1-1：仅附件发送（空文本）时自动生成非空问题，后端 DTO 禁止空文本
   const text = input.value.trim() || '请分析所附文件'
-  emit('send', text, [...files.value])
+  emit('send', text, [...files.value], selectedCapability())
   input.value = ''
   clearFiles()
 }
@@ -35,6 +75,53 @@ const handleSend = () => {
 
 <template>
   <div class="doubao-input-area">
+    <div class="capability-row">
+      <div class="capability-picker">
+        <button
+          ref="trigger"
+          class="capability-trigger"
+          type="button"
+          aria-haspopup="menu"
+          :aria-expanded="menuOpen"
+          :aria-label="`当前能力：${selected().label}`"
+          :disabled="disabled"
+          @click="menuOpen ? closeMenu(false) : openMenu()"
+          @keydown.down.prevent="openMenu"
+          @keydown.enter.prevent="openMenu"
+          @keydown.space.prevent="openMenu"
+        >
+          <span aria-hidden="true">⌕</span> {{ selected().label }} <span aria-hidden="true">⌄</span>
+        </button>
+        <div
+          v-if="menuOpen"
+          class="capability-menu"
+          role="menu"
+          aria-label="选择咨询能力"
+          @keydown="onMenuKeydown"
+        >
+          <button
+            v-for="(item, index) in capabilities"
+            :key="item.id"
+            :ref="el => { if (el) optionRefs[index] = el as HTMLButtonElement }"
+            class="capability-option"
+            role="menuitemradio"
+            :aria-checked="item.id === selectedCapability()"
+            :tabindex="index === activeOption ? 0 : -1"
+            @focus="activeOption = index"
+            @click="selectCapability(item.id)"
+          >
+            <span class="capability-check">{{ item.id === selectedCapability() ? '✓' : '' }}</span>
+            <span><b>{{ item.label }}</b><small>{{ item.description }}</small></span>
+          </button>
+        </div>
+      </div>
+      <p
+        class="capability-hint"
+        aria-live="polite"
+      >
+        {{ selected().description }}
+      </p>
+    </div>
     <div
       v-if="files.length"
       class="file-preview-bar"
@@ -118,3 +205,20 @@ const handleSend = () => {
     >
   </div>
 </template>
+
+<style scoped>
+.capability-row { position: relative; display: flex; align-items: center; gap: 12px; margin: 0 0 8px; padding: 0 6px; }
+.capability-picker { position: relative; flex: none; }
+.capability-trigger { border: 1px solid rgba(30,58,138,.16); border-radius: 999px; background: rgba(255,255,255,.78); color: #1e3a8a; padding: 7px 11px; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; }
+.capability-trigger:focus-visible, .capability-option:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.capability-trigger:disabled { opacity: .5; cursor: not-allowed; }
+.capability-menu { position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 30; width: 330px; padding: 7px; border: 1px solid rgba(30,58,138,.14); border-radius: 16px; background: rgba(255,255,255,.98); box-shadow: 0 18px 45px rgba(20,35,80,.16); }
+.capability-option { display: grid; grid-template-columns: 20px 1fr; gap: 7px; width: 100%; padding: 10px; border: 0; border-radius: 10px; background: transparent; color: #172033; font: inherit; text-align: left; cursor: pointer; }
+.capability-option:hover, .capability-option[aria-checked="true"] { background: #eef4ff; }
+.capability-option b, .capability-option small { display: block; }
+.capability-option b { font-size: 13px; }
+.capability-option small { margin-top: 3px; color: #667085; font-size: 11px; line-height: 1.4; }
+.capability-check { color: #2563eb; font-weight: 700; }
+.capability-hint { min-width: 0; margin: 0; color: #667085; font-size: 11px; line-height: 1.45; }
+@media (max-width: 1023px) { .capability-row { display: none; } }
+</style>

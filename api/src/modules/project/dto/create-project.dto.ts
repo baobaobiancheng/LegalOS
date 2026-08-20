@@ -1,5 +1,6 @@
 import { IsString, IsNotEmpty, IsOptional, IsIn, IsBoolean, IsArray, MinLength, MaxLength, ArrayMaxSize } from 'class-validator';
 import { ProjectKind } from '@prisma/client';
+import { CONSULTATION_CAPABILITIES, ConsultationCapability } from '../domain/consultation-capability';
 
 export class CreateProjectDto {
   @IsString()
@@ -50,6 +51,10 @@ export class CreateProjectDto {
   @ArrayMaxSize(5)
   @IsString({ each: true })
   attachmentIds?: string[];
+
+  @IsOptional()
+  @IsIn(CONSULTATION_CAPABILITIES)
+  capability?: ConsultationCapability;
 }
 
 export class CreateProjectMessageDto {
@@ -80,6 +85,11 @@ export class CreateProjectMessageDto {
   @ArrayMaxSize(5)
   @IsString({ each: true })
   attachmentIds?: string[];
+
+  /** 本轮能力快照。服务端写入 ConsultationRun，重试时不允许改变。 */
+  @IsOptional()
+  @IsIn(CONSULTATION_CAPABILITIES)
+  capability?: ConsultationCapability;
 }
 
 export class ReplyProjectDto {

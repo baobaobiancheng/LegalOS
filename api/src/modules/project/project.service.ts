@@ -32,6 +32,7 @@ import { ProjectListParams, ProjectQueryService } from './queries/project-query.
 import { ProjectStateMachine } from './domain/project-state-machine';
 import { ClaimProjectUseCase } from './application/claim-project.use-case';
 import { EscalateProjectToLegalUseCase } from './application/escalate-project-to-legal.use-case';
+import { normalizeConsultationCapability } from './domain/consultation-capability';
 
 // 用户选择器，避免暴露密码哈希
 const userSelect = { id: true, username: true, displayName: true, role: true };
@@ -396,6 +397,7 @@ export class ProjectService {
     signal?: AbortSignal,
   ): Promise<{ message: any; stream?: any; route: string; status?: 'succeeded' | 'running'; completion?: Promise<unknown> }> {
     const role = actor.role === 'business' ? 'user' : 'legal';
+    const capability = normalizeConsultationCapability(dto.capability);
 
     // 统一前置：加载工单 + 鉴权（F5：幂等快捷返回也须过鉴权；idempotencyKey 不是访问凭证）
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
@@ -414,7 +416,7 @@ export class ProjectService {
       });
       if (!first) throw new BadRequestException('工单没有首条消息');
 
-      const claimed = await this.replyOrchestrator.claimRun(projectId, first.id);
+      const claimed = await this.replyOrchestrator.claimRun(projectId, first.id, capability);
       if (claimed.status === 'succeeded' && claimed.answer) {
         return { message: claimed.answer, route: 'llm', status: 'succeeded' };
       }
@@ -424,7 +426,7 @@ export class ProjectService {
       return {
         message: first,
         route: 'llm',
-        ...(await this.replyOrchestrator.reply(projectId, first.id, signal, claimed.runId)),
+        ...(await this.replyOrchestrator.reply(projectId, first.id, signal, claimed.runId, capability)),
       };
     }
 
@@ -439,7 +441,7 @@ export class ProjectService {
         if (project.route !== 'llm') {
           return { message: existing, route: project.route };
         }
-        const claimed = await this.replyOrchestrator.claimRun(projectId, existing.id);
+        const claimed = await this.replyOrchestrator.claimRun(projectId, existing.id, capability);
         if (claimed.status === 'succeeded' && claimed.answer) {
           return { message: claimed.answer, route: 'llm', status: 'succeeded' };
         }
@@ -450,7 +452,7 @@ export class ProjectService {
         return {
           message: existing,
           route: 'llm',
-          ...(await this.replyOrchestrator.reply(projectId, existing.id, signal, claimed.runId)),
+          ...(await this.replyOrchestrator.reply(projectId, existing.id, signal, claimed.runId, capability)),
         };
       }
     }
@@ -494,7 +496,7 @@ export class ProjectService {
           .findUnique({ where: { clientKey: dto.idempotencyKey } })
           .catch(() => null);
         if (winner && winner.projectId === projectId) {
-          const claimed = await this.replyOrchestrator.claimRun(projectId, winner.id);
+          const claimed = await this.replyOrchestrator.claimRun(projectId, winner.id, capability);
           if (claimed.status === 'succeeded' && claimed.answer) {
             return { message: claimed.answer, route: 'llm', stream: undefined };
           }
@@ -504,7 +506,7 @@ export class ProjectService {
           return {
             message: winner,
             route: 'llm',
-            ...(await this.replyOrchestrator.reply(projectId, winner.id, signal, claimed.runId)),
+            ...(await this.replyOrchestrator.reply(projectId, winner.id, signal, claimed.runId, capability)),
           };
         }
       }
@@ -533,7 +535,7 @@ export class ProjectService {
       }
 
       // 认领 run（userMessageId=message.id）：确保每轮只启动一次模型
-      const claimed = await this.replyOrchestrator.claimRun(projectId, message.id);
+      const claimed = await this.replyOrchestrator.claimRun(projectId, message.id, capability);
       if (claimed.status === 'succeeded' && claimed.answer) {
         return { message: claimed.answer, route: 'llm', status: 'succeeded' };
       }
@@ -543,7 +545,7 @@ export class ProjectService {
       return {
         message,
         route: 'llm',
-        ...(await this.replyOrchestrator.reply(projectId, message.id, signal, claimed.runId)),
+        ...(await this.replyOrchestrator.reply(projectId, message.id, signal, claimed.runId, capability)),
       };
     }
 

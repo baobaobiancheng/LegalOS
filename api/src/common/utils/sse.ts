@@ -106,6 +106,7 @@ export interface SseStream {
   __cancelled?: boolean;
   __runId?: string;
   __errorMessage?: string;
+  __errorCode?: string;
 }
 
 export type ConsultStreamEvent =
@@ -178,9 +179,11 @@ export function sendConsultSSE(
     ended = true;
     if (code === 0) {
       // P0-4：落库成功后才发 message_end；落库失败发 error（前端不误报成功）
+      let completionPayload: Record<string, unknown> = {};
       if (completion) {
         try {
-          await completion;
+          const completed = await completion;
+          if (completed && typeof completed === 'object') completionPayload = completed as Record<string, unknown>;
         } catch {
           emit({ type: 'error', runId, seq: next(), code: 'PERSIST_FAILED', message: '回答保存失败，请重试' });
           res.end();
@@ -195,9 +198,20 @@ export function sendConsultSSE(
         messageId: runId,
         finalText: stream.__finalText ?? '',
         ...donePayload,
+        ...(completionPayload.research ? { research: completionPayload.research } : {}),
       });
     } else {
-      emit({ type: 'error', runId, seq: next(), code: 'AI_GENERATION_FAILED', message: 'AI 答复生成失败' });
+      emit({
+        type: 'error',
+        runId,
+        seq: next(),
+        code: stream.__errorCode ?? 'AI_GENERATION_FAILED',
+        message: stream.__errorMessage ?? 'AI 答复生成失败',
+        actions: stream.__errorCode?.startsWith('RESEARCH_')
+          ? ['retry', 'switch_general', 'escalate']
+          : ['retry', 'escalate'],
+        retryable: true,
+      });
     }
     res.end();
   });

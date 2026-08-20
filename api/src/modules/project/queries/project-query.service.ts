@@ -82,7 +82,28 @@ export class ProjectQueryService {
     if (!project) throw new NotFoundException('工单不存在');
     this.accessPolicy.assertCan(actor, ProjectAction.Read, project);
 
-    const { extra: _extra, ...safeProject } = project;
-    return safeProject;
+    const answerIds = project.messages.map((message) => message.id);
+    const researchRuns = answerIds.length
+      ? await this.prisma.consultationRun.findMany({
+          where: {
+            answerMessageId: { in: answerIds },
+            status: 'succeeded',
+            researchTrace: { not: Prisma.JsonNull },
+          },
+          select: { answerMessageId: true, capability: true, researchTrace: true },
+        })
+      : [];
+    const traceByAnswerId = new Map(
+      researchRuns
+        .filter((run) => run.answerMessageId)
+        .map((run) => [run.answerMessageId!, { capability: run.capability, trace: run.researchTrace }]),
+    );
+    const messages = project.messages.map((message) => ({
+      ...message,
+      ...(traceByAnswerId.has(message.id) ? { research: traceByAnswerId.get(message.id) } : {}),
+    }));
+
+    const { extra: _extra, messages: _messages, ...safeProject } = project;
+    return { ...safeProject, messages };
   }
 }

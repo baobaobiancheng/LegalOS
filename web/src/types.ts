@@ -86,6 +86,19 @@ export type MessageDto = {
   text: string
   label?: string
   createdAt: string
+  research?: {
+    capability: 'law_search' | 'similar_case'
+    trace: ResearchTraceV1
+  }
+}
+
+export type ResearchTraceV1 = {
+  schemaVersion: 1
+  capability: 'law_search' | 'similar_case'
+  status: 'success_hit' | 'success_empty'
+  dshSessionId: string
+  calls: Array<{ tool: string; query: string; recordIds: string[]; records: Array<Record<string, unknown>> }>
+  limitations: string[]
 }
 
 export type EventDto = {

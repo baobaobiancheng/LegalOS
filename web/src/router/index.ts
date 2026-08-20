@@ -33,6 +33,12 @@ const router = createRouter({
       component: () => import('../views/legal/ProjectDetailView.vue'),
     },
     {
+      path: '/legal/research',
+      name: 'legal-research',
+      meta: { roles: [...LEGAL_ROLES, Role.ADMIN], title: '法律检索' },
+      component: () => import('../views/legal/LegalResearchView.vue'),
+    },
+    {
       path: '/legal/skills',
       name: 'legal-skills',
       meta: { roles: [...LEGAL_ROLES, Role.ADMIN], title: '技能库' },

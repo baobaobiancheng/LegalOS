@@ -18,8 +18,8 @@ export type ConsultStreamEvent =
   | { type: 'message_start'; runId: string; messageId: string }
   | { type: 'reasoning_delta'; runId: string; seq: number; delta: string }
   | { type: 'text_delta'; runId: string; seq: number; delta: string }
-  | { type: 'message_end'; runId: string; seq: number; messageId: string; finalText: string }
-  | { type: 'error'; runId: string; seq: number; code: string; message: string }
+  | { type: 'message_end'; runId: string; seq: number; messageId: string; finalText: string; research?: unknown }
+  | { type: 'error'; runId: string; seq: number; code: string; message: string; actions?: string[]; retryable?: boolean }
 
 const reportSseError = (error: RequestError): RequestError => {
   apiLogger.warn('sse.error', {

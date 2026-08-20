@@ -15,6 +15,7 @@ import { DshModule } from './common/services/dsh.module';
 import { ConsultationChatModule } from './common/services/consultation-chat.module';
 import { BaijianModule } from './common/baijian/baijian.module';
 import { AiExecutionModule } from './common/services/ai-execution.module';
+import { LegalResearchModule } from './modules/legal-research/legal-research.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { AiExecutionModule } from './common/services/ai-execution.module';
     ContractModule,
     SkillModule,
     MembersModule,
+    LegalResearchModule,
   ],
   providers: [
     // 顺序即执行顺序：限流 → 认证 → 授权

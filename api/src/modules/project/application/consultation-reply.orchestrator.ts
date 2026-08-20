@@ -1,11 +1,15 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../../prisma/prisma.service';
-import { ConsultationChatService } from '../../../common/services/consultation-chat.service';
 import { ConsultationAttachmentService } from '../../../common/services/consultation-attachment.service';
 import { ConsultationContextBuilder } from './consultation-context-builder';
 import { buildSkillSection } from '../../../common/utils/skill-prompt';
 import { formatEventTime } from '../../../common/utils/event-time';
+import { ConsultationExecutionRouter } from './consultation-execution.router';
+import {
+  ConsultationCapability,
+  normalizeConsultationCapability,
+} from '../domain/consultation-capability';
 
 /**
  * 咨询 AI 答复编排器（从 ProjectService 抽出，2026-08-20 上帝类拆分）。
@@ -26,7 +30,7 @@ export class ConsultationReplyOrchestrator {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly consultationChat: ConsultationChatService,
+    private readonly executionRouter: ConsultationExecutionRouter,
     private readonly contextBuilder: ConsultationContextBuilder,
     private readonly config: ConfigService,
     private readonly attachmentService: ConsultationAttachmentService,
@@ -41,6 +45,7 @@ export class ConsultationReplyOrchestrator {
   async claimRun(
     projectId: string,
     userMessageId: string,
+    capability: ConsultationCapability = 'general',
   ): Promise<{ runId: string; status: 'succeeded' | 'running' | 'new'; answer?: any }> {
     const staleMs =
       Number.parseInt(String(this.config.get('CONSULT_RUN_STALE_MS', '600000')), 10) || 600_000;
@@ -88,7 +93,7 @@ export class ConsultationReplyOrchestrator {
 
     try {
       const run = await this.prisma.consultationRun.create({
-        data: { projectId, userMessageId, status: 'running' },
+        data: { projectId, userMessageId, status: 'running', capability },
       });
       return { runId: run.id, status: 'new' };
     } catch (e: any) {
@@ -117,6 +122,7 @@ export class ConsultationReplyOrchestrator {
     currentUserMessageId: string,
     signal?: AbortSignal,
     runId?: string,
+    requestedCapability: ConsultationCapability = 'general',
   ): Promise<any> {
     const release = await this.acquireProjectTurn(projectId);
     // 释放串行锁 + 清理 Map 条目（幂等：close 与 error 都可能触发）
@@ -156,15 +162,30 @@ export class ConsultationReplyOrchestrator {
         throw new BadRequestException('咨询上下文构建失败，请重试');
       }
 
-      child = await this.consultationChat.stream(context.messages, {
-        // 分级输出预算：普通 P2 咨询 6000，为推理过程和正式正文预留充足空间；
-        // 复杂/长文研究可使用 12000~16000。网关的 max_tokens 包含思考与正文，不能设置过低。
-        maxTokens:
-          Number.parseInt(String(this.config.get('CONSULT_P2_OUTPUT_TOKENS', '6000')), 10) || 6000,
-        timeout: Number.parseInt(String(this.config.get('CONSULT_CHAT_TIMEOUT_MS', '600000')), 10) || 600_000,
-        signal,
-        runId,
+      const run = runId
+        ? await this.prisma.consultationRun.findUnique({ where: { id: runId } })
+        : null;
+      const capability = normalizeConsultationCapability(run?.capability ?? requestedCapability);
+      const previous = capability === 'general'
+        ? null
+        : await this.prisma.consultationRun.findFirst({
+            where: {
+              projectId,
+              capability,
+              status: 'succeeded',
+              dshSessionId: { not: null },
+              ...(runId ? { id: { not: runId } } : {}),
+            },
+            orderBy: { completedAt: 'desc' },
+            select: { dshSessionId: true },
+          });
+      child = await this.executionRouter.execute({
+        capability,
+        messages: context.messages,
         projectId,
+        runId: runId ?? '',
+        signal,
+        resumeDshSessionId: previous?.dshSessionId ?? undefined,
       });
     } catch (e) {
       finishTurn();
@@ -198,25 +219,38 @@ export class ConsultationReplyOrchestrator {
         const finalText = String((child as any).__finalText ?? fullText).trim();
         if (code === 0 && finalText) {
           try {
-            const [msg] = await this.prisma.$transaction([
-              this.prisma.projectMessage.create({
-                data: { projectId, role: 'assistant', text: finalText },
-              }),
-              this.prisma.project.update({
+            const answerMessageId = crypto.randomUUID();
+            const msg = await this.prisma.$transaction(async (tx) => {
+              const created = await tx.projectMessage.create({
+                data: { id: answerMessageId, projectId, role: 'assistant', text: finalText },
+              });
+              await tx.project.update({
                 where: { id: projectId },
                 data: { status: '已回传', result: finalText },
-              }),
-            ]);
-            if (runId) {
-              await this.prisma.consultationRun
-                .update({
+              });
+              if (runId) {
+                await tx.consultationRun.update({
                   where: { id: runId },
-                  data: { status: 'succeeded', answerMessageId: msg.id, completedAt: new Date() },
-                })
-                .catch(() => undefined);
-            }
+                  data: {
+                    status: 'succeeded',
+                    answerMessageId,
+                    completedAt: new Date(),
+                    ...(child.__researchTrace ? {
+                      dshSessionId: child.__researchTrace.dshSessionId,
+                      researchTrace: child.__researchTrace,
+                    } : {}),
+                  },
+                });
+              }
+              return created;
+            });
             await this.addEvent(projectId, formatEventTime() + ' · AI 答复已完成');
-            resolveCompletion(msg); // P0-4：落库成功 → 前端可收到 message_end
+            resolveCompletion({
+              ...msg,
+              ...(child.__researchTrace ? {
+                research: { capability: child.__researchTrace.capability, trace: child.__researchTrace },
+              } : {}),
+            }); // P0-4：落库成功 → 前端可收到 message_end
           } catch (err) {
             this.logger.error(`AI 答复落库失败：${err}`);
             rejectCompletion(err);
@@ -230,19 +264,24 @@ export class ConsultationReplyOrchestrator {
             }
           }
         } else {
-          this.logger.error(`咨询网关流异常退出，code=${code}`);
-          rejectCompletion(new Error(`code=${code}`));
+          const publicMessage = child.__errorMessage ?? `AI 答复生成失败（code=${code}）`;
+          this.logger.error(`咨询执行流异常退出，code=${code} error=${child.__errorCode ?? 'unknown'}`);
+          rejectCompletion(new Error(publicMessage));
           try {
-            await this.prisma.project.update({
-              where: { id: projectId },
-              data: { status: '待处理', isFailed: true },
-            });
-            await this.addEvent(projectId, formatEventTime() + ' · AI 答复生成失败，已转人工处理');
+            if (!String(child.__errorCode ?? '').startsWith('RESEARCH_')) {
+              await this.prisma.project.update({
+                where: { id: projectId },
+                data: { status: '待处理', isFailed: true },
+              });
+              await this.addEvent(projectId, formatEventTime() + ' · AI 答复生成失败，已转人工处理');
+            } else {
+              await this.addEvent(projectId, formatEventTime() + ' · 法律检索失败，等待用户重试或切换能力');
+            }
             if (runId) {
               await this.prisma.consultationRun
                 .update({
                   where: { id: runId },
-                  data: { status: 'failed', errorMessage: `code=${code}`, completedAt: new Date() },
+                data: { status: 'failed', errorMessage: publicMessage.slice(0, 500), completedAt: new Date() },
                 })
                 .catch(() => undefined);
             }

@@ -196,6 +196,7 @@ export class DshService {
           abort,
           researchCapability: options?.researchCapability,
           requireResearchTool: options?.requireResearchTool ?? Boolean(options?.researchCapability),
+          resumeDshSessionId: options?.resumeDshSessionId,
         }),
       );
     } catch (e) {
@@ -215,7 +216,7 @@ export class DshService {
    */
   private runTurn(
     prompt: string,
-    params: Pick<DshOptions, 'model' | 'sessionId' | 'researchCapability' | 'requireResearchTool'>
+    params: Pick<DshOptions, 'model' | 'sessionId' | 'researchCapability' | 'requireResearchTool' | 'resumeDshSessionId'>
       & { timeout: number; abort: AbortSignal },
   ): { result: DshExecutionHandle; done: Promise<void> } {
     const handle = new DshExecutionHandle();
@@ -244,7 +245,7 @@ export class DshService {
 
   private async driveAgent(
     prompt: string,
-    params: Pick<DshOptions, 'model' | 'sessionId' | 'researchCapability' | 'requireResearchTool'>,
+    params: Pick<DshOptions, 'model' | 'sessionId' | 'researchCapability' | 'requireResearchTool' | 'resumeDshSessionId'>,
     handle: DshExecutionHandle,
     abort: AbortSignal,
   ): Promise<void> {
@@ -272,20 +273,21 @@ export class DshService {
     // 对已存在的 id 抛 "session already exists"），同 projectId 的并发/重试生成不能再复用
     // 同一个 dsh session。合同起草/审查是单轮任务，不依赖跨调用会话延续；多轮会话复用
     // 属于二期（法律咨询）的 dsh resume 能力，见迁移计划 Phase 3。
-    const dshSessionId = SessionId(`legalos-${randomUUID()}`);
+    const dshSessionId = SessionId(params.resumeDshSessionId ?? `legalos-${randomUUID()}`);
     const toolDefinition = params.researchCapability
       ? await this.baijianTools.createDefinition(params.researchCapability)
       : undefined;
 
-    const agentHandle = await agents.create({
-      sessionId: dshSessionId,
-      meta: { cwd: process.cwd() },
+    const agentConfig = {
       agentOptions: { provider: selection.provider, model, maxTokens: this.maxOutputTokens },
       setup: (agentCtx: any) => {
         installModelSelection(agentCtx, { current: { ...selection, model }, assembled: undefined });
         if (toolDefinition) agentCtx.tools.register(toolDefinition);
       },
-    });
+    };
+    const agentHandle = params.resumeDshSessionId
+      ? await agents.resume({ resumeSessionId: dshSessionId, ...agentConfig })
+      : await agents.create({ sessionId: dshSessionId, meta: { cwd: process.cwd() }, ...agentConfig });
     const { agent } = agentHandle;
     await agent.whenIdle();
 

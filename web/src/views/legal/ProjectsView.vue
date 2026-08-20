@@ -35,7 +35,7 @@
         </button>
         <button
           class="nav-btn"
-          disabled
+          @click="router.push('/legal/research')"
         >
           <span class="nav-ico"><svg
             width="16"
@@ -55,7 +55,7 @@
             x2="16.65"
             y2="16.65"
           /></svg></span>
-          法规检索
+          法规与类案检索
         </button>
         <button
           class="nav-btn"

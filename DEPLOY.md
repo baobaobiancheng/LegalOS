@@ -120,7 +120,7 @@ cd ../web && npm install && npm run build
 |------|------|------|
 | 启动报缺表 | 未跑 `migrate deploy` | `npx prisma migrate deploy` |
 | 登录"服务响应异常" | API 进程未启动 | 检查 `:3000` 监听 + 启动日志 |
-| AI 回复失败 | 服务器无 codex CLI/认证 | `npm i -g @openai/codex` + 配 `CODEX_API_KEY` 与 `/etc/codex` 受管配置 |
+| dsh AI 回复失败 | 模型凭证、余额或网关配置异常 | `npm run dsh:model-gate`；检查 `DSH_LLM_*`（独立模型）或 `LLM_*`（公司网关） |
 | 合同导出无模板 | storage 未复制 | 见"四、合同模板源文件" |
 | 钉钉同步"部门不在授权范围" | 通讯录权限未批 | 见"八、钉钉集成上线检查清单" |
 | 钉钉建群"群主不在可见性内" | 应用可见范围未含群主 | 同上 |
@@ -161,9 +161,14 @@ npm run baijian:verify -- law '劳动合同'
 npm run baijian:verify -- case '劳动合同违法解除经济补偿的中国类似案例'
 
 # 2. 嵌入式 dsh Agent：自主规划 query + 单个只读工具 + 权威来源 ID 校验
+npm run dsh:model-gate
 npm run dsh:baijian-gate -- law '劳动合同解除经济补偿'
 npm run dsh:baijian-gate -- case '劳动合同违法解除经济补偿的中国类似案例'
 ```
+
+PR1/PR2 部署还会执行 `20260820190000_add_consultation_research_trace` migration。它只给
+`consultation_runs` 增加能力快照、dsh 会话 ID 和有界来源 trace；不依赖 Redis。法务独立检索接口为
+`GET /api/legal-research/laws` 与 `GET /api/legal-research/cases`，受登录角色和应用内限流保护。
 
 dsh 在进程内只为本次运行注册 `search_laws` 或 `search_similar_cases` 之一；工具内部复用官方 MCP TypeScript SDK 与 `BaijianResultNormalizer`，模型看不到供应商凭证。每轮事件、checkpoint 和压缩结果写入 `DSH_HOME`，请确保目录持久化且仅 API 运行用户可读写。任何未观察到必需工具结果、出现额外工具、工具报错、有命中却无权威 ID 引用或最终 JSON 无效，都视为闸门失败，不得启用咨询检索 Agent。
 

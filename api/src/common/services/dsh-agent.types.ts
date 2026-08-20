@@ -35,6 +35,8 @@ export interface DshOptions {
   sessionId?: string;
   queueTimeoutMs?: number;
   signal?: AbortSignal;
+  /** 恢复同一项目、同一能力最近一次成功的 dsh 会话。 */
+  resumeDshSessionId?: string;
   /** 为本次 Agent 仅暴露一个已选法律检索能力。 */
   researchCapability?: DshResearchCapability;
   /** 已选检索能力未产生成功工具结果时 fail-closed。 */

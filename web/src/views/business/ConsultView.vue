@@ -53,6 +53,9 @@ const usableSkills = ref<Skill[]>([])
 const selectedSkill = ref<{ id?: string; name: string }>({ name: GENERAL_SKILL.name })
 const skillsError = ref<RequestError | null>(null)
 const lastError = ref<RequestError | null>(null)
+type ConsultationCapability = 'general' | 'law_search' | 'similar_case'
+const selectedCapability = ref<ConsultationCapability>('general')
+const lastSubmission = ref<{ text: string; files: AttachedFile[]; capability: ConsultationCapability } | null>(null)
 
 const loadSkills = async () => {
   try {
@@ -200,10 +203,11 @@ const sendSuggested = (q: string) => {
   handleSend(q, [])
 }
 
-const handleSend = async (text: string, files: AttachedFile[]) => {
+const handleSend = async (text: string, files: AttachedFile[], capability = selectedCapability.value) => {
   // 防重复点击（review 2026-08-11）：发送/思考/恢复期间忽略再次提交（后端幂等是最终保障）
   if (sending.value || expectingAI.value || restoring.value) return
   const gen = sessionGen // 新建会话后丢弃过期响应
+  lastSubmission.value = { text, files, capability }
   const fullInput = buildFullInput(text, files)
   const displayText = buildDisplayText(text, files)
   // 首条消息：建单已落库,后续 /messages 只启动首轮回答(firstReply=true,不重复写消息/评估)
@@ -240,6 +244,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
           idempotencyKey,
           // 附件 id（正文由后端注入；2026-08-12）
           attachmentIds,
+          capability,
         },
       })
       projectId.value = data.id; projectRoute.value = data.route
@@ -285,7 +290,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
         timeoutMs: 45_000,
         timeoutCode: 'SSE_HEADER_TIMEOUT',
         signal: abortCtrl.signal,
-        body: { text: fullInput, firstReply, idempotencyKey, attachmentIds },
+        body: { text: fullInput, firstReply, idempotencyKey, attachmentIds, capability },
       }, (d) => {
         // onEvent 只收 SSE 事件；非流式 JSON 响应不会走到这里
         if (!('type' in d)) return
@@ -333,6 +338,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
             // P0：权威校准——清空缓冲、以 finalText 收口
             streamRenderer.finish(evt.finalText)
             if (aiMsg) aiMsg.status = 'completed'
+            if (aiMsg && evt.research) aiMsg.research = evt.research
           }
           scheduleScroll()
           return
@@ -342,9 +348,9 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
           // P0-2：正文前的 error 不创建空白气泡；有正文则附着在回答内
           if (aiMsg) {
             aiMsg.status = 'failed'
-            streamRenderer.finish('⚠️ AI 答复生成失败，已通知法务BP处理')
+            streamRenderer.finish(`⚠️ ${evt.message}`)
           } else {
-            messages.value.push({ _event: true, text: 'AI 答复生成失败，已通知法务BP处理', _key: genIdempotencyKey() })
+            messages.value.push({ _event: true, text: evt.message, actions: evt.actions, _key: genIdempotencyKey() })
           }
         }
       })) as ConsultJsonResponse | undefined
@@ -385,6 +391,15 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
   }
   sending.value = false
   forceScrollBottom()
+}
+
+const handleErrorAction = (action: string) => {
+  if (action === 'escalate') return handleUpgrade()
+  const last = lastSubmission.value
+  if (!last) return
+  const capability = action === 'switch_general' ? 'general' : last.capability
+  selectedCapability.value = capability
+  void handleSend(last.text, last.files, capability)
 }
 
 const handleUpgrade = async () => {
@@ -548,7 +563,24 @@ const handleUpgrade = async () => {
             v-if="m._event"
             class="msg-event"
           >
-            {{ m.text }}
+            <span>{{ m.text }}</span>
+            <span
+              v-if="m.actions?.length"
+              class="event-actions"
+            >
+              <button
+                v-if="m.actions.includes('retry')"
+                @click="handleErrorAction('retry')"
+              >重试</button>
+              <button
+                v-if="m.actions.includes('switch_general')"
+                @click="handleErrorAction('switch_general')"
+              >改选通用咨询</button>
+              <button
+                v-if="m.actions.includes('escalate')"
+                @click="handleErrorAction('escalate')"
+              >转人工</button>
+            </span>
           </div>
           <div
             v-else
@@ -559,6 +591,13 @@ const handleUpgrade = async () => {
             </div>
             <div class="msg-body">
               <div class="msg-bubble">
+                <div
+                  v-if="m.role === 'assistant' && m.research"
+                  class="evidence-status"
+                >
+                  <span>✓ {{ m.research.trace.status === 'success_hit' ? '已完成来源检索' : '未检索到可核验来源' }}</span>
+                  <span>· {{ m.research.trace.limitations?.[0] }}</span>
+                </div>
                 <MarkdownContent
                   v-if="m.role === 'assistant'"
                   :text="m.text"
@@ -576,6 +615,30 @@ const handleUpgrade = async () => {
                   {{ m.errorText || (m.status === 'incomplete' ? '回答可能不完整' : 'AI 答复生成失败') }}
                 </div>
               </div>
+              <details
+                v-if="m.role === 'assistant' && m.research?.trace?.calls?.some((c: any) => c.records?.length)"
+                class="research-sources"
+                open
+              >
+                <summary>参考来源</summary>
+                <div
+                  v-for="record in m.research.trace.calls.flatMap((call: any) => call.records)"
+                  :key="String(record.recordId || record.sourceId)"
+                  class="source-row"
+                >
+                  <strong>{{ record.lawName || record.title }}</strong>
+                  <span v-if="record.issuingOrgan || record.court">{{ record.issuingOrgan || record.court }}</span>
+                  <span v-if="record.issuingNo || record.caseNumber">{{ record.issuingNo || record.caseNumber }}</span>
+                  <span v-if="record.implementDate || record.date">{{ record.implementDate || record.date }}</span>
+                  <span v-if="record.timeliness">{{ record.timeliness }}</span>
+                  <a
+                    v-if="record.url"
+                    :href="String(record.url)"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >查看原始来源</a>
+                </div>
+              </details>
               <div
                 v-if="m._files?.length"
                 class="file-tags"
@@ -641,6 +704,7 @@ const handleUpgrade = async () => {
 
     <ChatInputBar
       v-if="!upgraded"
+      v-model:capability="selectedCapability"
       :disabled="sending || restoring"
       @send="handleSend"
     />
@@ -655,6 +719,14 @@ const handleUpgrade = async () => {
 <script lang="ts">export default { name: 'ConsultView' }</script>
 
 <style scoped>
+.event-actions { display: inline-flex; gap: 6px; margin-left: 8px; }.event-actions button { border: 0; border-radius: 7px; background: #eef4ff; color: #1e3a8a; padding: 4px 8px; font: inherit; font-size: 11px; font-weight: 650; cursor: pointer; }
+.evidence-status { display: flex; flex-wrap: wrap; gap: 5px; margin: -2px 0 12px; padding: 8px 10px; border: 1px solid #d8e5f8; border-radius: 9px; background: #f4f8ff; color: #35506f; font-size: 11px; line-height: 1.45; }
+.research-sources { margin-top: 8px; border: 1px solid rgba(30,58,138,.12); border-radius: 12px; background: rgba(255,255,255,.94); overflow: hidden; }
+.research-sources summary { padding: 10px 12px; color: #243b5a; font-size: 12px; font-weight: 700; cursor: pointer; }
+.source-row { display: grid; grid-template-columns: minmax(180px,2fr) repeat(4,minmax(80px,1fr)); gap: 10px; align-items: center; padding: 10px 12px; border-top: 1px solid #e8edf4; color: #5d6878; font-size: 11px; }
+.source-row strong { color: #202b3c; font-size: 12px; }
+.source-row a { color: #1d5fd1; }
+@media (max-width: 1023px) { .source-row { grid-template-columns: 1fr; } }
 .domain-group {
   width: min(620px, 100%);
   margin-top: 26px;

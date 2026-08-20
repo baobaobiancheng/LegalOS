@@ -112,7 +112,7 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
       // 真实编排器：内部调用 consultationChat/contextBuilder mock，原断言不变
       new ConsultationReplyOrchestrator(
         prisma,
-        consultationChat,
+        { execute: vi.fn((input: any) => consultationChat.stream(input.messages, input)) } as any,
         contextBuilder,
         { get: vi.fn((_k: string, d: unknown) => d) } as any,
         attachmentService,

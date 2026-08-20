@@ -101,6 +101,36 @@ describe('DshService 法律检索执行契约', () => {
     expect(harness.cancel).toHaveBeenCalledOnce();
     expect(harness.dispose).toHaveBeenCalledOnce();
   });
+
+  it('传入持久会话 ID 时使用 dsh resume，而不是创建同名新会话', async () => {
+    const harness = makeHarness(({ session, publish }) => {
+      publish({
+        type: 'tool/call',
+        data: { callId: 'case-1', name: 'search_similar_cases', arguments: '{"query":"劳动合同"}' },
+      });
+      publish({
+        type: 'tool/result',
+        data: {
+          message: { content: [{ type: 'tool-result', toolCallId: 'case-1', isError: false }] },
+          meta: {
+            kind: DSH_BAIJIAN_RESULT_META_KIND,
+            result: { toolName: 'ldh_search', status: 'success_empty', count: 0, query: '劳动合同', elapsedMs: 1, records: [] },
+          },
+        },
+      });
+      session.events.push({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '未找到案例' }] } } });
+      session.events.push({ type: 'turn/end', data: { reason: { kind: 'completed' } } });
+    });
+    const handle = await harness.service.executeStream('继续检索', {
+      researchCapability: 'similar_case',
+      resumeDshSessionId: 'legalos-existing',
+    });
+    const completion = await completionOf(handle);
+
+    expect(harness.resume).toHaveBeenCalledWith(expect.objectContaining({ resumeSessionId: 'legalos-existing' }));
+    expect(harness.create).not.toHaveBeenCalled();
+    expect(completion.dshSessionId).toBe('legalos-existing');
+  });
 });
 
 function makeHarness(
@@ -123,6 +153,8 @@ function makeHarness(
   const tools = { createDefinition: vi.fn().mockResolvedValue(toolDefinition) };
   const listeners = new Set<(session: any, event: any) => void>();
   const register = vi.fn();
+  const create = vi.fn();
+  const resume = vi.fn();
   const dispose = vi.fn().mockResolvedValue(undefined);
   const session = { id: '', events: [] as any[] };
   let followed = false;
@@ -149,11 +181,18 @@ function makeHarness(
     get: vi.fn((key: string) => {
       if (key === 'agents') return {
         create: async (options: any) => {
+          create(options);
           session.id = options.sessionId;
           options.setup({
             tools: { register },
             on: vi.fn(() => () => undefined),
           });
+          return { agent, dispose };
+        },
+        resume: async (options: any) => {
+          resume(options);
+          session.id = options.resumeSessionId;
+          options.setup({ tools: { register }, on: vi.fn(() => () => undefined) });
           return { agent, dispose };
         },
       };
@@ -170,7 +209,7 @@ function makeHarness(
   };
   const service = new DshService(config as any, queue, tools as any);
   (service as any).ensureBooted = vi.fn().mockResolvedValue(ctx);
-  return { service, register, dispose, cancel, toolDefinition };
+  return { service, register, dispose, cancel, toolDefinition, create, resume };
 }
 
 function completionOf(handle: DshExecutionHandle): Promise<any> {
