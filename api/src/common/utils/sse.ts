@@ -81,9 +81,9 @@ export function sendSSE(
     res.end();
   });
 
-  // 客户端断开（P1-02 6.2-8）：取消排队中或终止已启动的 Codex 任务，释放队列槽位。
-  // 排队任务不 spawn；已启动任务由 CodexService 侧发 SIGTERM → 宽限期后 SIGKILL。
-  // 取消后的子进程标记 __cancelled，service 的 close handler 跳过失败落库（刷新 ≠ 生成失败）。
+  // 客户端断开（P1-02 6.2-8）：调用执行器提供的取消回调并释放队列槽位。
+  // 迁移期可能是 Codex 子进程终止，也可能是 dsh agent.cancel()；具体机制不属于 SSE 层。
+  // 执行器会标记 __cancelled，service 的 close handler 跳过失败落库（刷新 ≠ 生成失败）。
   res.on('close', () => {
     if (!ended && onDisconnect) onDisconnect();
   });
