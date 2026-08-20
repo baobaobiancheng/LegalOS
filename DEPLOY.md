@@ -65,9 +65,8 @@ cd ~/LegalOS/LegalOS/api
 # 该服务器使用 npm install，不使用 npm ci。
 npm install
 
-# 安装后批准 bcrypt / Prisma / esbuild 所需的原生构建脚本；
-# 审批会持久化，后续安装可直接复用。不要用 JSON 内容覆盖 .npmrc。
-npm approve-scripts bcrypt @prisma/client @prisma/engines prisma esbuild
+# bcrypt / Prisma / esbuild 的 install-script 白名单已由 api/package.json 统一管理。
+# 服务器不要再执行 npm approve-scripts 修改 package.json，否则下次 pull 会产生冲突。
 
 # 1. 建库（migrate 只建表不建库）
 mysql -u root -p -e "CREATE DATABASE legal_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
