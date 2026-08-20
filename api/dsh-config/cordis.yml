@@ -1,0 +1,58 @@
+# LegalOS 嵌入 dsh 的最小配置树（DshService 库嵌入用，参见迁移计划
+# /Users/admin/.claude/plans/kind-prancing-stream.md 的 D2 决策）。
+#
+# 只挂库嵌入 + 单轮/流式文本生成必需的行；base bundle 里工具执行、沙箱、
+# 子代理、技能等与合同起草/审查无关的行一概不挂 —— 保持这棵树尽量小，
+# 降低攻击面和排障复杂度。会话持久化用默认 JSONL（D1 决策：双写，
+# LegalOS 业务表继续只存结构化摘要，不依赖这里落盘的原始事件）。
+#
+# 网关配置（LLM_BASE_URL/LLM_MODEL/LLM_API_KEY）由 DshService 在启动时
+# 通过 --patch 覆盖 llm-pi-ai 行的 config，而不是写死在这个文件里，
+# 因为 LegalOS 的网关地址/模型名/凭证来自 NestJS 的 ConfigService。
+
+- id: timer
+  name: '@deepseek-ai/cordis-plugin-timer'
+
+- id: llm
+  name: '@deepseek-ai/dsh-llm'
+
+- id: llm-retry
+  name: '@deepseek-ai/dsh-llm-retry'
+
+- id: credentials
+  name: '@deepseek-ai/dsh-credentials-local'
+
+# providers 留空：DshService 启动时通过 --patch 注入真实网关路由
+# （route key legalos-gateway，见 dsh.service.ts buildLlmPatch()）。
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+
+- id: session
+  name: '@deepseek-ai/dsh-session'
+
+- id: session-persistence-jsonl
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js dshHomePath('sessions')
+
+- id: tools
+  name: '@deepseek-ai/dsh-tools'
+
+- id: system-prompt
+  name: '@deepseek-ai/dsh-system-prompt'
+  config:
+    persona: ''
+
+- id: agent
+  name: '@deepseek-ai/dsh-agent'
+
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: legalos-gateway
+    model: placeholder
+
+- id: agent-loop
+  name: '@deepseek-ai/dsh-agent-loop'
+  config:
+    agents: []

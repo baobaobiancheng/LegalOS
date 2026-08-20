@@ -8,7 +8,9 @@ import {
 } from '@nestjs/common';
 import { Inject } from '@nestjs/common';
 import { Response } from 'express';
-import { ChildProcess } from 'child_process';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
+import { SseStream } from '../../common/utils/sse';
 import {
   existsSync,
   statSync,
@@ -24,7 +26,7 @@ import { join, extname } from 'path';
 import { createHash, randomUUID } from 'crypto';
 import * as mammoth from 'mammoth';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CodexService } from '../../common/services/codex.service';
+import { DshService, DshExecutionHandle } from '../../common/services/dsh.service';
 import { injectSkillSection } from '../../common/utils/skill-prompt';
 import { DINGTALK_ADAPTER, DingTalkAdapter } from '../project/adapters/adapter.interfaces';
 import { ContractTemplateService } from './contract-template.service';
@@ -57,7 +59,7 @@ export class ContractService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly codexService: CodexService,
+    private readonly dshService: DshService,
     private readonly templateService: ContractTemplateService,
     @Inject(DINGTALK_ADAPTER) private readonly dingtalk: DingTalkAdapter,
     private readonly createProjectUseCase: CreateProjectUseCase,
@@ -73,6 +75,49 @@ export class ContractService {
   // ═══════════════════════════════════════════
 
   /**
+   * 把 DshService 的语义化事件句柄适配成 sendSSE 期望的 SseStream 形状
+   * （.stdout 增量 + on('close', code) + __cancelled/__finalText/__errorMessage 标记）。
+   *
+   * 适配只做在这一处：DshService 本身不伪装 ChildProcess（迁移计划 D2 决策的落地），
+   * controller 侧的 sendSSE 复用不变——它仍然只服务咨询/合同两条通路的共同 SSE 协议，
+   * 与执行引擎（Codex 还是 dsh）无关。sendSSE 的参数类型本身已是 SseStream
+   * （sse.ts），合同模块这里只需适配成该形状，无需伪造完整 ChildProcess。
+   */
+  private adaptDshHandle(handle: DshExecutionHandle): SseStream {
+    const emitter = new EventEmitter();
+    const stdout = new PassThrough();
+    const fake: SseStream = Object.assign(emitter, {
+      stdout,
+      __finalText: undefined,
+      __errorMessage: undefined,
+    });
+
+    handle.on('text', (delta: string) => stdout.write(delta));
+    handle.on('done', (result: { text: string }) => {
+      // 用 dsh 侧权威的完整文本覆盖增量重拼，避免两个来源分叉（sendSSE 读取 __finalText）
+      fake.__finalText = result.text;
+      stdout.end();
+      emitter.emit('close', 0);
+    });
+    handle.on('cancelled', () => {
+      (fake as any).__cancelled = true;
+      stdout.end();
+      emitter.emit('close', null);
+    });
+    handle.on('error', (error: Error) => {
+      this.logger.error(`dsh 执行失败：${error.message}`);
+      // 真实错误信息经 __errorMessage 透传（落库/SSE error 分支读取）；
+      // 不单独 emit 'error'——无监听时 EventEmitter 会抛未处理错误，
+      // 而 close(code≠0) 已同时覆盖 DB 失败写入与前端 SSE 失败响应。
+      fake.__errorMessage = error.message;
+      stdout.end();
+      emitter.emit('close', 1);
+    });
+
+    return fake;
+  }
+
+  /**
    * 生成合同草稿。新建工单复用 CreateProjectUseCase（事务 + 幂等 + Outbox，P1-03），
    * 不再手工分步创建。返回 SSE 子进程供 controller 推送。
    */
@@ -82,7 +127,7 @@ export class ContractService {
     signal?: AbortSignal,
   ): Promise<{
     projectId: string;
-    stream?: ChildProcess;
+    stream?: SseStream;
     reused?: boolean;
     status?: string;
     generationRunId?: string;
@@ -209,9 +254,9 @@ export class ContractService {
     const prompt = this.buildDraftPrompt(template.prompt, elements, template.slug, template.name);
     // 合同草稿远长于咨询回复：timeout 放宽到 600s（实测超时根因，2026-08-03）
     const generationRunId = generationRun.run.id;
-    let stream: ChildProcess;
+    let handle: DshExecutionHandle;
     try {
-      stream = await this.codexService.executeStream(prompt, {
+      handle = await this.dshService.executeStream(prompt, {
         timeout: 600_000,
         sessionId: projectId,
         signal,
@@ -228,10 +273,13 @@ export class ContractService {
       throw error;
     }
 
+    const stream = this.adaptDshHandle(handle);
     let fullText = '';
     stream.stdout?.on('data', (chunk: Buffer) => { fullText += chunk.toString(); });
 
     stream.on('close', async (code) => {
+      // dsh 侧权威完整文本（done 事件携带），回退到增量重拼（理论一致，防御分叉）
+      const finalText = (stream as any).__finalText ?? fullText;
       // 连接断开主动取消 → 不写失败状态（刷新 ≠ 生成失败）
       if ((stream as any).__cancelled) {
         await this.prisma.contractGenerationRun.update({
@@ -240,22 +288,22 @@ export class ContractService {
         }).catch(() => undefined);
         return;
       }
-      if (code === 0 && fullText.trim()) {
+      if (code === 0 && finalText.trim()) {
         try {
           await this.prisma.$transaction(async (tx) => {
             // AI 草稿 → ContractDocument(type=draft, version=N)；消息仅供 UI，不是审查数据源
             const document = await this.createContractDocument(tx, {
               projectId,
               documentType: 'draft',
-              content: fullText.trim(),
+              content: finalText.trim(),
               createdBy: actor.id,
             });
             await tx.projectMessage.create({
-              data: { projectId, role: 'assistant', text: fullText.trim() },
+              data: { projectId, role: 'assistant', text: finalText.trim() },
             });
             await tx.project.update({
               where: { id: projectId },
-              data: { status: '待复核', result: fullText.trim() },
+              data: { status: '待复核', result: finalText.trim() },
             });
             await tx.contractGenerationRun.update({
               where: { id: generationRunId },
@@ -269,7 +317,7 @@ export class ContractService {
           });
           await this.addEvent(projectId, this.formatTime() + ' · 合同草稿已生成');
           // 独立提示消息（不放入合同正文）
-          const pendingCount = (fullText.match(/【待补充】/g) || []).length;
+          const pendingCount = (finalText.match(/【待补充】/g) || []).length;
           await this.addEvent(
             projectId,
             `本稿共 ${pendingCount} 处【待补充】，需双方确认后填写。本稿由 AI 生成，仅供参考，需经法务审阅后生效。`,
@@ -280,9 +328,12 @@ export class ContractService {
       } else {
         this.logger.error(`合同草稿生成失败，code=${code}`);
         try {
+          const errorMessage = (stream as any).__errorMessage
+            ? String((stream as any).__errorMessage).slice(0, 200)
+            : 'AI 合同生成失败或超时';
           await this.prisma.contractGenerationRun.update({
             where: { id: generationRunId },
-            data: { status: 'failed', completedAt: new Date(), errorMessage: 'Codex 合同生成失败或超时' },
+            data: { status: 'failed', completedAt: new Date(), errorMessage },
           });
           await this.prisma.project.update({
             where: { id: projectId },
@@ -378,7 +429,7 @@ export class ContractService {
     signal?: AbortSignal,
   ): Promise<{
     projectId: string;
-    stream: ChildProcess;
+    stream: SseStream;
     reviewRunId: string;
     sourceDocumentId: string;
     sourceVersion: number;
@@ -438,9 +489,9 @@ export class ContractService {
       skillPrompt ?? undefined,
     );
 
-    let stream: ChildProcess;
+    let handle: DshExecutionHandle;
     try {
-      stream = await this.codexService.executeStream(prompt, {
+      handle = await this.dshService.executeStream(prompt, {
         timeout: 600_000,
         sessionId: projectId,
         signal,
@@ -460,10 +511,13 @@ export class ContractService {
       throw e;
     }
 
+    const stream = this.adaptDshHandle(handle);
     let fullText = '';
     stream.stdout?.on('data', (chunk: Buffer) => { fullText += chunk.toString(); });
 
     stream.on('close', async (code) => {
+      // dsh 侧权威完整文本（done 事件携带），回退到增量重拼（理论一致，防御分叉）
+      const finalText = (stream as any).__finalText ?? fullText;
       if ((stream as any).__cancelled) {
         await this.prisma.contractReviewRun
           .update({
@@ -473,16 +527,16 @@ export class ContractService {
           .catch(() => undefined);
         return;
       }
-      if (code === 0 && fullText.trim()) {
+      if (code === 0 && finalText.trim()) {
         try {
           // 风险报告只进 ReviewRun.result（9.3-6）；另写 ProjectMessage 供 UI 展示
           await this.prisma.$transaction([
             this.prisma.contractReviewRun.update({
               where: { id: reviewRun.id },
-              data: { status: 'succeeded', result: fullText.trim(), completedAt: new Date() },
+              data: { status: 'succeeded', result: finalText.trim(), completedAt: new Date() },
             }),
             this.prisma.projectMessage.create({
-              data: { projectId, role: 'assistant', text: fullText.trim(), label: 'AI 风险审查' },
+              data: { projectId, role: 'assistant', text: finalText.trim(), label: 'AI 风险审查' },
             }),
           ]);
           await this.addEvent(projectId, this.formatTime() + ' · AI 风险审查完成');
@@ -490,10 +544,13 @@ export class ContractService {
           this.logger.error(`审查结果落库失败：${err}`);
         }
       } else {
+        const errorMessage = (stream as any).__errorMessage
+          ? String((stream as any).__errorMessage).slice(0, 200)
+          : 'AI 审查失败或超时';
         await this.prisma.contractReviewRun
           .update({
             where: { id: reviewRun.id },
-            data: { status: 'failed', errorMessage: 'Codex 审查失败或超时', completedAt: new Date() },
+            data: { status: 'failed', errorMessage, completedAt: new Date() },
           })
           .catch(() => undefined);
         await this.addEvent(projectId, this.formatTime() + ' · AI 风险审查失败，请人工审阅');

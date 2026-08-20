@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { EventEmitter } from 'events';
 import { ContractService } from '../src/modules/contract/contract.service';
 import { CreateProjectUseCase } from '../src/modules/project/application/create-project.use-case';
 import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
@@ -6,18 +7,12 @@ import { ProjectAccessPolicy } from '../src/modules/project/domain/project-acces
 const ACTOR = { id: 'u-biz', role: 'business' as const };
 const TEMPLATE = { slug: 'verify-template', name: '验证模板', prompt: '只输出合同正文。' };
 
-const makeStream = () => {
-  const handlers: Record<string, Array<(...args: any[]) => void>> = {};
-  return {
-    stdout: { on: vi.fn((event: string, cb: any) => { (handlers[event] ||= []).push(cb); }) },
-    on: vi.fn((event: string, cb: any) => { (handlers[event] ||= []).push(cb); }),
-    emit: (event: string, value?: any) => (handlers[event] || []).forEach((cb) => cb(value)),
-  } as any;
-};
+/** DshService.executeStream 的语义化事件句柄 mock（'text'/'done'/'cancelled'/'error'） */
+const makeHandle = () => new EventEmitter();
 
 describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
   let prisma: any;
-  let codex: any;
+  let dsh: any;
   let service: ContractService;
 
   beforeEach(() => {
@@ -33,10 +28,10 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
       projectEvent: { create: vi.fn() },
       $transaction: vi.fn(async (callback: any) => callback(prisma)),
     };
-    codex = { executeStream: vi.fn() };
+    dsh = { executeStream: vi.fn() };
     service = new ContractService(
       prisma as any,
-      codex as any,
+      dsh as any,
       { findBySlug: vi.fn().mockResolvedValue(TEMPLATE) } as any,
       { sendNotification: vi.fn() } as any,
       new CreateProjectUseCase(prisma) as any,
@@ -61,10 +56,10 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
 
     expect(result).toMatchObject({ projectId: 'project-running', reused: true, status: '分析中' });
     expect(prisma.projectMessage.create).not.toHaveBeenCalled();
-    expect(codex.executeStream).not.toHaveBeenCalled();
+    expect(dsh.executeStream).not.toHaveBeenCalled();
   });
 
-  it('已有已完成运行记录只复用文档，不重新启动 Codex', async () => {
+  it('已有已完成运行记录只复用文档，不重新启动 AI 执行', async () => {
     prisma.project.findUnique.mockResolvedValue({
       id: 'project-done', kind: 'contract', status: '待复核', route: 'llm',
       creatorId: ACTOR.id, ownerId: ACTOR.id,
@@ -83,7 +78,7 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
       generationRunId: 'generation-done', documentId: 'document-1',
     });
     expect(prisma.projectMessage.create).not.toHaveBeenCalled();
-    expect(codex.executeStream).not.toHaveBeenCalled();
+    expect(dsh.executeStream).not.toHaveBeenCalled();
   });
 
   it('已完成项目使用新要素指纹时允许生成新版本，但先 claim 生成运行', async () => {
@@ -95,8 +90,8 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
     prisma.contractGenerationRun.create.mockResolvedValue({
       id: 'generation-v2', status: 'running', documentId: null,
     });
-    const stream = makeStream();
-    codex.executeStream.mockResolvedValue(stream);
+    const handle = makeHandle();
+    dsh.executeStream.mockResolvedValue(handle);
 
     const result = await service.generateDraft({
       projectId: 'project-versioned', templateSlug: TEMPLATE.slug,
@@ -107,6 +102,7 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
     expect(prisma.contractGenerationRun.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ projectId: 'project-versioned', status: 'running' }),
     }));
-    expect(codex.executeStream).toHaveBeenCalledTimes(1);
+    expect(dsh.executeStream).toHaveBeenCalledTimes(1);
   });
 });
+

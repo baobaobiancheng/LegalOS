@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { EventEmitter } from 'events';
 import { ContractService } from '../src/modules/contract/contract.service';
 import { CreateProjectUseCase } from '../src/modules/project/application/create-project.use-case';
 import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
@@ -24,22 +25,13 @@ const PROJECT = {
   dingtalkChatId: null,
 };
 
-/** 可手动触发 data/close 的伪流（stdout.on 与 _emit 共用同一 handler 表） */
-const makeStream = () => {
-  const handlers: Record<string, Array<(...args: any[]) => void>> = {};
-  const stream: any = {
-    stdout: { on: vi.fn((ev: string, cb: any) => { (handlers[ev] = handlers[ev] || []).push(cb); }) },
-    stderr: { on: vi.fn() },
-    on: vi.fn((ev: string, cb: any) => { (handlers[ev] = handlers[ev] || []).push(cb); }),
-    _emit: (ev: string, arg?: any) => (handlers[ev] || []).forEach((cb) => cb(arg)),
-  };
-  return stream;
-};
+/** DshService.executeStream 的语义化事件句柄 mock（'text'/'done'/'cancelled'/'error'） */
+const makeHandle = () => new EventEmitter();
 
 describe('ContractService.reviewContract 源文档', () => {
   let service: ContractService;
   let prisma: any;
-  let codex: any;
+  let dsh: any;
   let template: any;
   let dingtalk: any;
 
@@ -53,12 +45,12 @@ describe('ContractService.reviewContract 源文档', () => {
       contractReviewRun: { create: vi.fn(), update: vi.fn().mockResolvedValue({}) },
       $transaction: vi.fn((ops: any[]) => Promise.all(ops)),
     };
-    codex = { executeStream: vi.fn() };
+    dsh = { executeStream: vi.fn() };
     template = { findBySlug: vi.fn() };
     dingtalk = { sendNotification: vi.fn() };
     service = new ContractService(
       prisma as any,
-      codex as any,
+      dsh as any,
       template as any,
       dingtalk as any,
       new CreateProjectUseCase(prisma) as any,
@@ -69,18 +61,18 @@ describe('ContractService.reviewContract 源文档', () => {
     prisma.contractReviewRun.create.mockResolvedValue({ id: 'run-1' });
   });
 
-  it('显式 sourceDocumentId 属于其他工单 → 拒绝，不建 ReviewRun 不启动 Codex', async () => {
+  it('显式 sourceDocumentId 属于其他工单 → 拒绝，不建 ReviewRun 不启动 AI 执行', async () => {
     prisma.contractDocument.findFirst.mockResolvedValue(null); // 跨工单/不存在
     await expect(
       service.reviewContract('c-1', ACTOR, undefined, 'doc-foreign'),
     ).rejects.toThrow('源文档不存在或不属于当前工单');
     expect(prisma.contractReviewRun.create).not.toHaveBeenCalled();
-    expect(codex.executeStream).not.toHaveBeenCalled();
+    expect(dsh.executeStream).not.toHaveBeenCalled();
   });
 
   it('缺省取项目最新 ContractDocument，不使用 assistant 消息推断', async () => {
     prisma.contractDocument.findFirst.mockResolvedValue({ id: 'doc-2', content: '最新修订版合同正文', version: 2 });
-    codex.executeStream.mockReturnValue(makeStream());
+    dsh.executeStream.mockResolvedValue(makeHandle());
 
     const result = await service.reviewContract('c-1', ACTOR);
 
@@ -93,13 +85,13 @@ describe('ContractService.reviewContract 源文档', () => {
       expect.objectContaining({ data: expect.objectContaining({ sourceDocumentId: 'doc-2' }) }),
     );
     // prompt 只使用该文档 content
-    const prompt = codex.executeStream.mock.calls[0][0];
+    const prompt = dsh.executeStream.mock.calls[0][0];
     expect(prompt).toContain('最新修订版合同正文');
   });
 
   it('未上传新文档第二次审查 → 仍指向同一份源文档（不会用上一次风险报告当正文）', async () => {
     prisma.contractDocument.findFirst.mockResolvedValue({ id: 'doc-1', content: '合同正文', version: 1 });
-    codex.executeStream.mockReturnValue(makeStream());
+    dsh.executeStream.mockResolvedValue(makeHandle());
 
     const first = await service.reviewContract('c-1', ACTOR);
     const second = await service.reviewContract('c-1', ACTOR);
@@ -112,12 +104,12 @@ describe('ContractService.reviewContract 源文档', () => {
 
   it('审查成功：ReviewRun.result 写风险报告，绝不创建 ContractDocument', async () => {
     prisma.contractDocument.findFirst.mockResolvedValue({ id: 'doc-1', content: '合同正文', version: 1 });
-    const stream = makeStream();
-    codex.executeStream.mockReturnValue(stream);
+    const handle = makeHandle();
+    dsh.executeStream.mockResolvedValue(handle);
 
     await service.reviewContract('c-1', ACTOR);
-    stream._emit('data', Buffer.from('风险清单：违约金过高…'));
-    stream._emit('close', 0);
+    handle.emit('text', '风险清单：违约金过高…');
+    handle.emit('done', { text: '风险清单：违约金过高…' });
 
     await vi.waitFor(() => expect(prisma.contractReviewRun.update).toHaveBeenCalled());
     const update = prisma.contractReviewRun.update.mock.calls[0][0];
@@ -131,21 +123,22 @@ describe('ContractService.reviewContract 源文档', () => {
     );
   });
 
-  it('审查失败：ReviewRun failed + 脱敏 errorMessage，源文档不变', async () => {
+  it('审查失败：ReviewRun failed + 真实 errorMessage 透传，源文档不变', async () => {
     prisma.contractDocument.findFirst.mockResolvedValue({ id: 'doc-1', content: '合同正文', version: 1 });
-    const stream = makeStream();
-    codex.executeStream.mockReturnValue(stream);
+    const handle = makeHandle();
+    dsh.executeStream.mockResolvedValue(handle);
 
     await service.reviewContract('c-1', ACTOR);
-    stream._emit('close', 1);
+    handle.emit('error', new Error('dsh turn 失败'));
 
     await vi.waitFor(() => expect(prisma.contractReviewRun.update).toHaveBeenCalled());
     expect(prisma.contractReviewRun.update.mock.calls[0][0].data).toMatchObject({
       status: 'failed',
-      errorMessage: 'Codex 审查失败或超时',
+      errorMessage: 'dsh turn 失败',
     });
     expect(prisma.contractDocument.create).not.toHaveBeenCalled();
     // 源文档未被修改
     expect(prisma.contractDocument.findFirst).toHaveBeenCalledTimes(1);
   });
 });
+

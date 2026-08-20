@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { EventEmitter } from 'events';
 import { ContractService } from '../src/modules/contract/contract.service';
 import { CreateProjectUseCase } from '../src/modules/project/application/create-project.use-case';
 import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
@@ -10,18 +11,15 @@ import { ProjectAccessPolicy } from '../src/modules/project/domain/project-acces
  * - P1-05：源文档取 ContractDocument（显式 sourceDocumentId 或最新），先建 ReviewRun
  */
 
-const mockStream = () => ({
-  stdout: { on: vi.fn() },
-  stderr: { on: vi.fn() },
-  on: vi.fn(),
-});
+/** DshService.executeStream 的语义化事件句柄 mock（本测试不驱动事件，只校验 prompt/元数据） */
+const mockHandle = () => new EventEmitter();
 
 const SOURCE_DOC = { id: 'doc-1', content: '第一条 服务内容\n甲方提供AI服务…', version: 1 };
 
 describe('ContractService.reviewContract 技能注入', () => {
   let service: ContractService;
   let prisma: any;
-  let codex: any;
+  let dsh: any;
   let template: any;
   let dingtalk: any;
 
@@ -35,16 +33,17 @@ describe('ContractService.reviewContract 技能注入', () => {
       contractDocument: { findFirst: vi.fn().mockResolvedValue(SOURCE_DOC) },
       contractReviewRun: { create: vi.fn().mockResolvedValue({ id: 'run-1' }), update: vi.fn() },
     };
-    codex = { executeStream: vi.fn().mockReturnValue(mockStream()) };
+    dsh = { executeStream: vi.fn().mockResolvedValue(mockHandle()) };
     template = { findBySlug: vi.fn() };
     dingtalk = { sendNotification: vi.fn() };
     service = new ContractService(
       prisma as any,
-      codex as any,
+      dsh as any,
       template as any,
       dingtalk as any,
       new CreateProjectUseCase(prisma) as any,
       new ProjectAccessPolicy() as any,
+      { execute: vi.fn() } as any,
     );
 
     prisma.project.findUnique.mockResolvedValue({
@@ -82,7 +81,7 @@ describe('ContractService.reviewContract 技能注入', () => {
     );
 
     // 注入：prompt 含技能段，且只使用源文档 content（不再按 assistant 消息推断）
-    const prompt = codex.executeStream.mock.calls[0][0];
+    const prompt = dsh.executeStream.mock.calls[0][0];
     expect(prompt).toContain('## 技能指令（合同风险审查）');
     expect(prompt).toContain('你是企业合同审查专家。逐条识别风险。');
     expect(prompt).toContain('总体评价');
@@ -105,7 +104,7 @@ describe('ContractService.reviewContract 技能注入', () => {
     await service.reviewContract('c-1', { id: 'u-bp', role: 'legal_bp' }, 'junk-id');
 
     expect(prisma.project.update).not.toHaveBeenCalled();
-    const prompt = codex.executeStream.mock.calls[0][0];
+    const prompt = dsh.executeStream.mock.calls[0][0];
     expect(prompt).not.toContain('## 技能指令');
     expect(prompt).toContain('总体评价'); // 基础审查 prompt 正常
   });
@@ -115,7 +114,8 @@ describe('ContractService.reviewContract 技能注入', () => {
 
     expect(prisma.skill.findFirst).not.toHaveBeenCalled();
     expect(prisma.project.update).not.toHaveBeenCalled();
-    const prompt = codex.executeStream.mock.calls[0][0];
+    const prompt = dsh.executeStream.mock.calls[0][0];
     expect(prompt).not.toContain('## 技能指令');
   });
 });
+

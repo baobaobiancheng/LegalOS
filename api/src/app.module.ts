@@ -11,6 +11,7 @@ import { SkillModule } from './modules/skill/skill.module';
 import { MembersModule } from './modules/members/members.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { CodexModule } from './common/services/codex.module';
+import { DshModule } from './common/services/dsh.module';
 import { ConsultationChatModule } from './common/services/consultation-chat.module';
 import { BaijianModule } from './common/baijian/baijian.module';
 
@@ -20,6 +21,7 @@ import { BaijianModule } from './common/baijian/baijian.module';
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     PrismaModule,
     CodexModule,
+    DshModule,
     BaijianModule,
     ConsultationChatModule,
     AuthModule,

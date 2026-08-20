@@ -1,10 +1,9 @@
 import { Response } from 'express';
-import { ChildProcess } from 'child_process';
 import { Readable } from 'stream';
 import { StringDecoder } from 'string_decoder';
 
 /**
- * 将 Codex 子进程的 stdout 以 SSE 流式推送到前端。
+ * 将执行引擎（Codex 子进程 / dsh 语义句柄）的输出以 SSE 流式推送到前端。
  *
  * 抽取自 ProjectController.createMessage，供业务咨询 / 合同协作等多处复用（DRY）。
  * 工程评审决策 #9：消除 SSE 推送逻辑重复。
@@ -16,7 +15,7 @@ import { StringDecoder } from 'string_decoder';
  */
 export function sendSSE(
   res: Response,
-  stream: ChildProcess & { thinking?: Readable },
+  stream: SseStream,
   donePayload: Record<string, unknown> = {},
   onDisconnect?: () => void,
 ): void {
@@ -78,7 +77,7 @@ export function sendSSE(
   stream.on('error', () => {
     if (res.destroyed || res.writableEnded) return;
     ended = true;
-    res.write(`data: ${JSON.stringify({ error: true, message: '服务异常' })}\n\n`);
+    res.write(`data: ${JSON.stringify({ error: true, message: (stream as any).__errorMessage ?? '服务异常' })}\n\n`);
     res.end();
   });
 
@@ -106,6 +105,7 @@ export interface SseStream {
   __answerItemId?: string | null;
   __cancelled?: boolean;
   __runId?: string;
+  __errorMessage?: string;
 }
 
 export type ConsultStreamEvent =

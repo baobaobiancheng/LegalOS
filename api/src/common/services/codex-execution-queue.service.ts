@@ -202,13 +202,13 @@ export class CodexExecutionQueueService {
       await done; // 持槽直至子进程 close / 非流式任务结束
       const executionMs = Date.now() - (task.startedAt ?? Date.now());
       this.logger.log(
-        `Codex 执行完成 sessionId=${task.sessionId ?? '-'} task=${task.id} queueWaitMs=${queueWaitMs} executionMs=${executionMs} active=${this.active} queued=${this.queue.length}`,
+        `AI 执行完成 sessionId=${task.sessionId ?? '-'} task=${task.id} queueWaitMs=${queueWaitMs} executionMs=${executionMs} active=${this.active} queued=${this.queue.length}`,
       );
     } catch (e) {
       if (e instanceof CodexExecutionCancelledError) {
-        this.logger.warn(`Codex 任务取消 sessionId=${task.sessionId ?? '-'} task=${task.id} queueWaitMs=${queueWaitMs}`);
+        this.logger.warn(`AI 任务取消 sessionId=${task.sessionId ?? '-'} task=${task.id} queueWaitMs=${queueWaitMs}`);
       } else {
-        this.logger.error(`Codex 执行失败 sessionId=${task.sessionId ?? '-'} task=${task.id}：${(e as Error)?.message}`);
+        this.logger.error(`AI 执行失败 sessionId=${task.sessionId ?? '-'} task=${task.id}：${(e as Error)?.message}`);
       }
       task.reject(e);
     } finally {
