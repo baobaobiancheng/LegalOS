@@ -18,6 +18,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { sendSSE } from '../../common/utils/sse';
 import { ContractService } from './contract.service';
+import { ContractFileService } from './contract-file.service';
 import { ContractTemplateService } from './contract-template.service';
 import { CreateContractDto } from './dto/create-contract.dto';
 import { Role } from '@prisma/client';
@@ -25,7 +26,7 @@ import { ProjectActor } from '../project/domain/project-access.types';
 
 /**
  * multer diskStorage：先落盘到 storage/contracts/.staging/，不占内存。
- * 不能在鉴权前写入项目目录，正式目录移动由 ContractService 在 Policy
+ * 不能在鉴权前写入项目目录，正式目录移动由 ContractFileService 在 Policy
  * 校验通过后完成（P1-06）。
  * 文件名用 uuid+扩展名，避免路径穿越与中文文件名问题。
  */
@@ -48,6 +49,7 @@ const contractStorage = multer.diskStorage({
 export class ContractController {
   constructor(
     private readonly contractService: ContractService,
+    private readonly fileService: ContractFileService,
     private readonly templateService: ContractTemplateService,
   ) {}
 
@@ -140,7 +142,7 @@ export class ContractController {
     @CurrentUser('role') role: Role,
   ) {
     const actor: ProjectActor = { id: userId, role };
-    return this.contractService.uploadFile(id, file, kind, actor);
+    return this.fileService.uploadFile(id, file, kind, actor);
   }
 
   /** 附件列表 */
@@ -152,7 +154,7 @@ export class ContractController {
     @CurrentUser('role') role: Role,
   ) {
     const actor: ProjectActor = { id: userId, role };
-    return this.contractService.listFiles(id, actor);
+    return this.fileService.listFiles(id, actor);
   }
 
   /** 下载附件（读磁盘流） */
@@ -166,6 +168,6 @@ export class ContractController {
     @Res() res: Response,
   ) {
     const actor: ProjectActor = { id: userId, role };
-    await this.contractService.downloadFile(id, fileId, actor, res);
+    await this.fileService.downloadFile(id, fileId, actor, res);
   }
 }

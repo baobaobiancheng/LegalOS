@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ContractController } from './contract.controller';
 import { ContractService } from './contract.service';
+import { ContractFileService } from './contract-file.service';
 import { ContractTemplateService } from './contract-template.service';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { MockDingTalkAdapter } from '../project/adapters/mock-dingtalk.adapter';
@@ -14,6 +15,7 @@ import { EscalateProjectToLegalUseCase } from '../project/application/escalate-p
   controllers: [ContractController],
   providers: [
     ContractService,
+    ContractFileService,
     ContractTemplateService,
     ProjectAccessPolicy,
     CreateProjectUseCase,

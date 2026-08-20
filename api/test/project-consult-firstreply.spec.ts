@@ -7,6 +7,7 @@ import { ProjectStateMachine } from '../src/modules/project/domain/project-state
 import { CreateProjectUseCase } from '../src/modules/project/application/create-project.use-case';
 import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
 import { EscalateProjectToLegalUseCase } from '../src/modules/project/application/escalate-project-to-legal.use-case';
+import { ConsultationReplyOrchestrator } from '../src/modules/project/application/consultation-reply.orchestrator';
 import { CreateProjectDto } from '../src/modules/project/dto/create-project.dto';
 
 /**
@@ -108,9 +109,14 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
       new ProjectStateMachine() as any,
       { execute: vi.fn() } as any,
       new EscalateProjectToLegalUseCase(prisma) as any,
-      consultationChat as any,
-      contextBuilder as any,
-      { get: vi.fn((_k: string, d: unknown) => d) } as any,
+      // 真实编排器：内部调用 consultationChat/contextBuilder mock，原断言不变
+      new ConsultationReplyOrchestrator(
+        prisma,
+        consultationChat,
+        contextBuilder,
+        { get: vi.fn((_k: string, d: unknown) => d) } as any,
+        attachmentService,
+      ) as any,
       attachmentService as any,
     );
     prisma.project.create.mockResolvedValue(mockProject());

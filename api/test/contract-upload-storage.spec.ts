@@ -2,14 +2,13 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { ContractService } from '../src/modules/contract/contract.service';
-import { CreateProjectUseCase } from '../src/modules/project/application/create-project.use-case';
+import { ContractFileService } from '../src/modules/contract/contract-file.service';
 import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
 
-describe('ContractService.uploadFile staging 与文件签名', () => {
+describe('ContractFileService.uploadFile staging 与文件签名', () => {
   let root: string;
   let prisma: any;
-  let service: ContractService;
+  let service: ContractFileService;
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'legalos-upload-'));
@@ -24,14 +23,9 @@ describe('ContractService.uploadFile staging 与文件签名', () => {
       contractDocument: { count: vi.fn().mockResolvedValue(0), create: vi.fn() },
       $transaction: vi.fn(async (arg: any) => (typeof arg === 'function' ? arg(prisma) : Promise.all(arg))),
     };
-    service = new ContractService(
+    service = new ContractFileService(
       prisma as any,
-      {} as any,
-      {} as any,
-      {} as any,
-      new CreateProjectUseCase(prisma) as any,
-      new ProjectAccessPolicy(),
-      {} as any,
+      new ProjectAccessPolicy() as any,
     );
   });
 

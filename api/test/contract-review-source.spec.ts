@@ -52,6 +52,7 @@ describe('ContractService.reviewContract 源文档', () => {
       prisma as any,
       dsh as any,
       template as any,
+      {} as any,
       dingtalk as any,
       new CreateProjectUseCase(prisma) as any,
       new ProjectAccessPolicy() as any,

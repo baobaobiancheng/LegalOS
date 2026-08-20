@@ -4,41 +4,26 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
-  InternalServerErrorException,
 } from '@nestjs/common';
 import { Inject } from '@nestjs/common';
-import { Response } from 'express';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import { SseStream } from '../../common/utils/sse';
-import {
-  existsSync,
-  statSync,
-  createReadStream,
-  closeSync,
-  openSync,
-  readSync,
-  unlinkSync,
-  mkdirSync,
-  renameSync,
-} from 'fs';
-import { join, extname } from 'path';
-import { createHash, randomUUID } from 'crypto';
-import * as mammoth from 'mammoth';
+import { createHash } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DshService, DshExecutionHandle } from '../../common/services/dsh.service';
-import { injectSkillSection } from '../../common/utils/skill-prompt';
 import { DINGTALK_ADAPTER, DingTalkAdapter } from '../project/adapters/adapter.interfaces';
 import { ContractTemplateService } from './contract-template.service';
-import { CreateContractDto, ContractElementsDto } from './dto/create-contract.dto';
-import { Prisma, ContractDocumentType } from '@prisma/client';
+import { ContractFileService } from './contract-file.service';
+import { buildDraftPrompt, buildReviewPrompt, buildElementsText, hasAnyElement } from './contract-prompt.builder';
+import { CreateContractDto } from './dto/create-contract.dto';
 import { ProjectAccessPolicy } from '../project/domain/project-access.policy';
 import { ProjectAction, ProjectActor } from '../project/domain/project-access.types';
 import { CreateProjectUseCase } from '../project/application/create-project.use-case';
 import { EscalateProjectToLegalUseCase } from '../project/application/escalate-project-to-legal.use-case';
 
 /**
- * 合同协作服务。
+ * 合同协作服务（生成/审查编排；文件管理见 ContractFileService，prompt 组装见 contract-prompt.builder）。
  *
  * 数据流（ASCII 图）：
  *   generateDraft（复用 CreateProjectUseCase 事务建单，P1-03；绕过咨询 riskService/prompt）
@@ -47,28 +32,23 @@ import { EscalateProjectToLegalUseCase } from '../project/application/escalate-p
  *   submitReview（business 发起法务审阅，统一 Policy 校验）
  *   reviewContract（legal AI 风险审查，P1-05）
  *     → 显式 sourceDocumentId（缺省取项目最新可审查 ContractDocument，不再按 role/label 推断）
- *     → 先创建 ContractReviewRun(queued/running, sourceDocumentId) 再启动 Codex
+ *     → 先创建 ContractReviewRun(queued/running, sourceDocumentId) 再启动 AI
  *     → 风险报告只进 ReviewRun.result，绝不创建为 ContractDocument
- *   uploadFile / downloadFile（附件，diskStorage 落盘 + 统一 Policy；revised/final+docx 抽取
- *     文本 → ContractDocument(type=revised/final)）
  */
 @Injectable()
 export class ContractService {
   private readonly logger = new Logger(ContractService.name);
-  private readonly storageDir: string;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly dshService: DshService,
     private readonly templateService: ContractTemplateService,
+    private readonly fileService: ContractFileService,
     @Inject(DINGTALK_ADAPTER) private readonly dingtalk: DingTalkAdapter,
     private readonly createProjectUseCase: CreateProjectUseCase,
     private readonly accessPolicy: ProjectAccessPolicy,
     private readonly escalateToLegal: EscalateProjectToLegalUseCase,
-  ) {
-    this.storageDir = process.env.CONTRACT_STORAGE_DIR
-      || join(process.cwd(), 'storage', 'contracts');
-  }
+  ) {}
 
   // ═══════════════════════════════════════════
   // 生成合同草稿
@@ -162,7 +142,7 @@ export class ContractService {
     const elements = dto.elements || {};
 
     // 空要素校验（测试用例 #13）
-    if (!this.hasAnyElement(elements)) {
+    if (!hasAnyElement(elements)) {
       throw new BadRequestException('请至少填写一个合同要素');
     }
 
@@ -199,7 +179,7 @@ export class ContractService {
       const { project, created } = await this.createProjectUseCase.execute({
         kind: 'contract',
         title: `合同草稿·${template.name}`,
-        input: this.buildElementsText(elements),
+        input: buildElementsText(elements),
         creatorId: actor.id,
         risk: 'P2',
         route: 'llm',
@@ -247,11 +227,11 @@ export class ContractService {
     // 只有真正 claim 到 GenerationRun 的请求才能写首条续生成消息和启动 Codex。
     if (!createdProject && dto.projectId) {
       await this.prisma.projectMessage.create({
-        data: { projectId, role: 'user', text: this.buildElementsText(elements) },
+        data: { projectId, role: 'user', text: buildElementsText(elements) },
       });
     }
 
-    const prompt = this.buildDraftPrompt(template.prompt, elements, template.slug, template.name);
+    const prompt = buildDraftPrompt(template.prompt, elements, template.slug, template.name);
     // 合同草稿远长于咨询回复：timeout 放宽到 600s（实测超时根因，2026-08-03）
     const generationRunId = generationRun.run.id;
     let handle: DshExecutionHandle;
@@ -292,7 +272,7 @@ export class ContractService {
         try {
           await this.prisma.$transaction(async (tx) => {
             // AI 草稿 → ContractDocument(type=draft, version=N)；消息仅供 UI，不是审查数据源
-            const document = await this.createContractDocument(tx, {
+            const document = await this.fileService.createContractDocument(tx, {
               projectId,
               documentType: 'draft',
               content: finalText.trim(),
@@ -483,7 +463,7 @@ export class ContractService {
       },
     });
 
-    const prompt = this.buildReviewPrompt(
+    const prompt = buildReviewPrompt(
       sourceDoc.content,
       skillName ?? undefined,
       skillPrompt ?? undefined,
@@ -567,168 +547,6 @@ export class ContractService {
   }
 
   // ═══════════════════════════════════════════
-  // 附件（上传 / 列表 / 下载）
-  // ═══════════════════════════════════════════
-
-  /** 上传合同附件（先落 staging，Policy 通过后再移动到项目目录，P1-06） */
-  async uploadFile(
-    projectId: string,
-    file: Express.Multer.File,
-    kind: string,
-    actor: ProjectActor,
-  ) {
-    if (!file) throw new BadRequestException('未收到文件');
-    const project = await this.prisma.project.findUnique({ where: { id: projectId } });
-    if (!project) {
-      this.tryCleanup(file.path);
-      throw new NotFoundException('工单不存在');
-    }
-    try {
-      this.accessPolicy.assertCan(actor, ProjectAction.ManageFile, project);
-    } catch (e) {
-      this.tryCleanup(file.path);
-      throw e;
-    }
-
-    // 类型白名单（不信任 mimetype，工程评审决策 #6）
-    const ext = extname(file.originalname).toLowerCase();
-    const allowed = ['.docx', '.pdf', '.txt', '.md'];
-    if (!allowed.includes(ext)) {
-      this.tryCleanup(file.path);
-      throw new BadRequestException('不支持的文件类型，仅支持 .docx/.pdf/.txt/.md');
-    }
-    if (file.size > 20 * 1024 * 1024) {
-      this.tryCleanup(file.path);
-      throw new BadRequestException('文件超过 20MB 限制');
-    }
-    try {
-      this.assertFileSignature(file.path, ext);
-    } catch (e) {
-      this.tryCleanup(file.path);
-      throw e;
-    }
-    if (kind !== 'revised' && kind !== 'final') {
-      this.tryCleanup(file.path);
-      throw new BadRequestException('kind 仅支持 revised / final');
-    }
-
-    const storedName = file.filename || `${randomUUID()}${ext}`;
-    const projectDir = join(this.storageDir, projectId);
-    const finalPath = join(projectDir, storedName);
-    try {
-      // file.path 仍位于 staging；只有完成对象级鉴权和输入校验后才进入
-      // projectId 目录，避免未授权请求先创建/污染业务目录。
-      mkdirSync(projectDir, { recursive: true });
-      renameSync(file.path, finalPath);
-    } catch (e) {
-      this.tryCleanup(file.path);
-      this.logger.error(`附件移动到正式目录失败：${e}`);
-      throw new InternalServerErrorException('附件保存失败');
-    }
-
-    let record;
-    try {
-      record = await this.prisma.contractFile.create({
-        data: {
-          projectId,
-          kind,
-          originalName: file.originalname,
-          storedName,
-          mimeType: file.mimetype,
-          size: file.size,
-          uploadedBy: actor.id,
-        },
-      });
-    } catch (e) {
-      this.tryCleanup(finalPath);
-      this.logger.error(`附件记录落库失败：${e}`);
-      throw new InternalServerErrorException('附件保存失败');
-    }
-
-    // revised/final + .docx：mammoth 抽取正文 → ContractDocument（9.3-2/9.3-3）。
-    // 抽取失败不得创建空文档，返回 textExtracted=false 让前端可识别"暂不可审查"。
-    let textExtracted = false;
-    if ((kind === 'revised' || kind === 'final') && ext === '.docx') {
-      try {
-        const result = await mammoth.extractRawText({ path: finalPath });
-        const text = result.value.trim();
-        if (text) {
-          textExtracted = true;
-          await this.prisma.$transaction(async (tx) => {
-            await this.createContractDocument(tx, {
-              projectId,
-              documentType: kind as ContractDocumentType,
-              content: text,
-              sourceFileId: record.id,
-              createdBy: actor.id,
-            });
-            await tx.projectMessage.create({
-              data: {
-                projectId,
-                role: 'assistant',
-                text,
-                label: kind === 'revised' ? '修订版文本' : '终稿文本',
-              },
-            });
-          });
-        }
-      } catch (e) {
-        this.logger.warn(`mammoth 抽取失败（不影响上传）：${e}`);
-      }
-    }
-
-    await this.addEvent(projectId, this.formatTime() + ` · 上传了合同文件：${file.originalname}`);
-    return {
-      fileId: record.id,
-      originalName: record.originalName,
-      size: record.size,
-      kind: record.kind,
-      textExtracted,
-    };
-  }
-
-  /** 附件列表（含上传人显示名） */
-  async listFiles(projectId: string, actor: ProjectActor) {
-    const project = await this.prisma.project.findUnique({ where: { id: projectId } });
-    if (!project) throw new NotFoundException('工单不存在');
-    this.accessPolicy.assertCan(actor, ProjectAction.ManageFile, project);
-    return this.prisma.contractFile.findMany({
-      where: { projectId },
-      include: { uploader: { select: { displayName: true } } },
-      orderBy: { createdAt: 'desc' },
-    });
-  }
-
-  /** 下载附件 — 读磁盘流，RFC5987 filename* 支持中文名（工程评审决策 #9） */
-  async downloadFile(
-    projectId: string,
-    fileId: string,
-    actor: ProjectActor,
-    res: Response,
-  ) {
-    const project = await this.prisma.project.findUnique({ where: { id: projectId } });
-    if (!project) throw new NotFoundException('工单不存在');
-    this.accessPolicy.assertCan(actor, ProjectAction.ManageFile, project);
-
-    const file = await this.prisma.contractFile.findFirst({
-      where: { id: fileId, projectId },
-    });
-    if (!file) throw new NotFoundException('文件不存在');
-
-    const targetPath = join(this.storageDir, projectId, file.storedName);
-    if (!existsSync(targetPath)) throw new NotFoundException('文件已丢失');
-
-    const stat = statSync(targetPath);
-    res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(file.originalName)}`,
-    );
-    res.setHeader('Content-Length', stat.size);
-    createReadStream(targetPath).pipe(res);
-  }
-
-  // ═══════════════════════════════════════════
   // 内部方法
   // ═══════════════════════════════════════════
 
@@ -754,151 +572,6 @@ export class ContractService {
       orderBy: { createdAt: 'desc' },
       select: { id: true, content: true, version: true },
     });
-  }
-
-  /**
-   * 版本号安全分配（9.3-4）：事务内 count+1；并发唯一冲突(P2002)重试，不覆盖旧版本。
-   */
-  private async createContractDocument(
-    tx: Prisma.TransactionClient,
-    data: {
-      projectId: string;
-      documentType: ContractDocumentType;
-      content: string;
-      sourceFileId?: string | null;
-      createdBy?: string | null;
-    },
-    attempts = 0,
-  ): Promise<any> {
-    const count = await tx.contractDocument.count({ where: { projectId: data.projectId } });
-    const version = count + 1;
-    try {
-      return await tx.contractDocument.create({ data: { ...data, version } });
-    } catch (e: any) {
-      if (e?.code === 'P2002' && attempts < 5) {
-        return this.createContractDocument(tx, data, attempts + 1);
-      }
-      throw e;
-    }
-  }
-
-  private hasAnyElement(e: ContractElementsDto): boolean {
-    return !!(e.partyA || e.partyB || e.amount || e.term || e.clauses);
-  }
-
-  private buildElementsText(e: ContractElementsDto): string {
-    const fields: [string, string | undefined][] = [
-      ['甲方', e.partyA], ['乙方', e.partyB], ['金额', e.amount], ['期限', e.term],
-      ['甲方通讯地址', e.partyAAddress], ['甲方授权代表', e.partyARepresentative],
-      ['甲方经办人', e.partyAContact], ['甲方联系电话', e.partyATel], ['甲方电子邮件', e.partyAEmail],
-      ['乙方通讯地址', e.partyBAddress], ['乙方联系人', e.partyBContact], ['乙方联系电话', e.partyBTel],
-      ['服务内容', e.serviceContent], ['结算方式', e.settlement], ['特殊条款', e.specialClauses],
-      ['保密信息范围', e.confidentialScope], ['项目名称', e.projectName],
-      ['经费与支付方式', e.payment], ['交付物与验收', e.deliverable], ['知识产权', e.ipOwnership],
-      ['主要条款', e.clauses],
-    ];
-    const filled = fields.filter(([, v]) => v && v.trim());
-    return '合同要素摘要：\n' + filled.map(([k, v]) => `${k}：${v}`).join('\n');
-  }
-
-  /** 用模板 prompt + 要素填充起草 prompt（⚠️ 必须覆盖所有模板占位符，漏掉则 AI 看到字面量） */
-  private buildDraftPrompt(
-    templatePrompt: string,
-    e: ContractElementsDto,
-    slug?: string,
-    name?: string,
-  ): string {
-    const fill = (s?: string) => (s && s.trim()) || '【待补充】';
-    let filled = templatePrompt
-      .split('{partyA}').join(fill(e.partyA))
-      .split('{partyB}').join(fill(e.partyB))
-      .split('{amount}').join(fill(e.amount))
-      .split('{term}').join(fill(e.term))
-      .split('{clauses}').join(fill(e.clauses))
-      .split('{serviceContent}').join(fill(e.serviceContent))
-      .split('{settlement}').join(fill(e.settlement))
-      .split('{specialClauses}').join(fill(e.specialClauses))
-      .split('{confidentialScope}').join(fill(e.confidentialScope))
-      .split('{projectName}').join(fill(e.projectName))
-      .split('{payment}').join(fill(e.payment))
-      .split('{deliverable}').join(fill(e.deliverable))
-      .split('{ipOwnership}').join(fill(e.ipOwnership))
-      .split('{partyAAddress}').join(fill(e.partyAAddress))
-      .split('{partyARepresentative}').join(fill(e.partyARepresentative))
-      .split('{partyAContact}').join(fill(e.partyAContact))
-      .split('{partyATel}').join(fill(e.partyATel))
-      .split('{partyAEmail}').join(fill(e.partyAEmail))
-      .split('{partyBAddress}').join(fill(e.partyBAddress))
-      .split('{partyBContact}').join(fill(e.partyBContact))
-      .split('{partyBTel}').join(fill(e.partyBTel));
-
-    // 指示 AI 读取工作区内的模板原文（工程决策 2026-08-03，替代全文注入 prompt）
-    if (slug) {
-      filled += `\n\n## 模板原文参照\n工作区内 templates/${slug}.md 为《${name || slug}》公司审定模板原文，请用文件读取工具读取该文件，并严格参照其章节结构与条款口径起草，不得偏离模板表述。`;
-    }
-    return filled;
-  }
-
-  /** 法务端 AI 风险审查 prompt（技能指令段注入顶部，工程决策 #3/#5） */
-  private buildReviewPrompt(text: string, skillName?: string, skillPrompt?: string): string {
-    const base = `你是企业合同审查专家。审查下方合同内容，逐条识别法律风险。
-
-## 输出格式（每条风险独立成块）
-### 第 N 条 · {条款标题}
-- 原文摘要：…
-- 风险等级：【高/中/低】
-- 风险分析：…
-- 修改建议：…
-
-## 审查要点
-- 违约责任、责任上限、违约金比例是否失衡
-- 知识产权归属与许可范围
-- 保密条款、竞业限制的合理性与可执行性
-- 付款节点与交付验收的对应关系
-- 争议解决条款（管辖法院/仲裁）的合法性
-- 是否有明显违反强制性法律法规的条款
-
-## 结尾
-输出"总体评价"：该合同整体风险等级（高/中/低）+ 必须修改的核心条款清单
-
-## 合同内容
-${text}`;
-    // 技能段由共享 util 注入（含边界标记剥除）
-    return injectSkillSection(base, skillName ?? '', skillPrompt ?? '');
-  }
-
-  private tryCleanup(path?: string) {
-    if (path) { try { unlinkSync(path); } catch {} }
-  }
-
-  /**
-   * 校验常见文件头，避免仅凭扩展名把伪装的二进制文件送入后续解析链路。
-   * 文本格式只拒绝明显的二进制 NUL；DOCX/PDF 必须匹配 ZIP/PDF 文件签名。
-   */
-  private assertFileSignature(filePath: string, ext: string): void {
-    const fd = openSync(filePath, 'r');
-    const buffer = Buffer.alloc(4096);
-    let bytesRead = 0;
-    try {
-      bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
-    } finally {
-      closeSync(fd);
-    }
-    const sample = buffer.subarray(0, bytesRead);
-    const isPdf = sample.subarray(0, 5).toString('ascii') === '%PDF-';
-    const isZip = sample.length >= 4
-      && sample[0] === 0x50
-      && sample[1] === 0x4b
-      && (sample[2] === 0x03 || sample[2] === 0x05 || sample[2] === 0x07)
-      && (sample[3] === 0x04 || sample[3] === 0x06 || sample[3] === 0x08);
-    const hasNul = sample.includes(0);
-
-    const valid = ext === '.pdf'
-      ? isPdf
-      : ext === '.docx'
-        ? isZip
-        : !hasNul;
-    if (!valid) throw new BadRequestException('文件内容与扩展名不匹配');
   }
 
   private async addEvent(projectId: string, text: string) {

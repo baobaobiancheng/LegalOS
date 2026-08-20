@@ -1,6 +1,5 @@
 import { Global, Module } from '@nestjs/common';
 import { DshService } from './dsh.service';
-import { CodexExecutionQueueService } from './codex-execution-queue.service';
 
 /**
  * dsh 全局模块（Codex CLI → dsh 迁移 Phase 1/2）：
@@ -8,7 +7,7 @@ import { CodexExecutionQueueService } from './codex-execution-queue.service';
  * 多实例会导致重复 boot、重复占用会话目录。
  *
  * CodexExecutionQueueService 由 CodexModule 已声明为全局 provider，这里不重复声明，
- * 只在 imports 里依赖 CodexModule 确保它先于 DshService 可用。
+ * 靠 CodexModule 的 @Global() 保证其先于 DshService 可用。
  */
 @Global()
 @Module({

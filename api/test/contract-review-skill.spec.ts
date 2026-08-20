@@ -40,6 +40,7 @@ describe('ContractService.reviewContract 技能注入', () => {
       prisma as any,
       dsh as any,
       template as any,
+      {} as any,
       dingtalk as any,
       new CreateProjectUseCase(prisma) as any,
       new ProjectAccessPolicy() as any,

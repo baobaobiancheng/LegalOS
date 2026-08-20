@@ -33,6 +33,7 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
       prisma as any,
       dsh as any,
       { findBySlug: vi.fn().mockResolvedValue(TEMPLATE) } as any,
+      {} as any,
       { sendNotification: vi.fn() } as any,
       new CreateProjectUseCase(prisma) as any,
       new ProjectAccessPolicy() as any,
