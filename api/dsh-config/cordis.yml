@@ -6,7 +6,7 @@
 # 生产法务 Agent 的能力面尽量小。会话持久化用默认 JSONL（D1 决策：双写，
 # LegalOS 业务表继续只存结构化摘要，不依赖这里落盘的原始事件）。
 #
-# 网关配置（LLM_BASE_URL/LLM_MODEL/LLM_API_KEY）由 DshService 在启动时
+# 模型配置（优先 DSH_LLM_*，兼容回退 LLM_* / CODEX_API_KEY）由 DshService 在启动时
 # 通过 --patch 覆盖 llm-pi-ai 行的 config，而不是写死在这个文件里，
 # 因为 LegalOS 的网关地址/模型名/凭证来自 NestJS 的 ConfigService。
 
@@ -23,7 +23,7 @@
   name: '@deepseek-ai/dsh-credentials-local'
 
 # providers 留空：DshService 启动时通过 --patch 注入真实网关路由
-# （route key legalos-gateway，见 dsh.service.ts bootDsh()）。
+# （动态 route key，默认 legalos-dsh，见 dsh.service.ts bootDsh()）。
 - id: llm-pi-ai
   name: '@deepseek-ai/dsh-llm-pi-ai'
 
@@ -74,7 +74,7 @@
 - id: agent-default-model
   name: '@deepseek-ai/dsh-agent-default-model'
   config:
-    provider: legalos-gateway
+    provider: legalos-dsh
     model: placeholder
 
 - id: agent-loop

@@ -78,8 +78,9 @@ function cancelledHandle(): DshExecutionHandle {
 export class DshService {
   private readonly logger = new Logger(DshService.name);
   private readonly dshHome: string;
-  private readonly gatewayBaseUrl: string;
-  private readonly gatewayApiKeyEnv = 'LLM_API_KEY';
+  private readonly providerId: string;
+  private readonly modelBaseUrl: string;
+  private readonly modelApiKeyEnv = 'DSH_LLM_API_KEY';
   private readonly defaultModel: string;
   private readonly modelContextWindow: number;
   private readonly maxOutputTokens: number;
@@ -93,12 +94,15 @@ export class DshService {
   ) {
     this.dshHome = this.config.get('DSH_HOME') || join(process.cwd(), '.tmp', 'dsh-home');
     mkdirSync(this.dshHome, { recursive: true });
-    this.gatewayBaseUrl = this.config.get('LLM_BASE_URL', 'http://api-cybotforge-pre.brapp.com/v1');
-    this.defaultModel = this.config.get('LLM_MODEL', 'glm-5-2');
+    this.providerId = this.config.get('DSH_LLM_PROVIDER') || 'legalos-dsh';
+    this.modelBaseUrl = this.config.get('DSH_LLM_BASE_URL')
+      || this.config.get('LLM_BASE_URL', 'http://api-cybotforge-pre.brapp.com/v1');
+    this.defaultModel = this.config.get('DSH_LLM_MODEL')
+      || this.config.get('LLM_MODEL', 'glm-5-2');
     this.modelContextWindow = positiveInteger(this.config.get('DSH_MODEL_CONTEXT_WINDOW'), 131_072);
     this.maxOutputTokens = positiveInteger(this.config.get('DSH_MODEL_MAX_OUTPUT_TOKENS'), 16_000);
     this.toolCallLimit = positiveInteger(this.config.get('DSH_AGENT_TOOL_CALL_MAX'), 3);
-    this.logger.log(`dsh 库嵌入：DSH_HOME=${this.dshHome} 网关=${this.gatewayBaseUrl} 模型=${this.defaultModel}`);
+    this.logger.log(`dsh 库嵌入：DSH_HOME=${this.dshHome} provider=${this.providerId} base=${this.modelBaseUrl} 模型=${this.defaultModel}`);
   }
 
   /** AI Kill Switch：AI_EXECUTION_ENABLED=false / 0 / off 时拦截所有 AI 调用（与 CodexService 语义一致）。 */
@@ -125,19 +129,21 @@ export class DshService {
     process.env.DSH_HOME = this.dshHome;
     const { boot } = await import('@deepseek-ai/dsh-app-boot');
     const configPath = join(process.cwd(), 'dsh-config', 'cordis.yml');
-    const apiKey = this.config.get('LLM_API_KEY') || this.config.get('CODEX_API_KEY');
-    if (apiKey) process.env[this.gatewayApiKeyEnv] = apiKey;
+    const apiKey = this.config.get('DSH_LLM_API_KEY')
+      || this.config.get('LLM_API_KEY')
+      || this.config.get('CODEX_API_KEY');
+    if (apiKey) process.env[this.modelApiKeyEnv] = apiKey;
 
     const patches = [
       {
         id: 'llm-pi-ai',
         config: {
           providers: {
-            'legalos-gateway': {
+            [this.providerId]: {
               api: 'openai-completions',
-              displayName: 'LegalOS 法务网关',
-              baseURL: this.gatewayBaseUrl,
-              apiKeyEnv: this.gatewayApiKeyEnv,
+              displayName: 'LegalOS dsh 模型',
+              baseURL: this.modelBaseUrl,
+              apiKeyEnv: this.modelApiKeyEnv,
               models: [
                 {
                   id: this.defaultModel,
@@ -153,7 +159,7 @@ export class DshService {
       },
       {
         id: 'agent-default-model',
-        config: { provider: 'legalos-gateway', model: this.defaultModel },
+        config: { provider: this.providerId, model: this.defaultModel },
       },
     ];
 

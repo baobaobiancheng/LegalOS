@@ -95,6 +95,21 @@ POST   /api/auth/logout     # 退出
 | `PORT` | API 端口 | `3000` |
 | `WEB_ORIGIN` | 前端地址 (CORS) | `http://localhost:5173` |
 
+### 本地用 DeepSeek 验证 dsh
+
+在 `api/.env` 中设置独立的 `DSH_LLM_*`，不会覆盖咨询直连路径使用的 `LLM_*` 公司网关：
+
+```text
+DSH_LLM_PROVIDER=deepseek
+DSH_LLM_BASE_URL=https://api.deepseek.com
+DSH_LLM_API_KEY=<本地 DeepSeek API Key>
+DSH_LLM_MODEL=deepseek-v4-pro
+DSH_MODEL_CONTEXT_WINDOW=1000000
+DSH_MODEL_MAX_OUTPUT_TOKENS=16000
+```
+
+配置 Key 后可先运行 `cd api && npm run dsh:model-gate`，再从合同生成/审查入口测试完整 dsh 流程。法律咨询入口当前仍使用原有 `ConsultationChatService`，会在 PR1 接入 dsh 检索 Agent。
+
 ## 下一步
 
 - [ ] 工单/项目管理模块（Phase 2）
