@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { ConfigService } from '@nestjs/config';
-import { CodexExecutionQueueService } from '../src/common/services/codex-execution-queue.service';
+import { AiExecutionQueueService } from '../src/common/services/ai-execution-queue.service';
 import { CodexService } from '../src/common/services/codex.service';
 import { BaijianResultNormalizer } from '../src/common/baijian/baijian-result.normalizer';
 import {
@@ -57,7 +57,7 @@ async function main() {
     || (mode === 'case' ? '劳动合同违法解除经济补偿的中国类似案例' : '劳动合同解除经济补偿');
   const enabledTool = mode === 'case' ? BAIJIAN_CASE_SEARCH_TOOL : BAIJIAN_LAW_SEARCH_TOOL;
   const config = new ConfigService(process.env);
-  const service = new CodexService(config, new CodexExecutionQueueService(config));
+  const service = new CodexService(config, new AiExecutionQueueService(config));
   const prompt = [
     '你正在执行 LegalOS PR0 只读技术闸门。',
     `必须至少调用一次 ${enabledTool}，不得声称调用任何其他工具。`,

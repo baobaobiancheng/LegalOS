@@ -33,7 +33,7 @@ vi.mock('child_process', () => ({
 }));
 
 import { CodexService } from '../src/common/services/codex.service';
-import { CodexExecutionQueueService } from '../src/common/services/codex-execution-queue.service';
+import { AiExecutionQueueService } from '../src/common/services/ai-execution-queue.service';
 
 const makeConfig = (over: Record<string, string>) => ({
   get: vi.fn((key: string, dflt?: unknown) => (key in over ? over[key] : dflt)),
@@ -41,7 +41,7 @@ const makeConfig = (over: Record<string, string>) => ({
 
 /** 构造 CodexService（P1-02 依赖共享队列单例） */
 const makeService = (config: ReturnType<typeof makeConfig>) =>
-  new CodexService(config as any, new CodexExecutionQueueService(config as any) as any);
+  new CodexService(config as any, new AiExecutionQueueService(config as any) as any);
 
 const ENV_KEYS = [
   'DATABASE_URL',

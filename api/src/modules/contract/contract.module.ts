@@ -9,6 +9,7 @@ import { DINGTALK_ADAPTER } from '../project/adapters/adapter.interfaces';
 import { ProjectAccessPolicy } from '../project/domain/project-access.policy';
 import { CreateProjectUseCase } from '../project/application/create-project.use-case';
 import { EscalateProjectToLegalUseCase } from '../project/application/escalate-project-to-legal.use-case';
+import { ContractDocumentWriter } from './application/contract-document.writer';
 
 @Module({
   imports: [PrismaModule],
@@ -16,6 +17,7 @@ import { EscalateProjectToLegalUseCase } from '../project/application/escalate-p
   providers: [
     ContractService,
     ContractFileService,
+    ContractDocumentWriter,
     ContractTemplateService,
     ProjectAccessPolicy,
     CreateProjectUseCase,

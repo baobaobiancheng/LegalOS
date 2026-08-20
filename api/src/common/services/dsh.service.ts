@@ -4,28 +4,25 @@ import { join } from 'path';
 import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
-  CodexExecutionCancelledError,
-  CodexExecutionQueueService,
-  CodexQueueBusyError,
-} from './codex-execution-queue.service';
+  AiExecutionCancelledError,
+  AiExecutionQueueService,
+  AiQueueBusyError,
+} from './ai-execution-queue.service';
+import { DshBaijianToolsService, DSH_BAIJIAN_RESULT_META_KIND } from './dsh-baijian-tools.service';
+import {
+  DshExecutionResult,
+  DshOptions,
+  DshToolCallEvent,
+  DshToolResultEvent,
+  toolNameForCapability,
+} from './dsh-agent.types';
+import { BaijianNormalizedResult } from '../baijian/baijian.types';
 
 /** dsh 侧类型（ESM-only，运行时按需 import；这里只声明调用方需要的最小结构方便类型检查）。 */
 interface DshContext {
   get(key: string): unknown;
   on(event: 'session/event', listener: (session: any, event: any) => void): () => void;
   fiber: { dispose(): Promise<void> };
-}
-
-export interface DshOptions {
-  model?: string;
-  /** 单轮任务的整体超时（毫秒）；dsh 本身没有整段 wall-clock 超时，这层由 DshService 自己包装（迁移覆盖清单 #8） */
-  timeout?: number;
-  /** 隔离会话 ID（如 projectId），映射为 dsh 的 session id；同会话任务严格串行（复用 CodexExecutionQueueService） */
-  sessionId?: string;
-  /** 排队超时（毫秒），覆盖默认 */
-  queueTimeoutMs?: number;
-  /** 调用方取消信号（HTTP/SSE 连接断开），取消排队或终止已启动任务 */
-  signal?: AbortSignal;
 }
 
 /**
@@ -37,7 +34,17 @@ export interface DshOptions {
  *   'cancelled' ()                             — 排队中或执行中被取消（调用方应跳过落库，视为"未完成"而非"失败"）
  *   'error'     (error: Error)                 — turn 异常结束（超时/网关错误/AI 禁用等）
  */
-export class DshExecutionHandle extends EventEmitter {}
+export class DshExecutionHandle extends EventEmitter {
+  override on(event: 'text', listener: (delta: string) => void): this;
+  override on(event: 'tool_call', listener: (call: DshToolCallEvent) => void): this;
+  override on(event: 'tool_result', listener: (result: DshToolResultEvent) => void): this;
+  override on(event: 'done', listener: (result: DshExecutionResult) => void): this;
+  override on(event: 'cancelled', listener: () => void): this;
+  override on(event: 'error', listener: (error: Error) => void): this;
+  override on(event: string, listener: (...args: any[]) => void): this {
+    return super.on(event, listener);
+  }
+}
 
 /** AI 禁用/排队被取消时返回的伪句柄：立即 emit 对应事件，调用方走既有失败/取消分支。 */
 function disabledHandle(message: string): DshExecutionHandle {
@@ -56,7 +63,7 @@ function cancelledHandle(): DshExecutionHandle {
  * DshService — LegalOS 的 AI 执行引擎（Codex CLI 子进程 → dsh 库嵌入 迁移，Phase 1/2）。
  *
  * 与 CodexService 的关系：
- * - 复用 CodexExecutionQueueService 做全局并发 + per-session 互斥（该队列本身与 Codex 无关，见迁移计划）。
+ * - 复用 AiExecutionQueueService 做全局并发 + per-session 互斥。
  * - 不复用 CodexService 的 ChildProcess 伪装：dsh 的真实模型是 session 事件（assistant/chunk/turn/end），
  *   直接暴露语义化事件（'text'/'done'/'error'/'cancelled'），比伪造 stdout/close 更贴近底层、更易扩展
  *   （后续多轮对话、工具调用不需要再往假 stdout 里塞新语义）。
@@ -74,16 +81,23 @@ export class DshService {
   private readonly gatewayBaseUrl: string;
   private readonly gatewayApiKeyEnv = 'LLM_API_KEY';
   private readonly defaultModel: string;
+  private readonly modelContextWindow: number;
+  private readonly maxOutputTokens: number;
+  private readonly toolCallLimit: number;
   private bootPromise: Promise<DshContext> | undefined;
 
   constructor(
     private readonly config: ConfigService,
-    private readonly queue: CodexExecutionQueueService,
+    private readonly queue: AiExecutionQueueService,
+    private readonly baijianTools: DshBaijianToolsService,
   ) {
     this.dshHome = this.config.get('DSH_HOME') || join(process.cwd(), '.tmp', 'dsh-home');
     mkdirSync(this.dshHome, { recursive: true });
     this.gatewayBaseUrl = this.config.get('LLM_BASE_URL', 'http://api-cybotforge-pre.brapp.com/v1');
     this.defaultModel = this.config.get('LLM_MODEL', 'glm-5-2');
+    this.modelContextWindow = positiveInteger(this.config.get('DSH_MODEL_CONTEXT_WINDOW'), 131_072);
+    this.maxOutputTokens = positiveInteger(this.config.get('DSH_MODEL_MAX_OUTPUT_TOKENS'), 16_000);
+    this.toolCallLimit = positiveInteger(this.config.get('DSH_AGENT_TOOL_CALL_MAX'), 3);
     this.logger.log(`dsh 库嵌入：DSH_HOME=${this.dshHome} 网关=${this.gatewayBaseUrl} 模型=${this.defaultModel}`);
   }
 
@@ -127,8 +141,8 @@ export class DshService {
               models: [
                 {
                   id: this.defaultModel,
-                  contextWindow: Number(this.config.get('CONSULT_CONTEXT_MAX_TOKENS', 12000)),
-                  maxTokens: Number(this.config.get('CONSULT_OUTPUT_TOKEN_RESERVE', 16000)),
+                  contextWindow: this.modelContextWindow,
+                  maxTokens: this.maxOutputTokens,
                   input: ['text'],
                   reasoningEfforts: false,
                 },
@@ -150,7 +164,7 @@ export class DshService {
   }
 
   /**
-   * 单轮任务：经共享有界队列（复用 CodexExecutionQueueService），获得全局槽位 + session 槽位后
+   * 单轮任务：经共享有界队列，获得全局槽位 + session 槽位后
    * 创建一个 dsh agent，followup 一条用户消息，流式转发文本增量，turn 结束后 emit 'done'/'error'。
    *
    * 接口对齐 CodexService.executeStream 的调用惯例（timeout/sessionId/queueTimeoutMs/signal），
@@ -169,11 +183,18 @@ export class DshService {
     try {
       return await this.queue.run(
         { sessionId, queueTimeoutMs: options?.queueTimeoutMs, signal: options?.signal },
-        (abort) => this.runTurn(prompt, { model: options?.model, sessionId, timeout, abort }),
+        (abort) => this.runTurn(prompt, {
+          model: options?.model,
+          sessionId,
+          timeout,
+          abort,
+          researchCapability: options?.researchCapability,
+          requireResearchTool: options?.requireResearchTool ?? Boolean(options?.researchCapability),
+        }),
       );
     } catch (e) {
-      if (e instanceof CodexExecutionCancelledError) return cancelledHandle();
-      if (e instanceof CodexQueueBusyError) throw new ServiceUnavailableException(e.message);
+      if (e instanceof AiExecutionCancelledError) return cancelledHandle();
+      if (e instanceof AiQueueBusyError) throw new ServiceUnavailableException(e.message);
       throw e;
     }
   }
@@ -188,7 +209,8 @@ export class DshService {
    */
   private runTurn(
     prompt: string,
-    params: { model?: string; sessionId?: string; timeout: number; abort: AbortSignal },
+    params: Pick<DshOptions, 'model' | 'sessionId' | 'researchCapability' | 'requireResearchTool'>
+      & { timeout: number; abort: AbortSignal },
   ): { result: DshExecutionHandle; done: Promise<void> } {
     const handle = new DshExecutionHandle();
 
@@ -216,7 +238,7 @@ export class DshService {
 
   private async driveAgent(
     prompt: string,
-    params: { model?: string; sessionId?: string },
+    params: Pick<DshOptions, 'model' | 'sessionId' | 'researchCapability' | 'requireResearchTool'>,
     handle: DshExecutionHandle,
     abort: AbortSignal,
   ): Promise<void> {
@@ -245,15 +267,20 @@ export class DshService {
     // 同一个 dsh session。合同起草/审查是单轮任务，不依赖跨调用会话延续；多轮会话复用
     // 属于二期（法律咨询）的 dsh resume 能力，见迁移计划 Phase 3。
     const dshSessionId = SessionId(`legalos-${randomUUID()}`);
+    const toolDefinition = params.researchCapability
+      ? await this.baijianTools.createDefinition(params.researchCapability)
+      : undefined;
 
-    const { agent } = await agents.create({
+    const agentHandle = await agents.create({
       sessionId: dshSessionId,
       meta: { cwd: process.cwd() },
-      agentOptions: { provider: selection.provider, model },
+      agentOptions: { provider: selection.provider, model, maxTokens: this.maxOutputTokens },
       setup: (agentCtx: any) => {
         installModelSelection(agentCtx, { current: { ...selection, model }, assembled: undefined });
+        if (toolDefinition) agentCtx.tools.register(toolDefinition);
       },
     });
+    const { agent } = agentHandle;
     await agent.whenIdle();
 
     // 创建完成后才能真正 cancel：若创建期间已经被取消，立即请求；否则挂监听，
@@ -263,13 +290,48 @@ export class DshService {
     else abort.addEventListener('abort', onAbort, { once: true });
 
     let fullText = '';
+    const toolCalls: DshToolCallEvent[] = [];
+    const toolResults: DshToolResultEvent[] = [];
+    const toolNamesByCallId = new Map<string, string>();
+    let policyFailure: Error | undefined;
     const off = ctx.on('session/event', (session: any, event: any) => {
       if (session.id !== dshSessionId) return;
-      if (event.type !== 'assistant/chunk') return;
-      const chunk = event.data.chunk;
-      if (chunk.type === 'text-delta' && chunk.text) {
-        fullText += chunk.text;
-        handle.emit('text', chunk.text);
+      if (event.type === 'assistant/chunk') {
+        const chunk = event.data.chunk;
+        if (chunk.type === 'text-delta' && chunk.text) {
+          fullText += chunk.text;
+          handle.emit('text', chunk.text);
+        }
+        return;
+      }
+      if (event.type === 'tool/call') {
+        const call: DshToolCallEvent = {
+          callId: String(event.data.callId),
+          name: String(event.data.name),
+          arguments: parseToolArguments(event.data.arguments),
+        };
+        toolNamesByCallId.set(call.callId, call.name);
+        toolCalls.push(call);
+        handle.emit('tool_call', call);
+        if (toolCalls.length > this.toolCallLimit && !policyFailure) {
+          policyFailure = new Error(`dsh Agent 工具调用超过上限（${this.toolCallLimit}）`);
+          agent.cancel(policyFailure);
+        }
+        return;
+      }
+      if (event.type === 'tool/result') {
+        const block = event.data.message?.content?.[0];
+        const callId = String(block?.toolCallId ?? event.data.message?.source?.callId ?? '');
+        const canonicalResult = readBaijianResultMeta(event.data.meta);
+        const result: DshToolResultEvent = {
+          callId,
+          name: toolNamesByCallId.get(callId) ?? 'unknown',
+          isError: Boolean(block?.isError),
+          ...(canonicalResult ? { result: canonicalResult } : {}),
+          ...(event.data.error ? { error: event.data.error } : {}),
+        };
+        toolResults.push(result);
+        handle.emit('tool_result', result);
       }
     });
 
@@ -285,23 +347,39 @@ export class DshService {
         source: { kind: 'user' },
       }));
       await agent.whenIdle();
+      await sessions.flush(agent.session);
+
+      const reason = this.readTurnEndReason(agent.session.events);
+      if (reason?.kind === 'completed') {
+        if (params.researchCapability && params.requireResearchTool) {
+          const expectedTool = toolNameForCapability(params.researchCapability);
+          const unexpected = toolCalls.find((call) => call.name !== expectedTool);
+          if (unexpected) {
+            throw new Error(`dsh Agent 调用了白名单外工具：${unexpected.name}`);
+          }
+          const successful = toolResults.some((result) =>
+            result.name === expectedTool && !result.isError && result.result);
+          if (!successful) throw new Error(`dsh Agent 未产生必需工具结果：${expectedTool}`);
+        }
+        handle.emit('done', {
+          text: this.readFinalAssistantText(agent.session.events) || fullText,
+          dshSessionId: String(dshSessionId),
+          toolCalls,
+          toolResults,
+        } satisfies DshExecutionResult);
+      } else if (reason?.kind === 'aborted') {
+        if (policyFailure) handle.emit('error', policyFailure);
+        else handle.emit('cancelled');
+      } else {
+        const message = reason?.kind === 'error'
+          ? `dsh turn 失败：${reason.error?.message ?? '未知错误'}`
+          : 'dsh turn 未正常结束';
+        handle.emit('error', new Error(message));
+      }
     } finally {
       off();
       abort.removeEventListener('abort', onAbort);
-    }
-
-    await sessions.flush(agent.session);
-
-    const reason = this.readTurnEndReason(agent.session.events);
-    if (reason?.kind === 'completed') {
-      handle.emit('done', { text: fullText });
-    } else if (reason?.kind === 'aborted') {
-      handle.emit('cancelled');
-    } else {
-      const message = reason?.kind === 'error'
-        ? `dsh turn 失败：${reason.error?.message ?? '未知错误'}`
-        : 'dsh turn 未正常结束';
-      handle.emit('error', new Error(message));
+      await agentHandle.dispose();
     }
   }
 
@@ -313,7 +391,43 @@ export class DshService {
     return undefined;
   }
 
+  private readFinalAssistantText(events: readonly any[]): string {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i];
+      if (event.type !== 'assistant/message') continue;
+      return (event.data.message?.content ?? [])
+        .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
+        .map((block: any) => block.text)
+        .join('')
+        .trim();
+    }
+    return '';
+  }
+
   getStats() {
     return this.queue.getStats();
   }
+}
+
+function parseToolArguments(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value.slice(0, 2_000);
+  }
+}
+
+function readBaijianResultMeta(value: unknown): BaijianNormalizedResult | undefined {
+  if (!isRecord(value) || value.kind !== DSH_BAIJIAN_RESULT_META_KIND) return undefined;
+  return isRecord(value.result) ? value.result as unknown as BaijianNormalizedResult : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function positiveInteger(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }

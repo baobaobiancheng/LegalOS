@@ -17,11 +17,11 @@ import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import {
-  CodexExecutionQueueService,
-  CodexExecutionCancelledError,
-  CodexQueueBusyError,
-  CODEX_CANCEL_GRACE_MS,
-} from './codex-execution-queue.service';
+  AiExecutionQueueService,
+  AiExecutionCancelledError,
+  AiQueueBusyError,
+  AI_CANCEL_GRACE_MS,
+} from './ai-execution-queue.service';
 import { CodexAgentJsonlParser } from './codex-agent-jsonl.parser';
 import {
   AgentCompletion,
@@ -56,7 +56,7 @@ export class CodexService {
 
   constructor(
     private readonly config: ConfigService,
-    private readonly queue: CodexExecutionQueueService,
+    private readonly queue: AiExecutionQueueService,
   ) {
     this.hardened = this.config.get('CODEX_HARDENED', 'false') === 'true';
     this.codexBin = this.findCodex();
@@ -343,7 +343,7 @@ export class CodexService {
           this.logger.warn(`Codex ${reason} SIGKILL 失败：${(e as Error).message}`);
         }
       }
-    }, CODEX_CANCEL_GRACE_MS);
+    }, AI_CANCEL_GRACE_MS);
     grace.unref?.();
     this.terminationTimers.set(child, grace);
   }
@@ -376,7 +376,7 @@ export class CodexService {
       return result.trim();
     } catch (e) {
       this.cleanupWorkspace(workspaceDir);
-      if (e instanceof CodexQueueBusyError) throw new ServiceUnavailableException(e.message);
+      if (e instanceof AiQueueBusyError) throw new ServiceUnavailableException(e.message);
       throw e;
     }
   }
@@ -403,10 +403,10 @@ export class CodexService {
       );
     } catch (e) {
       this.cleanupWorkspace(workspaceDir);
-      if (e instanceof CodexExecutionCancelledError) {
+      if (e instanceof AiExecutionCancelledError) {
         return this.cancelledStream();
       }
-      if (e instanceof CodexQueueBusyError) throw new ServiceUnavailableException(e.message);
+      if (e instanceof AiQueueBusyError) throw new ServiceUnavailableException(e.message);
       throw e;
     }
   }
@@ -463,10 +463,10 @@ export class CodexService {
       );
     } catch (error) {
       this.cleanupWorkspace(workspaceDir);
-      if (error instanceof CodexQueueBusyError) {
+      if (error instanceof AiQueueBusyError) {
         throw new ServiceUnavailableException(error.message);
       }
-      if (error instanceof CodexExecutionCancelledError) {
+      if (error instanceof AiExecutionCancelledError) {
         throw new AgentExecutionError('AGENT_CANCELLED', 'Codex Agent 在启动前已取消');
       }
       throw error;

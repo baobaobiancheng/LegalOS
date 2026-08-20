@@ -14,13 +14,14 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { DshService, DshExecutionHandle } from '../../common/services/dsh.service';
 import { DINGTALK_ADAPTER, DingTalkAdapter } from '../project/adapters/adapter.interfaces';
 import { ContractTemplateService } from './contract-template.service';
-import { ContractFileService } from './contract-file.service';
+import { ContractDocumentWriter } from './application/contract-document.writer';
 import { buildDraftPrompt, buildReviewPrompt, buildElementsText, hasAnyElement } from './contract-prompt.builder';
 import { CreateContractDto } from './dto/create-contract.dto';
 import { ProjectAccessPolicy } from '../project/domain/project-access.policy';
 import { ProjectAction, ProjectActor } from '../project/domain/project-access.types';
 import { CreateProjectUseCase } from '../project/application/create-project.use-case';
 import { EscalateProjectToLegalUseCase } from '../project/application/escalate-project-to-legal.use-case';
+import { formatEventTime } from '../../common/utils/event-time';
 
 /**
  * 合同协作服务（生成/审查编排；文件管理见 ContractFileService，prompt 组装见 contract-prompt.builder）。
@@ -43,7 +44,7 @@ export class ContractService {
     private readonly prisma: PrismaService,
     private readonly dshService: DshService,
     private readonly templateService: ContractTemplateService,
-    private readonly fileService: ContractFileService,
+    private readonly documentWriter: ContractDocumentWriter,
     @Inject(DINGTALK_ADAPTER) private readonly dingtalk: DingTalkAdapter,
     private readonly createProjectUseCase: CreateProjectUseCase,
     private readonly accessPolicy: ProjectAccessPolicy,
@@ -186,7 +187,7 @@ export class ContractService {
         legalBpId: null,
         idempotencyKey: dto.idempotencyKey ?? null,
         contractTemplateSlug: template.slug,
-        events: [this.formatTime() + ' · AI 正在生成合同草稿…'],
+        events: [formatEventTime() + ' · AI 正在生成合同草稿…'],
       });
       projectId = project.id;
       createdProject = created;
@@ -272,7 +273,7 @@ export class ContractService {
         try {
           await this.prisma.$transaction(async (tx) => {
             // AI 草稿 → ContractDocument(type=draft, version=N)；消息仅供 UI，不是审查数据源
-            const document = await this.fileService.createContractDocument(tx, {
+            const document = await this.documentWriter.create(tx, {
               projectId,
               documentType: 'draft',
               content: finalText.trim(),
@@ -295,7 +296,7 @@ export class ContractService {
               },
             });
           });
-          await this.addEvent(projectId, this.formatTime() + ' · 合同草稿已生成');
+          await this.addEvent(projectId, formatEventTime() + ' · 合同草稿已生成');
           // 独立提示消息（不放入合同正文）
           const pendingCount = (finalText.match(/【待补充】/g) || []).length;
           await this.addEvent(
@@ -319,7 +320,7 @@ export class ContractService {
             where: { id: projectId },
             data: { status: '待处理', isFailed: true },
           });
-          await this.addEvent(projectId, this.formatTime() + ' · 合同草稿生成失败，已转人工处理');
+          await this.addEvent(projectId, formatEventTime() + ' · 合同草稿生成失败，已转人工处理');
         } catch (err) {
           this.logger.error(`失败状态更新失败：${err}`);
         }
@@ -390,7 +391,7 @@ export class ContractService {
       projectId,
       route: 'legalbp',
       status: '待复核',
-      eventTexts: [this.formatTime() + ' · 已发起法务审阅，已提交法务处理，等待 BP 分配'],
+      eventTexts: [formatEventTime() + ' · 已发起法务审阅，已提交法务处理，等待 BP 分配'],
     });
     if (!upgraded) throw new ConflictException('该工单已进入法务流程');
 
@@ -519,7 +520,7 @@ export class ContractService {
               data: { projectId, role: 'assistant', text: finalText.trim(), label: 'AI 风险审查' },
             }),
           ]);
-          await this.addEvent(projectId, this.formatTime() + ' · AI 风险审查完成');
+          await this.addEvent(projectId, formatEventTime() + ' · AI 风险审查完成');
         } catch (err) {
           this.logger.error(`审查结果落库失败：${err}`);
         }
@@ -533,7 +534,7 @@ export class ContractService {
             data: { status: 'failed', errorMessage, completedAt: new Date() },
           })
           .catch(() => undefined);
-        await this.addEvent(projectId, this.formatTime() + ' · AI 风险审查失败，请人工审阅');
+        await this.addEvent(projectId, formatEventTime() + ' · AI 风险审查失败，请人工审阅');
       }
     });
 
@@ -578,10 +579,4 @@ export class ContractService {
     return this.prisma.projectEvent.create({ data: { projectId, text } });
   }
 
-  private formatTime(): string {
-    const now = new Date();
-    const hh = String(now.getHours()).padStart(2, '0');
-    const mm = String(now.getMinutes()).padStart(2, '0');
-    return `${hh}:${mm}`;
-  }
 }

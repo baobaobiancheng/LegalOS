@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { ContractFileService } from '../src/modules/contract/contract-file.service';
 import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
+import { ContractDocumentWriter } from '../src/modules/contract/application/contract-document.writer';
 
 describe('ContractFileService.uploadFile staging 与文件签名', () => {
   let root: string;
@@ -26,6 +27,7 @@ describe('ContractFileService.uploadFile staging 与文件签名', () => {
     service = new ContractFileService(
       prisma as any,
       new ProjectAccessPolicy() as any,
+      new ContractDocumentWriter(),
     );
   });
 

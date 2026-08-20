@@ -17,7 +17,8 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "codex:baijian-preflight": "ts-node scripts/preflight-codex-baijian.ts",
     "baijian:verify": "ts-node scripts/verify-baijian-mcp.ts",
-    "codex:baijian-gate": "ts-node scripts/verify-codex-baijian-agent.ts"
+    "codex:baijian-gate": "ts-node scripts/verify-codex-baijian-agent.ts",
+    "dsh:baijian-gate": "ts-node scripts/verify-dsh-baijian-agent.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
@@ -33,6 +34,9 @@
     "@deepseek-ai/dsh-agent-default-model": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-agent-loop": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-app-boot": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-compaction": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-compaction-basic": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-compaction-tool-result-pruner": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-credentials-local": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-home-paths": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-invariants": "^0.1.0-rc.7",
@@ -42,10 +46,12 @@
     "@deepseek-ai/dsh-llm-retry": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-scope": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-session": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-session-checkpoint-policy": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-session-persistence": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-session-persistence-jsonl": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-settings": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-token-meter": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.7",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@nestjs/common": "^10.4.15",

@@ -2,13 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 /**
- * 有界 Codex 执行队列（P1-02）。
+ * 有界 AI 执行队列（P1-02）。
  *
  * execute() 与 executeStream() 共享同一个队列：
- * - 全局同时运行的 Codex 子进程不超过 CODEX_CONCURRENCY。
- * - 同一 sessionId（projectId）同时最多运行 CODEX_PROJECT_CONCURRENCY（=1）个任务，
+ * - 全局同时运行的 AI 任务不超过 AI_EXECUTION_CONCURRENCY（兼容旧 CODEX_CONCURRENCY）。
+ * - 同一 sessionId（projectId）同时最多运行 AI_PROJECT_CONCURRENCY（=1）个任务，
  *   工作区按 <sessionId>/<executionId> 隔离，不会复用于并发清理。
- * - 队列满 / 排队超时 → 抛 CodexQueueBusyError（不 spawn 子进程）。
+ * - 队列满 / 排队超时 → 抛 AiQueueBusyError（不启动任务）。
  * - 取消（外部 AbortSignal）：未启动的排队任务不 spawn；已启动任务由 start() 内的
  *   abort 监听负责 SIGTERM → 宽限期后 SIGKILL。
  * - 槽位释放只发生一次（finalize 一次性守卫），覆盖 close/error/超时/取消/spawn 抛错。
@@ -17,22 +17,22 @@ import { ConfigService } from '@nestjs/config';
  */
 
 /** 队列满 / 排队超时：明确"AI 服务繁忙"错误，SSE 开始前返回可识别 HTTP 错误 */
-export class CodexQueueBusyError extends Error {
+export class AiQueueBusyError extends Error {
   constructor(message = 'AI 服务繁忙，请稍后再试') {
     super(message);
-    this.name = 'CodexQueueBusyError';
+    this.name = 'AiQueueBusyError';
   }
 }
 
 /** 任务在开始前被取消（HTTP/SSE 连接断开），未启动子进程 */
-export class CodexExecutionCancelledError extends Error {
-  constructor(message = 'Codex 任务已取消') {
+export class AiExecutionCancelledError extends Error {
+  constructor(message = 'AI 任务已取消') {
     super(message);
-    this.name = 'CodexExecutionCancelledError';
+    this.name = 'AiExecutionCancelledError';
   }
 }
 
-export interface CodexQueueRunOptions {
+export interface AiQueueRunOptions {
   /** 隔离会话 ID（如 projectId），同一会话互斥 */
   sessionId?: string;
   /** 排队超时（毫秒），默认取配置；排队超时不得启动子进程 */
@@ -41,7 +41,7 @@ export interface CodexQueueRunOptions {
   signal?: AbortSignal;
 }
 
-export interface CodexTaskHandle<T> {
+export interface AiTaskHandle<T> {
   /**
    * spawn 结果：execute() 返回 Promise<string>（await 到结果）；executeStream()
    * 返回 ChildProcess（立即拿到子进程用于 SSE）。
@@ -58,7 +58,7 @@ interface QueuedTask<T> {
   startedAt: number | null;
   status: 'queued' | 'running' | 'cancelled';
   abort: AbortController;
-  start: (signal: AbortSignal) => CodexTaskHandle<T>;
+  start: (signal: AbortSignal) => AiTaskHandle<T>;
   resolve: (value: T) => void;
   reject: (reason: unknown) => void;
   queueTimer: NodeJS.Timeout | null;
@@ -67,23 +67,28 @@ interface QueuedTask<T> {
 const CANCEL_GRACE_MS = 5_000; // SIGTERM 后宽限期，仍未退出则 SIGKILL
 
 @Injectable()
-export class CodexExecutionQueueService {
-  private readonly logger = new Logger(CodexExecutionQueueService.name);
+export class AiExecutionQueueService {
+  private readonly logger = new Logger(AiExecutionQueueService.name);
   private readonly concurrency: number;
   private readonly maxQueueSize: number;
   private readonly queueTimeoutMs: number;
-  private readonly projectConcurrency: number;
-
   private active = 0;
   private queue: QueuedTask<unknown>[] = [];
   private runningSessions = new Set<string>();
   private seq = 0;
 
   constructor(config: ConfigService) {
-    this.concurrency = Math.max(1, Number(config.get('CODEX_CONCURRENCY', 4)));
-    this.maxQueueSize = Math.max(1, Number(config.get('CODEX_QUEUE_MAX_SIZE', 100)));
-    this.queueTimeoutMs = Math.max(0, Number(config.get('CODEX_QUEUE_TIMEOUT_MS', 120_000)));
-    this.projectConcurrency = Math.max(1, Number(config.get('CODEX_PROJECT_CONCURRENCY', 1)));
+    const configuredNumber = (current: string, legacy: string, fallback: number) =>
+      Number(config.get<string>(current) ?? config.get<string>(legacy) ?? fallback);
+    this.concurrency = Math.max(1, configuredNumber(
+      'AI_EXECUTION_CONCURRENCY', 'CODEX_CONCURRENCY', 4,
+    ));
+    this.maxQueueSize = Math.max(1, configuredNumber(
+      'AI_EXECUTION_QUEUE_MAX_SIZE', 'CODEX_QUEUE_MAX_SIZE', 100,
+    ));
+    this.queueTimeoutMs = Math.max(0, configuredNumber(
+      'AI_EXECUTION_QUEUE_TIMEOUT_MS', 'CODEX_QUEUE_TIMEOUT_MS', 120_000,
+    ));
   }
 
   /**
@@ -91,14 +96,14 @@ export class CodexExecutionQueueService {
    * start() 内必须同步返回 { result, done }；done 完成后释放槽位。
    */
   async run<T>(
-    opts: CodexQueueRunOptions,
-    start: (signal: AbortSignal) => CodexTaskHandle<T>,
+    opts: AiQueueRunOptions,
+    start: (signal: AbortSignal) => AiTaskHandle<T>,
   ): Promise<T> {
     if (opts.signal?.aborted) {
-      throw new CodexExecutionCancelledError();
+      throw new AiExecutionCancelledError();
     }
     if (this.queue.length >= this.maxQueueSize) {
-      throw new CodexQueueBusyError('AI 服务繁忙，排队人数已满，请稍后再试');
+      throw new AiQueueBusyError('AI 服务繁忙，排队人数已满，请稍后再试');
     }
 
     const task: QueuedTask<T> = {
@@ -125,7 +130,7 @@ export class CodexExecutionQueueService {
         task.status = 'cancelled';
         clearTimeout(task.queueTimer!);
         this.removeFromQueue(task);
-        task.reject(new CodexQueueBusyError('排队超时，AI 服务繁忙，请稍后再试'));
+        task.reject(new AiQueueBusyError('排队超时，AI 服务繁忙，请稍后再试'));
         this.drain();
       }
     }, opts.queueTimeoutMs ?? this.queueTimeoutMs);
@@ -140,7 +145,7 @@ export class CodexExecutionQueueService {
           task.status = 'cancelled';
           clearTimeout(task.queueTimer!);
           this.removeFromQueue(task);
-          task.reject(new CodexExecutionCancelledError());
+          task.reject(new AiExecutionCancelledError());
           this.drain();
         }
       },
@@ -205,7 +210,7 @@ export class CodexExecutionQueueService {
         `AI 执行完成 sessionId=${task.sessionId ?? '-'} task=${task.id} queueWaitMs=${queueWaitMs} executionMs=${executionMs} active=${this.active} queued=${this.queue.length}`,
       );
     } catch (e) {
-      if (e instanceof CodexExecutionCancelledError) {
+      if (e instanceof AiExecutionCancelledError) {
         this.logger.warn(`AI 任务取消 sessionId=${task.sessionId ?? '-'} task=${task.id} queueWaitMs=${queueWaitMs}`);
       } else {
         this.logger.error(`AI 执行失败 sessionId=${task.sessionId ?? '-'} task=${task.id}：${(e as Error)?.message}`);
@@ -221,5 +226,5 @@ export class CodexExecutionQueueService {
   }
 }
 
-/** SIGTERM 宽限期后仍未退出的进程由调用方（CodexService spawnStreamChild）发 SIGKILL */
-export const CODEX_CANCEL_GRACE_MS = CANCEL_GRACE_MS;
+/** 进程型执行器可复用的 SIGTERM 宽限期。 */
+export const AI_CANCEL_GRACE_MS = CANCEL_GRACE_MS;

@@ -5,6 +5,7 @@ import { ConsultationChatService } from '../../../common/services/consultation-c
 import { ConsultationAttachmentService } from '../../../common/services/consultation-attachment.service';
 import { ConsultationContextBuilder } from './consultation-context-builder';
 import { buildSkillSection } from '../../../common/utils/skill-prompt';
+import { formatEventTime } from '../../../common/utils/event-time';
 
 /**
  * 咨询 AI 答复编排器（从 ProjectService 抽出，2026-08-20 上帝类拆分）。
@@ -214,7 +215,7 @@ export class ConsultationReplyOrchestrator {
                 })
                 .catch(() => undefined);
             }
-            await this.addEvent(projectId, this.formatTime() + ' · AI 答复已完成');
+            await this.addEvent(projectId, formatEventTime() + ' · AI 答复已完成');
             resolveCompletion(msg); // P0-4：落库成功 → 前端可收到 message_end
           } catch (err) {
             this.logger.error(`AI 答复落库失败：${err}`);
@@ -236,7 +237,7 @@ export class ConsultationReplyOrchestrator {
               where: { id: projectId },
               data: { status: '待处理', isFailed: true },
             });
-            await this.addEvent(projectId, this.formatTime() + ' · AI 答复生成失败，已转人工处理');
+            await this.addEvent(projectId, formatEventTime() + ' · AI 答复生成失败，已转人工处理');
             if (runId) {
               await this.prisma.consultationRun
                 .update({
@@ -263,7 +264,7 @@ export class ConsultationReplyOrchestrator {
           where: { id: projectId },
           data: { status: '待处理', isFailed: true },
         });
-        await this.addEvent(projectId, this.formatTime() + ' · AI 服务不可用，已转人工处理');
+        await this.addEvent(projectId, formatEventTime() + ' · AI 服务不可用，已转人工处理');
         if (runId) {
           await this.prisma.consultationRun
             .update({
@@ -309,7 +310,4 @@ export class ConsultationReplyOrchestrator {
     });
   }
 
-  private formatTime(): string {
-    return new Date().toLocaleString('zh-CN', { hour12: false });
-  }
 }

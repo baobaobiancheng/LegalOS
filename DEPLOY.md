@@ -125,44 +125,48 @@ cd ../web && npm install && npm run build
 | 钉钉同步"部门不在授权范围" | 通讯录权限未批 | 见"八、钉钉集成上线检查清单" |
 | 钉钉建群"群主不在可见性内" | 应用可见范围未含群主 | 同上 |
 
-## 十、百鉴 MCP / Codex Agent PR0 技术闸门
+## 十、百鉴 MCP / dsh Agent PR0 技术闸门
 
 法律检索功能启用前，服务器必须先通过下面两层检查。普通 PR CI 只运行脱敏契约夹具；真实检查只在受控服务器或预发布环境运行。
 
 环境变量至少包括：
 
 ```text
-CODEX_HARDENED=true
 AI_EXECUTION_ENABLED=true
-CODEX_API_KEY=<公司大模型网关 token>
+LLM_BASE_URL=<公司 OpenAI-compatible 大模型网关 /v1 地址>
+LLM_API_KEY=<公司大模型网关 token>
+LLM_MODEL=glm-5-2
+DSH_HOME=/home/zhenghe.bao/LegalOS/LegalOS/api/.data/dsh
+DSH_MODEL_CONTEXT_WINDOW=131072
+DSH_MODEL_MAX_OUTPUT_TOKENS=16000
+DSH_AGENT_TOOL_CALL_MAX=3
 BAIJIAN_MCP_URL=https://mcpgateway.100credit.cn/mcp
 BAIJIAN_MCP_APP_KEY=<轮换后的 key>
 BAIJIAN_MCP_APP_SECRET=<轮换后的 secret>
 ```
 
 不要使用 `set -x`，不要把 Secret 直接写进 shell 命令、`.env.example`、日志或 CI 产物。推荐由 systemd、容器 Secret 或 CI Secret 注入。
-先安装仓库中锁定版本的受管策略：
+首次部署先创建 dsh 持久目录，并确保只有 API 运行用户可以访问：
 
 ```bash
-sudo install -D -o root -g root -m 0644 \
-  deploy/codex/requirements.toml.example \
-  /etc/codex/requirements.toml
+install -d -m 0700 "$HOME/LegalOS/LegalOS/api/.data/dsh"
 ```
 
 ```bash
 cd api
 
-# 0. CLI 版本、Secret 存在性、受管策略内容与文件权限
-npm run codex:baijian-preflight
-
-# 1. 官方 MCP TypeScript SDK：initialize + tools/list + 可选真实查询
+# 1. 官方 MCP TypeScript SDK：initialize + tools/list + 真实查询
 npm run baijian:verify -- health
 npm run baijian:verify -- law '劳动合同'
 npm run baijian:verify -- case '劳动合同违法解除经济补偿的中国类似案例'
 
-# 2. Codex Agent：受管策略 + 单工具白名单 + required MCP + JSONL/结构化结果
-npm run codex:baijian-gate -- law '劳动合同解除经济补偿'
-npm run codex:baijian-gate -- case '劳动合同违法解除经济补偿的中国类似案例'
+# 2. 嵌入式 dsh Agent：自主规划 query + 单个只读工具 + 权威来源 ID 校验
+npm run dsh:baijian-gate -- law '劳动合同解除经济补偿'
+npm run dsh:baijian-gate -- case '劳动合同违法解除经济补偿的中国类似案例'
 ```
 
-先将 `deploy/codex/requirements.toml.example` 以 root 安装为 `/etc/codex/requirements.toml`，建议权限 `0644` 或更严格；不要在服务器上手工重写策略。策略使用 `legalos_ai` 只读权限档案，仅允许读取本次工作区；不在系统层全局关闭 shell，因为现有合同起草需要用它只读读取 `templates/*.md`。法律检索 Agent 会在单次命令行中用 `--disable shell_tool` 关闭 shell。`CODEX_MANAGED_REQUIREMENTS_PATH` 只覆盖预检脚本的检查路径，真实 Agent 闸门固定验证 Codex CLI 实际加载的 `/etc/codex/requirements.toml`。Agent 命令行只配置 `env_http_headers` 的环境变量名称，不包含凭证值；每次运行只把 `lawstar_data_professional_query` 或 `ldh_search` 之一放入 `enabled_tools`，并设置 `required=true`。任何未观察到必需工具结果、出现额外工具、坏 JSONL、结果文件缺失、有命中却无权威 ID 引用，或受管策略缺失都视为闸门失败，不得启用咨询 Agent。
+dsh 在进程内只为本次运行注册 `search_laws` 或 `search_similar_cases` 之一；工具内部复用官方 MCP TypeScript SDK 与 `BaijianResultNormalizer`，模型看不到供应商凭证。每轮事件、checkpoint 和压缩结果写入 `DSH_HOME`，请确保目录持久化且仅 API 运行用户可读写。任何未观察到必需工具结果、出现额外工具、工具报错、有命中却无权威 ID 引用或最终 JSON 无效，都视为闸门失败，不得启用咨询检索 Agent。
+
+迁移期间 `codex:baijian-preflight` 与 `codex:baijian-gate` 仅保留作旧实现诊断，不再是新 dsh 路径的上线条件；因此 dsh 闸门不依赖 Codex CLI、`/etc/codex/requirements.toml` 或 Codex 的模型元数据。等上述两道 dsh Agent 闸门在真实服务器都通过后，再删除旧 Codex Agent 文件与部署配置。
+
+dsh 的会话、checkpoint、token meter、工具结果裁剪和压缩都直接使用上游包，不复制其内部实现。版本由 `package-lock.json` 固定；升级时应在独立提交中统一更新整组 `@deepseek-ai/dsh-*` 包，重新运行 `npm run ci` 以及法规、类案两道真实闸门，禁止只升级其中一个核心包后直接上线。

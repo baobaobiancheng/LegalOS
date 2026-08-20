@@ -14,10 +14,11 @@ import {
 import { extname, join } from 'path';
 import { randomUUID } from 'crypto';
 import * as mammoth from 'mammoth';
-import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { formatEventTime } from '../../common/utils/event-time';
 import { ProjectAccessPolicy } from '../project/domain/project-access.policy';
 import { ProjectAction, ProjectActor } from '../project/domain/project-access.types';
+import { ContractDocumentWriter } from './application/contract-document.writer';
 
 /**
  * 合同文件服务（从 ContractService 抽出，2026-08-20 上帝类拆分）。
@@ -34,6 +35,7 @@ export class ContractFileService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accessPolicy: ProjectAccessPolicy,
+    private readonly documentWriter: ContractDocumentWriter,
   ) {
     this.storageDir = process.env.CONTRACT_STORAGE_DIR
       || join(process.cwd(), 'storage', 'contracts');
@@ -124,7 +126,7 @@ export class ContractFileService {
         if (text) {
           textExtracted = true;
           await this.prisma.$transaction(async (tx) => {
-            await this.createContractDocument(tx, {
+            await this.documentWriter.create(tx, {
               projectId,
               documentType: kind as 'revised' | 'final',
               content: text,
@@ -146,7 +148,7 @@ export class ContractFileService {
       }
     }
 
-    await this.addEvent(projectId, this.formatTime() + ` · 上传了合同文件：${file.originalname}`);
+    await this.addEvent(projectId, formatEventTime() + ` · 上传了合同文件：${file.originalname}`);
     return {
       fileId: record.id,
       originalName: record.originalName,
@@ -197,33 +199,6 @@ export class ContractFileService {
     createReadStream(targetPath).pipe(res);
   }
 
-  /**
-   * 版本号安全分配（9.3-4）：事务内 count+1；并发唯一冲突(P2002)重试，不覆盖旧版本。
-   * 供上传（revised/final docx 抽取）与生成草稿两条路径复用。
-   */
-  async createContractDocument(
-    tx: Prisma.TransactionClient,
-    data: {
-      projectId: string;
-      documentType: 'draft' | 'revised' | 'final';
-      content: string;
-      sourceFileId?: string | null;
-      createdBy?: string | null;
-    },
-    attempts = 0,
-  ): Promise<any> {
-    const count = await tx.contractDocument.count({ where: { projectId: data.projectId } });
-    const version = count + 1;
-    try {
-      return await tx.contractDocument.create({ data: { ...data, version } });
-    } catch (e: any) {
-      if (e?.code === 'P2002' && attempts < 5) {
-        return this.createContractDocument(tx, data, attempts + 1);
-      }
-      throw e;
-    }
-  }
-
   private tryCleanup(path?: string) {
     if (path) { try { unlinkSync(path); } catch {} }
   }
@@ -262,10 +237,4 @@ export class ContractFileService {
     return this.prisma.projectEvent.create({ data: { projectId, text } });
   }
 
-  private formatTime(): string {
-    const now = new Date();
-    const hh = String(now.getHours()).padStart(2, '0');
-    const mm = String(now.getMinutes()).padStart(2, '0');
-    return `${hh}:${mm}`;
-  }
 }

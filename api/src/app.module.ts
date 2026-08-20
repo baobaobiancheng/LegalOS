@@ -14,12 +14,14 @@ import { CodexModule } from './common/services/codex.module';
 import { DshModule } from './common/services/dsh.module';
 import { ConsultationChatModule } from './common/services/consultation-chat.module';
 import { BaijianModule } from './common/baijian/baijian.module';
+import { AiExecutionModule } from './common/services/ai-execution.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     PrismaModule,
+    AiExecutionModule,
     CodexModule,
     DshModule,
     BaijianModule,

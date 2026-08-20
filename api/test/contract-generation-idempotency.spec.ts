@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { ContractService } from '../src/modules/contract/contract.service';
+import { ContractDocumentWriter } from '../src/modules/contract/application/contract-document.writer';
 import { CreateProjectUseCase } from '../src/modules/project/application/create-project.use-case';
 import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
 
@@ -33,7 +34,7 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
       prisma as any,
       dsh as any,
       { findBySlug: vi.fn().mockResolvedValue(TEMPLATE) } as any,
-      {} as any,
+      new ContractDocumentWriter(),
       { sendNotification: vi.fn() } as any,
       new CreateProjectUseCase(prisma) as any,
       new ProjectAccessPolicy() as any,
@@ -106,4 +107,3 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
     expect(dsh.executeStream).toHaveBeenCalledTimes(1);
   });
 });
-

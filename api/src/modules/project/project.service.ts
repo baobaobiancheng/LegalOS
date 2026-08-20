@@ -20,6 +20,7 @@ import { CreateProjectDto, CreateProjectMessageDto, ReplyProjectDto } from './dt
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { Prisma } from '@prisma/client';
 import { ConsultationReplyOrchestrator } from './application/consultation-reply.orchestrator';
+import { formatEventTime } from '../../common/utils/event-time';
 import { ProjectAccessPolicy } from './domain/project-access.policy';
 import { ProjectAction, ProjectActor } from './domain/project-access.types';
 import {
@@ -118,11 +119,11 @@ export class ProjectService {
     // 2. 事件文案（事务内写入）
     const events: string[] = [];
     if (dto.skillId && !skillId) {
-      events.push(this.formatTime() + ' · 所选技能不可用，已按通用口径答复');
+      events.push(formatEventTime() + ' · 所选技能不可用，已按通用口径答复');
     }
-    events.push(this.formatTime() + ' · 工单已创建');
+    events.push(formatEventTime() + ' · 工单已创建');
     events.push(
-      this.formatTime() +
+      formatEventTime() +
         ` · 系统判定 ${risk} 风险${route === 'llm' ? '，AI 正在生成答复…' : legalBpId ? '，已提交法务 BP 处理' : '，等待法务 BP 分配'}`,
     );
 
@@ -231,7 +232,7 @@ export class ProjectService {
         result: dto.result,
         legalBpId: dto.legalBpId ?? undefined,
         ownerId: dto.ownerId ?? undefined,
-        eventTexts: [this.formatTime() + ' · 工单已升级人工处理，等待 BP 分配'],
+        eventTexts: [formatEventTime() + ' · 工单已升级人工处理，等待 BP 分配'],
       });
       const escalated = await this.prisma.project.findUnique({
         where: { id },
@@ -312,7 +313,7 @@ export class ProjectService {
     if (updated.count === 0) {
       throw new ForbiddenException('只能取消自己创建的、未完成或未取消的工单');
     }
-    await this.addEvent(id, this.formatTime() + ' · 工单已取消');
+    await this.addEvent(id, formatEventTime() + ' · 工单已取消');
 
     return { status: '已取消' };
   }
@@ -337,7 +338,7 @@ export class ProjectService {
         legalBp: { select: userSelect },
       },
     });
-    await this.addEvent(id, this.formatTime() + ` · 工单已转派给 ${bp.displayName}`);
+    await this.addEvent(id, formatEventTime() + ` · 工单已转派给 ${bp.displayName}`);
 
     // 钉钉：新 BP 加群改由 Outbox Worker 执行，HTTP 请求只提交本地事件。
     await this.onLegalBpChanged(id, legalBpId, project.legalBpId);
@@ -374,7 +375,7 @@ export class ProjectService {
       route: 'legalbp',
       status: '待复核',
       domain: null,
-      eventTexts: [this.formatTime() + ' · 用户申请升级为人工处理，已通知法务 BP'],
+      eventTexts: [formatEventTime() + ' · 用户申请升级为人工处理，已通知法务 BP'],
     });
 
     return { upgraded: true, route: 'legalbp', status: '待复核' };
@@ -525,7 +526,7 @@ export class ProjectService {
           risk,
           domain: domain ?? null,
           eventTexts: [
-            this.formatTime() + ` · 追问触发 ${risk} 风险判定，已升级人工处理，等待 BP 分配`,
+            formatEventTime() + ` · 追问触发 ${risk} 风险判定，已升级人工处理，等待 BP 分配`,
           ],
         });
         return { message, route: 'legalbp' };
@@ -581,8 +582,8 @@ export class ProjectService {
     });
 
     // 事件
-    await this.addEvent(projectId, this.formatTime() + ' · 已回传业务端');
-    await this.addEvent(projectId, this.formatTime() + ' · 通知业务端 + 钉钉群同步');
+    await this.addEvent(projectId, formatEventTime() + ' · 已回传业务端');
+    await this.addEvent(projectId, formatEventTime() + ' · 通知业务端 + 钉钉群同步');
 
     // 钉钉：若此前不在群则加人（.catch 防崩溃）
     if (actor.id !== project.legalBpId) {
@@ -663,7 +664,7 @@ export class ProjectService {
       });
     } catch (e) {
       if ((e as any)?.code === 'P2002') return;
-      await this.addEvent(projectId, this.formatTime() + ' · 转派加群任务入队失败，请人工处理');
+      await this.addEvent(projectId, formatEventTime() + ' · 转派加群任务入队失败，请人工处理');
       this.logger.warn(`转派加群失败（工单 ${projectId}）：${e}`);
     }
   }
@@ -675,11 +676,4 @@ export class ProjectService {
     });
   }
 
-  /** 格式化时间戳 */
-  private formatTime(): string {
-    const now = new Date();
-    const hh = String(now.getHours()).padStart(2, '0');
-    const mm = String(now.getMinutes()).padStart(2, '0');
-    return `${hh}:${mm}`;
-  }
 }

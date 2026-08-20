@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { ContractService } from '../src/modules/contract/contract.service';
+import { ContractDocumentWriter } from '../src/modules/contract/application/contract-document.writer';
 import { CreateProjectUseCase } from '../src/modules/project/application/create-project.use-case';
 import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
 
@@ -52,7 +53,7 @@ describe('ContractService.reviewContract 源文档', () => {
       prisma as any,
       dsh as any,
       template as any,
-      {} as any,
+      new ContractDocumentWriter(),
       dingtalk as any,
       new CreateProjectUseCase(prisma) as any,
       new ProjectAccessPolicy() as any,
@@ -142,4 +143,3 @@ describe('ContractService.reviewContract 源文档', () => {
     expect(prisma.contractDocument.findFirst).toHaveBeenCalledTimes(1);
   });
 });
-
