@@ -39,30 +39,35 @@ async function main() {
     capability === 'law_search'
       ? '必须调用 search_laws，自主提炼简短法规关键词。结果只是元数据，不得生成或引用具体条文。'
       : '必须调用 search_similar_cases，自主改写为不含个人信息的完整法律问题。',
+    `本轮最多调用检索工具 ${dsh.getToolCallLimit()} 次；获得足以回答的有效结果后必须停止检索并输出最终答案。`,
     `用户问题：${question}`,
     '最终只输出一行 JSON，格式为 {"answer":"...","sourceUses":[{"source":"lawstar|ldh","recordId":"..."}]}。',
     'sourceUses 只能引用本轮工具结果真实返回的 ID；命中时至少引用一条。',
   ].join('\n');
 
-  const handle = await dsh.executeStream(prompt, {
-    sessionId: `pr0-dsh-${mode}`,
-    timeout: 180_000,
-    researchCapability: capability,
-    requireResearchTool: true,
-  });
-  const completion = await waitForCompletion(handle);
-  const final = parseFinal(completion.text);
-  assertAuthoritativeSources(completion, final, capability);
-  console.log(JSON.stringify({
-    gate: 'dsh-baijian-agent',
-    status: 'passed',
-    capability,
-    dshSessionId: completion.dshSessionId,
-    toolCalls: completion.toolCalls.map((call) => ({ name: call.name, arguments: call.arguments })),
-    toolResultCount: completion.toolResults.length,
-    sourceUseCount: final.sourceUses.length,
-    answerLength: final.answer.length,
-  }, null, 2));
+  try {
+    const handle = await dsh.executeStream(prompt, {
+      sessionId: `pr0-dsh-${mode}`,
+      timeout: 180_000,
+      researchCapability: capability,
+      requireResearchTool: true,
+    });
+    const completion = await waitForCompletion(handle);
+    const final = parseFinal(completion.text);
+    assertAuthoritativeSources(completion, final, capability);
+    console.log(JSON.stringify({
+      gate: 'dsh-baijian-agent',
+      status: 'passed',
+      capability,
+      dshSessionId: completion.dshSessionId,
+      toolCalls: completion.toolCalls.map((call) => ({ name: call.name, arguments: call.arguments })),
+      toolResultCount: completion.toolResults.length,
+      sourceUseCount: final.sourceUses.length,
+      answerLength: final.answer.length,
+    }, null, 2));
+  } finally {
+    await dsh.close();
+  }
 }
 
 function waitForCompletion(handle: DshExecutionHandle): Promise<DshExecutionResult> {

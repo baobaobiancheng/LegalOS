@@ -38,6 +38,16 @@
 - id: tools
   name: '@deepseek-ai/dsh-tools'
 
+# 复用 dsh base bundle 的原生防循环机制：对连续的“同工具 + 同参数”
+# 调用在 3/5/8 次递进提醒模型检查已有结果。插件只注入语义化提醒，
+# 不拒绝调用；LegalOS 仍在应用层保留单轮总次数硬上限。
+- id: repeat-tool-reminder
+  name: '@deepseek-ai/dsh-repeat-tool-reminder'
+  config:
+    thresholds: [3, 5, 8]
+    include: [search_laws, search_similar_cases]
+    argumentsPreviewChars: 500
+
 # 在模型请求和只读工具执行前持久化上一个语义边界，
 # 使崩溃后 resume 可以从完整的 call/result 日志恢复。
 - id: session-checkpoints

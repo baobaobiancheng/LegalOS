@@ -40,7 +40,12 @@ export class ConsultationExecutionRouter {
     const stdout = new PassThrough();
     const thinking = new PassThrough();
     const stream: any = Object.assign(emitter, { stdout, thinking, __runId: input.runId });
-    const prompt = buildResearchPrompt(input.capability, input.messages, Boolean(input.resumeDshSessionId));
+    const prompt = buildResearchPrompt(
+      input.capability,
+      input.messages,
+      Boolean(input.resumeDshSessionId),
+      this.dsh.getToolCallLimit(),
+    );
     const handle = await this.dsh.executeStream(prompt, {
       sessionId: input.projectId,
       resumeDshSessionId: input.resumeDshSessionId,
@@ -83,6 +88,7 @@ function buildResearchPrompt(
   capability: Exclude<ConsultationCapability, 'general'>,
   messages: ChatMessage[],
   resumed: boolean,
+  toolCallLimit: number,
 ): string {
   const selectedMessages = resumed
     ? [...messages].reverse().filter((message) => message.role === 'user').slice(0, 1).reverse()
@@ -91,7 +97,7 @@ function buildResearchPrompt(
   const sourceRule = capability === 'law_search'
     ? '必须调用 search_laws。法规结果只有元数据，不得声称已核验具体条文，不得编造法条号。'
     : '必须调用 search_similar_cases。只能引用工具真实返回的案例，不得虚构案号、法院或公开链接。';
-  return `你是企业法律检索 Agent。先理解对话，再自主提炼一次合适的检索词并调用唯一可用工具，然后基于结果回答。\n${sourceRule}\n若零结果，仍可给一般分析，但必须在开头醒目标明“未检索到可核验来源”。引用来源时只使用工具返回的信息。不要泄露内部推理过程。\n\n【对话上下文】\n${history}`;
+  return `你是企业法律检索 Agent。先理解对话，再自主提炼检索词并按需迭代调用唯一可用工具，然后基于结果回答。\n${sourceRule}\n本轮最多调用检索工具 ${toolCallLimit} 次；获得足以回答的有效结果后必须停止检索。\n若零结果，仍可给一般分析，但必须在开头醒目标明“未检索到可核验来源”。引用来源时只使用工具返回的信息。不要泄露内部推理过程。\n\n【对话上下文】\n${history}`;
 }
 
 function classifyResearchError(error: Error): string {

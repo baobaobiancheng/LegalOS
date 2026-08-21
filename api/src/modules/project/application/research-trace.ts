@@ -15,12 +15,12 @@ export interface ResearchTraceV1 {
   limitations: string[];
 }
 
-/** 写库前统一收敛：最多 3 次调用、每次 5 条结果、字符串有界。 */
+/** 写库前统一收敛：最多 8 次调用、每次 5 条结果、字符串有界。 */
 export function buildResearchTrace(
   capability: Exclude<ConsultationCapability, 'general'>,
   result: DshExecutionResult,
 ): ResearchTraceV1 {
-  const calls = result.toolResults.slice(0, 3).map((toolResult, index) => {
+  const calls = result.toolResults.slice(0, 8).map((toolResult, index) => {
     const call = result.toolCalls.find((item) => item.callId === toolResult.callId)
       ?? result.toolCalls[index];
     const normalized = toolResult.result;

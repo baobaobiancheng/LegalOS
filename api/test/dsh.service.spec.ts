@@ -85,7 +85,7 @@ describe('DshService 法律检索执行契约', () => {
 
   it('工具调用超过单轮硬上限时取消 Agent 并返回错误', async () => {
     const harness = makeHarness(({ publish }) => {
-      for (let index = 1; index <= 4; index += 1) {
+      for (let index = 1; index <= 9; index += 1) {
         publish({
           type: 'tool/call',
           data: { callId: `call-${index}`, name: 'search_laws', arguments: '{}' },
@@ -97,9 +97,22 @@ describe('DshService 法律检索执行契约', () => {
       requireResearchTool: true,
     });
 
-    await expect(completionOf(handle)).rejects.toThrow('工具调用超过上限（3）');
-    expect(harness.cancel).toHaveBeenCalledOnce();
+    await expect(completionOf(handle)).rejects.toThrow('工具调用超过上限（8）');
+    expect(harness.cancel).toHaveBeenCalledWith({
+      kind: 'hook',
+      reason: 'dsh Agent 工具调用超过上限（8）',
+    });
     expect(harness.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('宿主结束时释放常驻 dsh Context，重复关闭为幂等操作', async () => {
+    const harness = makeHarness(() => undefined);
+    (harness.service as any).bootPromise = Promise.resolve(harness.ctx);
+
+    await harness.service.close();
+    await harness.service.close();
+
+    expect(harness.rootDispose).toHaveBeenCalledOnce();
   });
 
   it('传入持久会话 ID 时使用 dsh resume，而不是创建同名新会话', async () => {
@@ -163,8 +176,8 @@ function makeHarness(
     session.events.push(event);
     for (const listener of listeners) listener(session, event);
   };
-  const cancel = vi.fn(() => {
-    session.events.push({ type: 'turn/end', data: { reason: { kind: 'aborted' } } });
+  const cancel = vi.fn((cause: unknown) => {
+    session.events.push({ type: 'turn/end', data: { reason: { kind: 'aborted', reason: cause } } });
   });
   const agent = {
     session,
@@ -177,7 +190,9 @@ function makeHarness(
       }
     }),
   };
+  const rootDispose = vi.fn().mockResolvedValue(undefined);
   const ctx = {
+    fiber: { dispose: rootDispose },
     get: vi.fn((key: string) => {
       if (key === 'agents') return {
         create: async (options: any) => {
@@ -209,7 +224,7 @@ function makeHarness(
   };
   const service = new DshService(config as any, queue, tools as any);
   (service as any).ensureBooted = vi.fn().mockResolvedValue(ctx);
-  return { service, register, dispose, cancel, toolDefinition, create, resume };
+  return { service, register, dispose, cancel, toolDefinition, create, resume, ctx, rootDispose };
 }
 
 function completionOf(handle: DshExecutionHandle): Promise<any> {

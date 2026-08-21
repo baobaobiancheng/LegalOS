@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
-import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   AiExecutionCancelledError,
@@ -75,7 +75,7 @@ function cancelledHandle(): DshExecutionHandle {
  * 双写、互不依赖。
  */
 @Injectable()
-export class DshService {
+export class DshService implements OnModuleDestroy {
   private readonly logger = new Logger(DshService.name);
   private readonly dshHome: string;
   private readonly providerId: string;
@@ -101,7 +101,7 @@ export class DshService {
       || this.config.get('LLM_MODEL', 'glm-5-2');
     this.modelContextWindow = positiveInteger(this.config.get('DSH_MODEL_CONTEXT_WINDOW'), 131_072);
     this.maxOutputTokens = positiveInteger(this.config.get('DSH_MODEL_MAX_OUTPUT_TOKENS'), 16_000);
-    this.toolCallLimit = positiveInteger(this.config.get('DSH_AGENT_TOOL_CALL_MAX'), 3);
+    this.toolCallLimit = positiveInteger(this.config.get('DSH_AGENT_TOOL_CALL_MAX'), 8);
     this.logger.log(`dsh 库嵌入：DSH_HOME=${this.dshHome} provider=${this.providerId} base=${this.modelBaseUrl} 模型=${this.defaultModel}`);
   }
 
@@ -167,6 +167,22 @@ export class DshService {
     const ctx = (await boot('legalos-dsh', configPath, patches)) as unknown as DshContext;
     this.logger.log('dsh 树已就绪（常驻）');
     return ctx;
+  }
+
+  /**
+   * Nest 进程关闭或一次性闸门结束时释放 dsh 根 Context。
+   * 业务请求之间仍复用常驻 Context，只在宿主生命周期结束时调用。
+   */
+  async close(): Promise<void> {
+    const pending = this.bootPromise;
+    if (!pending) return;
+    this.bootPromise = undefined;
+    const ctx = await pending;
+    await ctx.fiber.dispose();
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.close();
   }
 
   /**
@@ -293,7 +309,10 @@ export class DshService {
 
     // 创建完成后才能真正 cancel：若创建期间已经被取消，立即请求；否则挂监听，
     // 超时/连接断开时把取消信号真正转达给 dsh（而不是自己在外面伪造一个 cancelled 事件）。
-    const onAbort = () => agent.cancel(new Error('dsh 任务已取消'));
+    const onAbort = () => agent.cancel({
+      kind: 'hook',
+      reason: abortReasonMessage(abort.reason, 'dsh 任务已取消'),
+    });
     if (abort.aborted) onAbort();
     else abort.addEventListener('abort', onAbort, { once: true });
 
@@ -323,7 +342,7 @@ export class DshService {
         handle.emit('tool_call', call);
         if (toolCalls.length > this.toolCallLimit && !policyFailure) {
           policyFailure = new Error(`dsh Agent 工具调用超过上限（${this.toolCallLimit}）`);
-          agent.cancel(policyFailure);
+          agent.cancel({ kind: 'hook', reason: policyFailure.message });
         }
         return;
       }
@@ -379,9 +398,7 @@ export class DshService {
         if (policyFailure) handle.emit('error', policyFailure);
         else handle.emit('cancelled');
       } else {
-        const message = reason?.kind === 'error'
-          ? `dsh turn 失败：${reason.error?.message ?? '未知错误'}`
-          : 'dsh turn 未正常结束';
+        const message = describeTurnFailure(reason);
         handle.emit('error', new Error(message));
       }
     } finally {
@@ -415,6 +432,10 @@ export class DshService {
   getStats() {
     return this.queue.getStats();
   }
+
+  getToolCallLimit(): number {
+    return this.toolCallLimit;
+  }
 }
 
 function parseToolArguments(value: unknown): unknown {
@@ -438,4 +459,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function positiveInteger(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function abortReasonMessage(value: unknown, fallback: string): string {
+  if (value instanceof Error && value.message) return value.message;
+  return typeof value === 'string' && value ? value : fallback;
+}
+
+function describeTurnFailure(reason: { kind: string; error?: { message?: string } } | undefined): string {
+  if (!reason) return 'dsh turn 缺少结束事件';
+  if (reason.kind === 'error') return `dsh turn 失败：${reason.error?.message ?? '未知错误'}`;
+  if (reason.kind === 'blocked') return 'dsh turn 被执行策略阻止';
+  if (reason.kind === 'max-tokens') return 'dsh turn 达到模型输出 token 上限';
+  if (reason.kind === 'interrupted') return 'dsh turn 因上次进程中断而关闭';
+  return `dsh turn 未正常结束：${reason.kind}`;
 }

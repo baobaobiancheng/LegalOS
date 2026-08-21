@@ -38,4 +38,33 @@ describe('ResearchTraceV1', () => {
     expect(trace.calls[0].recordIds).toEqual(['law-0', 'law-1', 'law-2', 'law-3', 'law-4']);
     expect(trace.limitations[0]).toContain('未核验具体条文');
   });
+
+  it('与 Agent 的 8 次工具预算保持一致', () => {
+    const trace = buildResearchTrace('law_search', {
+      text: 'answer',
+      dshSessionId: 'session-8-calls',
+      toolCalls: Array.from({ length: 10 }, (_, index) => ({
+        callId: `c${index}`,
+        name: 'search_laws',
+        arguments: { keyword: `劳动合同-${index}` },
+      })),
+      toolResults: Array.from({ length: 10 }, (_, index) => ({
+        callId: `c${index}`,
+        name: 'search_laws',
+        isError: false,
+        result: {
+          toolName: 'lawstar_data_professional_query' as const,
+          status: 'success_empty' as const,
+          count: 0,
+          page: 1,
+          pageSize: 5,
+          totalPages: 0,
+          records: [],
+        },
+      })),
+    });
+
+    expect(trace.calls).toHaveLength(8);
+    expect(trace.calls.at(-1)?.query).toBe('劳动合同-7');
+  });
 });
