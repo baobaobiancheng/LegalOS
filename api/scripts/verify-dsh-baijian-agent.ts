@@ -79,13 +79,28 @@ function waitForCompletion(handle: DshExecutionHandle): Promise<DshExecutionResu
 }
 
 export function parseFinal(text: string): GateFinal {
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error('dsh Agent 最终输出为空');
+
   let value: unknown;
   try {
-    value = JSON.parse(text.trim());
+    value = JSON.parse(trimmed);
   } catch {
-    throw new Error('dsh Agent 最终输出不是合法 JSON');
+    const candidates = extractJsonObjects(trimmed).flatMap((candidate) => {
+      try {
+        return [JSON.parse(candidate) as unknown];
+      } catch {
+        return [];
+      }
+    });
+    if (!candidates.length) throw new Error('dsh Agent 最终输出不是合法 JSON');
+    if (candidates.length > 1) throw new Error('dsh Agent 最终输出包含多个 JSON 结果');
+    [value] = candidates;
   }
-  if (!isRecord(value) || typeof value.answer !== 'string' || !Array.isArray(value.sourceUses)) {
+  if (!isRecord(value)
+    || typeof value.answer !== 'string'
+    || !value.answer.trim()
+    || !Array.isArray(value.sourceUses)) {
     throw new Error('dsh Agent 最终输出结构无效');
   }
   const sourceUses: GateFinal['sourceUses'] = value.sourceUses.map((item) => {
@@ -102,6 +117,45 @@ export function parseFinal(text: string): GateFinal {
     return { source, recordId };
   });
   return { answer: value.answer, sourceUses };
+}
+
+/**
+ * dsh 的 assistant/message 是普通文本通道，模型偶尔会给 JSON 加 markdown
+ * 围栏或一句说明。这里按 JSON 字符串转义规则提取完整顶层对象；不使用贪婪正则，
+ * 也不在多个候选中猜测，以免把两个互相矛盾的最终结果静默合并。
+ */
+function extractJsonObjects(text: string): string[] {
+  const objects: string[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"' && depth > 0) {
+      inString = true;
+      continue;
+    }
+    if (character === '{') {
+      if (depth === 0) start = index;
+      depth += 1;
+      continue;
+    }
+    if (character !== '}' || depth === 0) continue;
+    depth -= 1;
+    if (depth === 0 && start >= 0) {
+      objects.push(text.slice(start, index + 1));
+      start = -1;
+    }
+  }
+  return objects;
 }
 
 export function assertAuthoritativeSources(
