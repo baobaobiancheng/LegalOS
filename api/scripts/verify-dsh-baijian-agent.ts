@@ -7,7 +7,7 @@ import { DshExecutionResult, DshResearchCapability } from '../src/common/service
 import { BaijianMcpClientService } from '../src/common/baijian/baijian-mcp-client.service';
 import { BaijianResultNormalizer } from '../src/common/baijian/baijian-result.normalizer';
 
-type GateFinal = {
+export type GateFinal = {
   answer: string;
   sourceUses: Array<{ source: 'lawstar' | 'ldh'; recordId: string }>;
 };
@@ -73,7 +73,7 @@ function waitForCompletion(handle: DshExecutionHandle): Promise<DshExecutionResu
   });
 }
 
-function parseFinal(text: string): GateFinal {
+export function parseFinal(text: string): GateFinal {
   let value: unknown;
   try {
     value = JSON.parse(text.trim());
@@ -83,19 +83,23 @@ function parseFinal(text: string): GateFinal {
   if (!isRecord(value) || typeof value.answer !== 'string' || !Array.isArray(value.sourceUses)) {
     throw new Error('dsh Agent 最终输出结构无效');
   }
-  const sourceUses = value.sourceUses.map((item) => {
-    if (!isRecord(item)
-      || (item.source !== 'lawstar' && item.source !== 'ldh')
-      || typeof item.recordId !== 'string'
-      || !item.recordId) {
+  const sourceUses: GateFinal['sourceUses'] = value.sourceUses.map((item) => {
+    if (!isRecord(item)) {
       throw new Error('dsh Agent sourceUses 无效');
     }
-    return { source: item.source, recordId: item.recordId };
+    const source = item.source;
+    const recordId = item.recordId;
+    if ((source !== 'lawstar' && source !== 'ldh')
+      || typeof recordId !== 'string'
+      || !recordId) {
+      throw new Error('dsh Agent sourceUses 无效');
+    }
+    return { source, recordId };
   });
   return { answer: value.answer, sourceUses };
 }
 
-function assertAuthoritativeSources(
+export function assertAuthoritativeSources(
   completion: DshExecutionResult,
   final: GateFinal,
   capability: DshResearchCapability,
@@ -124,10 +128,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-main().catch((error) => {
-  console.error(JSON.stringify({
-    code: 'DSH_BAIJIAN_GATE_FAILED',
-    message: error instanceof Error ? error.message : String(error),
-  }));
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(JSON.stringify({
+      code: 'DSH_BAIJIAN_GATE_FAILED',
+      message: error instanceof Error ? error.message : String(error),
+    }));
+    process.exitCode = 1;
+  });
+}
