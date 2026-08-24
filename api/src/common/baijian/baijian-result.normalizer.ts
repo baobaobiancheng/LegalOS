@@ -1,8 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import {
   BAIJIAN_CASE_SEARCH_TOOL,
+  BAIJIAN_LAW_ADVANCED_SEARCH_TOOL,
   BAIJIAN_LAW_DETAIL_TOOL,
   BAIJIAN_LAW_SEARCH_TOOL,
+  BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL,
   BaijianCaseRecord,
   BaijianError,
   BaijianLawContentBlock,
@@ -17,7 +19,7 @@ import {
 @Injectable()
 export class BaijianResultNormalizer {
   normalize(raw: BaijianRawToolResult & { toolName: typeof BAIJIAN_LAW_DETAIL_TOOL }): BaijianLawDetail;
-  normalize(raw: BaijianRawToolResult & { toolName: typeof BAIJIAN_LAW_SEARCH_TOOL | typeof BAIJIAN_CASE_SEARCH_TOOL }): BaijianNormalizedResult;
+  normalize(raw: BaijianRawToolResult & { toolName: typeof BAIJIAN_LAW_SEARCH_TOOL | typeof BAIJIAN_LAW_ADVANCED_SEARCH_TOOL | typeof BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL | typeof BAIJIAN_CASE_SEARCH_TOOL }): BaijianNormalizedResult;
   normalize(raw: BaijianRawToolResult): BaijianNormalizedToolResult;
   normalize(raw: BaijianRawToolResult): BaijianNormalizedToolResult {
     if (raw.isError) {
@@ -25,7 +27,10 @@ export class BaijianResultNormalizer {
       throw classifySupplierError(text);
     }
     const inner = this.extractInner(raw);
-    if (raw.toolName === BAIJIAN_LAW_SEARCH_TOOL) return normalizeLaws(inner);
+    if (raw.toolName === BAIJIAN_LAW_SEARCH_TOOL || raw.toolName === BAIJIAN_LAW_ADVANCED_SEARCH_TOOL) {
+      return normalizeLaws(inner, raw.toolName);
+    }
+    if (raw.toolName === BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL) return normalizeSemanticLaws(inner);
     if (raw.toolName === BAIJIAN_LAW_DETAIL_TOOL) return normalizeLawDetail(inner);
     if (raw.toolName === BAIJIAN_CASE_SEARCH_TOOL) return normalizeCases(inner);
     throw new BaijianError('BAIJIAN_TOOL_NOT_ALLOWED', '未允许的百鉴工具', false);
@@ -102,7 +107,10 @@ export function classifySupplierError(error: unknown): BaijianError {
   return new BaijianError('BAIJIAN_SUPPLIER_ERROR', '百鉴服务暂不可用', true, code as string | number);
 }
 
-function normalizeLaws(inner: Record<string, unknown>): BaijianNormalizedResult {
+function normalizeLaws(
+  inner: Record<string, unknown>,
+  toolName: typeof BAIJIAN_LAW_SEARCH_TOOL | typeof BAIJIAN_LAW_ADVANCED_SEARCH_TOOL,
+): BaijianNormalizedResult {
   const code = inner.code;
   if (String(code) !== '200') {
     const message = typeof inner.msg === 'string' ? inner.msg : `法律之星业务码 ${String(code)}`;
@@ -116,12 +124,44 @@ function normalizeLaws(inner: Record<string, unknown>): BaijianNormalizedResult 
   const pageSize = safeNonNegativeInteger(data.pageSize, records.length);
   const totalPages = safeNonNegativeInteger(data.totalPage, pageSize ? Math.ceil(count / pageSize) : 0);
   return {
-    toolName: BAIJIAN_LAW_SEARCH_TOOL,
+    toolName,
     status: records.length ? 'success_hit' : 'success_empty',
     count,
     page: safePositiveInteger(data.page, 1),
     pageSize,
     totalPages,
+    records,
+  };
+}
+
+function normalizeSemanticLaws(inner: Record<string, unknown>): BaijianNormalizedResult {
+  const code = inner.code;
+  if (String(code) !== '200') {
+    const message = typeof inner.msg === 'string' ? inner.msg : `法律之星业务码 ${String(code)}`;
+    throw classifySupplierError({ code, message });
+  }
+  const data = isRecord(inner.data) ? inner.data : undefined;
+  if (!data) throw new BaijianError('BAIJIAN_INVALID_RESPONSE', '法律之星语义检索缺少 data', false);
+  const rows = Array.isArray(data.result) ? data.result : [];
+  const records: BaijianLawRecord[] = [];
+  for (const value of rows.slice(0, 100)) {
+    const record = normalizeLawRecord(value);
+    if (!record || !isRecord(value)) continue;
+    records.push({
+      ...record,
+      issuingNo: nullableCleanString(value.filenum ?? value.issuingNo),
+      matchedContent: nullableCleanHtml(value.content),
+      articleNumber: nullableCleanString(value.rawnumber),
+      score: nullableNumber(value.score),
+    });
+  }
+  return {
+    toolName: BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL,
+    status: records.length ? 'success_hit' : 'success_empty',
+    count: safeNonNegativeInteger(data.count ?? data.total, records.length),
+    page: 1,
+    pageSize: records.length,
+    totalPages: records.length ? 1 : 0,
     records,
   };
 }

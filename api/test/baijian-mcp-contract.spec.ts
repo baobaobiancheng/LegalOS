@@ -21,6 +21,7 @@ afterEach(async () => {
 describe('Baijian MCP SDK offline contract', () => {
   it('完成 initialize/list/call，携带鉴权头并标准化结果', async () => {
     const seenMethods: string[] = [];
+    const seenCalls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
     const seenHeaders: Array<{ key?: string; secret?: string }> = [];
     server = createServer((req, res) => {
       if (req.method === 'GET' || req.method === 'DELETE') {
@@ -36,6 +37,7 @@ describe('Baijian MCP SDK offline contract', () => {
           secret: req.headers['x-app-secret'] as string | undefined,
         });
         seenMethods.push(message.method);
+        if (message.method === 'tools/call') seenCalls.push(message.params);
         if (message.method === 'notifications/initialized') {
           res.writeHead(202).end();
           return;
@@ -46,6 +48,8 @@ describe('Baijian MCP SDK offline contract', () => {
             ? fixture('tools-list.result.json')
             : message.params?.name === 'lawstar_data_professional_detail'
               ? fixture('law-detail-call.result.json')
+              : message.params?.name === 'lawstar_data_xl_query'
+                ? fixture('law-semantic-call.result.json')
               : fixture('law-call.result.json');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }));
@@ -76,6 +80,14 @@ describe('Baijian MCP SDK offline contract', () => {
       status: 'success_hit',
       records: [{ recordId: 'SANITIZED-LAW-ID', lawName: '中华人民共和国劳动合同法' }],
     });
+
+    await client.searchLawsAdvanced({ keyword: '劳动合同', issuingOrgan: '国务院', timeliness: '1' });
+    const semantic = await client.searchLawsSemantic({ query: '违法解除劳动合同如何赔偿', timeliness: '1' });
+    expect(seenCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'lawstar_data_k_query', arguments: expect.objectContaining({ keywords: '0;劳动合同', depName: '国务院', timelinessnew: '1' }) }),
+      expect.objectContaining({ name: 'lawstar_data_xl_query', arguments: expect.objectContaining({ vector: '违法解除劳动合同如何赔偿', lawstatexlsFacet: '1' }) }),
+    ]));
+    expect(semantic.records[0]).toMatchObject({ articleNumber: '第八十七条', score: 0.93 });
 
     const detail = await client.getLawDetail({ lawId: 'D6592443DA000EF8D692CE667E947A69' });
     expect(detail).toMatchObject({

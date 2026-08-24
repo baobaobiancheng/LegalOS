@@ -15,7 +15,13 @@ async function main() {
   );
 
   const health = await service.health();
-  const requiredTools = ['lawstar_data_professional_query', 'ldh_search'];
+  const requiredTools = [
+    'lawstar_data_professional_query',
+    'lawstar_data_k_query',
+    'lawstar_data_xl_query',
+    'lawstar_data_professional_detail',
+    'ldh_search',
+  ];
   for (const tool of requiredTools) {
     if (!health.availableTools.includes(tool)) throw new Error(`百鉴缺少必需工具：${tool}`);
   }
@@ -28,12 +34,22 @@ async function main() {
     console.log(JSON.stringify({ gate: 'law-search', result }, null, 2));
     return;
   }
+  if (mode === 'law-advanced') {
+    const result = await service.searchLawsAdvanced({ keyword: query, page: 1, rows: 3, timeliness: '1' });
+    console.log(JSON.stringify({ gate: 'law-advanced-search', result }, null, 2));
+    return;
+  }
+  if (mode === 'law-semantic') {
+    const result = await service.searchLawsSemantic({ query, rows: 3, timeliness: '1' });
+    console.log(JSON.stringify({ gate: 'law-semantic-search', result }, null, 2));
+    return;
+  }
   if (mode === 'case') {
     const result = await service.searchCases({ query, topK: 3 });
     console.log(JSON.stringify({ gate: 'case-search', result }, null, 2));
     return;
   }
-  throw new Error('模式只能是 health、law 或 case');
+  throw new Error('模式只能是 health、law、law-advanced、law-semantic 或 case');
 }
 
 function requireSecret(name: string): void {

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { AiExecutionQueueService } from '../src/common/services/ai-execution-queue.service';
-import { DshExecutionHandle, DshService } from '../src/common/services/dsh.service';
+import { DshExecutionHandle, DshService, validateResearchEvidence } from '../src/common/services/dsh.service';
 import { DSH_BAIJIAN_RESULT_META_KIND } from '../src/common/services/dsh-baijian-tools.service';
 
 const homes: string[] = [];
@@ -13,7 +13,82 @@ afterEach(() => {
 });
 
 describe('DshService 法律检索执行契约', () => {
+  it('拒绝引用未读取详情的法规 ID', () => {
+    const candidateId = 'D6592443DA000EF8D692CE667E947A69';
+    const unsupportedId = 'E4A4956751D374FD35D0CEA47C041313';
+    const results: any[] = [
+      { name: 'search_laws', isError: false, result: { records: [{ recordId: candidateId }] } },
+      { name: 'get_law_detail', isError: false, result: { recordId: candidateId, contentBlocks: [{ text: '第八十七条 用人单位违法解除劳动合同的，应支付赔偿金。' }] } },
+    ];
+    expect(() => validateResearchEvidence(
+      'law_search',
+      `> [法规原文｜ID:${candidateId}｜条文:第八十七条] 用人单位违法解除劳动合同的，应支付赔偿金。\n另见 ID: ${unsupportedId}`,
+      [{ callId: '1', name: 'search_laws', arguments: {} }, { callId: '2', name: 'get_law_detail', arguments: { lawId: candidateId } }],
+      results,
+    )).toThrow(`引用了未核验法规 ID：${unsupportedId.toLowerCase()}`);
+  });
+
+  it('拒绝用真实法规 ID 包装的虚构条文', () => {
+    const lawId = 'D6592443DA000EF8D692CE667E947A69';
+    const calls: any[] = [
+      { callId: '1', name: 'search_laws_semantic', arguments: { query: '违法解除' } },
+      { callId: '2', name: 'get_law_detail', arguments: { lawId, articleHint: '第八十七条' } },
+    ];
+    const results: any[] = [
+      { name: 'search_laws_semantic', isError: false, result: { records: [{ recordId: lawId }] } },
+      { name: 'get_law_detail', isError: false, result: { recordId: lawId, contentBlocks: [{ text: '第八十七条 应当依照本法第四十七条规定的经济补偿标准的二倍向劳动者支付赔偿金。' }] } },
+    ];
+    expect(() => validateResearchEvidence(
+      'law_search',
+      `> [法规原文｜ID:${lawId}｜条文:第八十七条] 用人单位必须额外支付三倍赔偿金。`,
+      calls,
+      results,
+    )).toThrow('法规原文与权威详情不匹配');
+  });
+
+  it('允许可控的 Markdown 和中英文标点差异，但仍逐字核对原文', () => {
+    const lawId = 'D6592443DA000EF8D692CE667E947A69';
+    const original = '用人单位违反本法规定解除或者终止劳动合同的，应当支付赔偿金。';
+    expect(() => validateResearchEvidence(
+      'law_search',
+      `**[法规原文 | ID：${lawId} | 条文：第八十七条]** ${original}`,
+      [{ callId: '1', name: 'search_laws', arguments: {} }, { callId: '2', name: 'get_law_detail', arguments: { lawId, query: '赔偿金' } }],
+      [
+        { name: 'search_laws', isError: false, result: { records: [{ recordId: lawId }] } },
+        { name: 'get_law_detail', isError: false, result: { recordId: lawId, contentBlocks: [{ text: original }] } },
+      ] as any[],
+    )).not.toThrow();
+  });
+
+  it('支持技术闸门的结构化 evidenceQuotes，并使用同一逐字校验', () => {
+    const lawId = 'D6592443DA000EF8D692CE667E947A69';
+    const original = '用人单位违反本法规定解除或者终止劳动合同的，应当支付赔偿金。';
+    const text = JSON.stringify({
+      answer: `结论 ID: ${lawId}`,
+      sourceUses: [{ source: 'lawstar', recordId: lawId }],
+      evidenceQuotes: [{ recordId: lawId, article: '第八十七条', text: original }],
+    });
+    expect(() => validateResearchEvidence(
+      'law_search', text,
+      [{ callId: '1', name: 'search_laws', arguments: {} }, { callId: '2', name: 'get_law_detail', arguments: { lawId, query: '赔偿金' } }],
+      [
+        { name: 'search_laws', isError: false, result: { records: [{ recordId: lawId }] } },
+        { name: 'get_law_detail', isError: false, result: { recordId: lawId, contentBlocks: [{ text: original }] } },
+      ] as any[],
+    )).not.toThrow();
+  });
+
+  it('零命中只允许明确声明没有可核验来源', () => {
+    const calls: any[] = [{ callId: '1', name: 'search_laws_semantic', arguments: { query: '问题' } }];
+    const results: any[] = [{ name: 'search_laws_semantic', isError: false, result: { records: [] } }];
+    expect(() => validateResearchEvidence('law_search', '依据一般知识分析', calls, results))
+      .toThrow('零结果时未声明无可核验来源');
+    expect(() => validateResearchEvidence('law_search', '未检索到可核验来源。请补充信息。', calls, results))
+      .not.toThrow();
+  });
+
   it('转发原生工具事件，并把本轮标准化结果放入权威 completion', async () => {
+    const lawId = 'D6592443DA000EF8D692CE667E947A69';
     const normalized = {
       toolName: 'lawstar_data_professional_query',
       status: 'success_hit',
@@ -22,7 +97,7 @@ describe('DshService 法律检索执行契约', () => {
       pageSize: 1,
       totalPages: 1,
       records: [{
-        source: 'lawstar', recordId: 'law-1', lawName: '中华人民共和国劳动合同法',
+        source: 'lawstar', recordId: lawId, lawName: '中华人民共和国劳动合同法',
         issuingOrgan: '全国人大常委会', issuingNo: null, releaseDate: null,
         implementDate: null, timeliness: '现行有效',
       }],
@@ -39,10 +114,21 @@ describe('DshService 法律检索执行契约', () => {
           meta: { kind: DSH_BAIJIAN_RESULT_META_KIND, result: normalized },
         },
       });
-      publish({ type: 'assistant/chunk', data: { chunk: { type: 'text-delta', text: '{"answer":"结论"}' } } });
+      publish({ type: 'tool/call', data: { callId: 'call-2', name: 'get_law_detail', arguments: JSON.stringify({ lawId }) } });
+      publish({
+        type: 'tool/result',
+        data: {
+          message: { content: [{ type: 'tool-result', toolCallId: 'call-2', isError: false }] },
+          meta: { kind: DSH_BAIJIAN_RESULT_META_KIND, result: {
+            toolName: 'lawstar_data_professional_detail', recordId: lawId,
+            lawName: '中华人民共和国劳动合同法', contentBlocks: [{ kind: 'paragraph', id: null, text: '第八十七条 应当支付赔偿金。' }], toc: [],
+          } },
+        },
+      });
+      publish({ type: 'assistant/chunk', data: { chunk: { type: 'text-delta', text: `> [法规原文｜ID:${lawId}｜条文:第八十七条] 应当支付赔偿金。` } } });
       session.events.push({
         type: 'assistant/message',
-        data: { message: { content: [{ type: 'text', text: '{"answer":"权威结论"}' }] } },
+        data: { message: { content: [{ type: 'text', text: `> [法规原文｜ID:${lawId}｜条文:第八十七条] 应当支付赔偿金。` }] } },
       });
       session.events.push({ type: 'turn/end', data: { reason: { kind: 'completed' } } });
     });
@@ -58,10 +144,13 @@ describe('DshService 法律检索执行契约', () => {
     handle.on('tool_result', (event) => results.push(event));
     const completion = await completionOf(handle);
 
-    expect(harness.register).toHaveBeenCalledWith(harness.toolDefinition);
-    expect(calls).toEqual([{ callId: 'call-1', name: 'search_laws', arguments: { keyword: '劳动合同' } }]);
+    expect(harness.register).toHaveBeenCalledTimes(2);
+    expect(calls).toEqual([
+      { callId: 'call-1', name: 'search_laws', arguments: { keyword: '劳动合同' } },
+      { callId: 'call-2', name: 'get_law_detail', arguments: { lawId } },
+    ]);
     expect(results[0]).toMatchObject({ callId: 'call-1', name: 'search_laws', isError: false, result: normalized });
-    expect(completion.text).toBe('{"answer":"权威结论"}');
+    expect(completion.text).toBe(`> [法规原文｜ID:${lawId}｜条文:第八十七条] 应当支付赔偿金。`);
     expect(completion.toolResults[0].result).toEqual(normalized);
     expect(harness.dispose).toHaveBeenCalledOnce();
   });
@@ -79,7 +168,7 @@ describe('DshService 法律检索执行契约', () => {
       requireResearchTool: true,
     });
 
-    await expect(completionOf(handle)).rejects.toThrow('未产生必需工具结果：search_laws');
+    await expect(completionOf(handle)).rejects.toThrow('未产生成功的法规检索结果');
     expect(harness.dispose).toHaveBeenCalledOnce();
   });
 
@@ -163,7 +252,8 @@ function makeHarness(
   };
   const queue = new AiExecutionQueueService(config as any);
   const toolDefinition = { name: 'search_laws' };
-  const tools = { createDefinition: vi.fn().mockResolvedValue(toolDefinition) };
+  const toolDefinitions = [toolDefinition, { name: 'get_law_detail' }];
+  const tools = { createDefinitions: vi.fn().mockResolvedValue(toolDefinitions) };
   const listeners = new Set<(session: any, event: any) => void>();
   const register = vi.fn();
   const create = vi.fn();

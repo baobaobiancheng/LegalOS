@@ -36,7 +36,7 @@ describe('ResearchTraceV1', () => {
     expect(trace.calls[0].query).toHaveLength(200);
     expect(trace.calls[0].records).toHaveLength(5);
     expect(trace.calls[0].recordIds).toEqual(['law-0', 'law-1', 'law-2', 'law-3', 'law-4']);
-    expect(trace.limitations[0]).toContain('未核验具体条文');
+    expect(trace.limitations[0]).toContain('未检索到可核验法规正文');
   });
 
   it('与 Agent 的 8 次工具预算保持一致', () => {
@@ -66,5 +66,19 @@ describe('ResearchTraceV1', () => {
 
     expect(trace.calls).toHaveLength(8);
     expect(trace.calls.at(-1)?.query).toBe('劳动合同-7');
+  });
+
+  it('自然语言语义查询在业务 trace 中只保存哈希', () => {
+    const trace = buildResearchTrace('law_search', {
+      text: '未检索到可核验来源',
+      dshSessionId: 'session-semantic',
+      toolCalls: [{ callId: 'c1', name: 'search_laws_semantic', arguments: { query: '张三手机号13800138000被违法解除' } }],
+      toolResults: [{ callId: 'c1', name: 'search_laws_semantic', isError: false, result: {
+        toolName: 'lawstar_data_xl_query', status: 'success_empty', count: 0,
+        page: 1, pageSize: 0, totalPages: 0, records: [],
+      } }],
+    });
+    expect(trace.calls[0].query).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(trace.calls[0].query).not.toContain('张三');
   });
 });

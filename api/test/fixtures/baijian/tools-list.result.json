@@ -25,6 +25,16 @@
       }
     },
     {
+      "name": "lawstar_data_k_query",
+      "description": "Sanitized advanced law search fixture",
+      "inputSchema": { "type": "object", "required": ["keywords"], "properties": { "keywords": { "type": "string" } } }
+    },
+    {
+      "name": "lawstar_data_xl_query",
+      "description": "Sanitized semantic law search fixture",
+      "inputSchema": { "type": "object", "properties": { "vector": { "type": "string" }, "keyword": { "type": "string" } } }
+    },
+    {
       "name": "ldh_search",
       "description": "Sanitized similar-case search fixture",
       "inputSchema": {

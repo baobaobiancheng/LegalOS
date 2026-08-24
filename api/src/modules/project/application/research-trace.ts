@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { DshExecutionResult } from '../../../common/services/dsh-agent.types';
 import { ConsultationCapability } from '../domain/consultation-capability';
 
@@ -20,16 +21,25 @@ export function buildResearchTrace(
   capability: Exclude<ConsultationCapability, 'general'>,
   result: DshExecutionResult,
 ): ResearchTraceV1 {
+  const detailedLawIds = new Set(result.toolResults.flatMap((item) =>
+    item.result && 'contentBlocks' in item.result ? [item.result.recordId] : []));
   const calls = result.toolResults.slice(0, 8).map((toolResult, index) => {
     const call = result.toolCalls.find((item) => item.callId === toolResult.callId)
       ?? result.toolCalls[index];
     const normalized = toolResult.result;
-    const records = (normalized?.records ?? []).slice(0, 5).map((record) => boundRecord(record));
+    const sourceRecords = normalized && 'records' in normalized
+      ? (capability === 'law_search' && detailedLawIds.size
+        ? normalized.records.filter((record) => detailedLawIds.has(record.recordId))
+        : normalized.records)
+      : [];
+    const records = sourceRecords.slice(0, 5).map((record) => boundRecord(record));
+    const detailId = normalized && 'contentBlocks' in normalized ? normalized.recordId : '';
     return {
       tool: bound(String(toolResult.name), 80),
       query: extractQuery(call?.arguments),
-      recordIds: records
+      recordIds: [detailId, ...records
         .map((record: any) => String(record.recordId ?? record.sourceId ?? ''))
+        .filter(Boolean)]
         .filter(Boolean)
         .slice(0, 5),
       records,
@@ -43,7 +53,9 @@ export function buildResearchTrace(
     dshSessionId: bound(result.dshSessionId, 128),
     calls,
     limitations: capability === 'law_search'
-      ? ['仅检索法规元数据，未核验具体条文正文']
+      ? (result.toolResults.some((item) => item.result && 'contentBlocks' in item.result)
+        ? ['条文原文来自已读取的百鉴法规详情；AI分析不等同于正式法律意见']
+        : ['未检索到可核验法规正文'])
       : ['案例结果取决于供应商案例库覆盖与可用性'],
   };
   return enforceTraceLimit(trace);
@@ -85,7 +97,10 @@ function compactRecord(value: unknown): Record<string, unknown> {
 function extractQuery(value: unknown): string {
   if (!value || typeof value !== 'object') return '';
   const args = value as Record<string, unknown>;
-  return bound(String(args.keyword ?? args.query ?? ''), 200);
+  if (args.query) {
+    return `sha256:${createHash('sha256').update(String(args.query)).digest('hex')}`;
+  }
+  return bound(String(args.keyword ?? args.lawId ?? ''), 200);
 }
 
 function boundRecord(value: unknown): unknown {

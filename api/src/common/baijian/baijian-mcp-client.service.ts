@@ -5,8 +5,10 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { BaijianResultNormalizer, classifySupplierError } from './baijian-result.normalizer';
 import {
   BAIJIAN_CASE_SEARCH_TOOL,
+  BAIJIAN_LAW_ADVANCED_SEARCH_TOOL,
   BAIJIAN_LAW_DETAIL_TOOL,
   BAIJIAN_LAW_SEARCH_TOOL,
+  BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL,
   BaijianError,
   BaijianCaseSearchResult,
   BaijianLawDetail,
@@ -28,6 +30,19 @@ export interface BaijianCaseSearchInput {
 
 export interface BaijianLawDetailInput {
   lawId: string;
+}
+
+export interface BaijianLawAdvancedSearchInput extends BaijianLawSearchInput {
+  issuingOrgan?: string;
+  timeliness?: '0' | '1' | '2' | '3' | '4';
+}
+
+export interface BaijianLawSemanticSearchInput {
+  query: string;
+  keyword?: string;
+  rows?: number;
+  issuingOrgan?: string;
+  timeliness?: '0' | '1' | '2' | '4';
 }
 
 export interface BaijianMcpHealth {
@@ -66,6 +81,36 @@ export class BaijianMcpClientService {
       page: clampInteger(input.page ?? 1, 1, 10_000),
       rows: clampInteger(input.rows ?? 10, 1, 20),
     }, signal) as Promise<BaijianLawSearchResult>;
+  }
+
+  searchLawsAdvanced(input: BaijianLawAdvancedSearchInput, signal?: AbortSignal): Promise<BaijianLawSearchResult> {
+    const keyword = input.keyword.trim();
+    if (!keyword || keyword.length > 200) {
+      throw new BaijianError('BAIJIAN_INVALID_RESPONSE', '法规高级检索关键词长度必须为 1–200', false);
+    }
+    return this.callAndNormalize(BAIJIAN_LAW_ADVANCED_SEARCH_TOOL, compact({
+      page: clampInteger(input.page ?? 1, 1, 10_000),
+      rows: clampInteger(input.rows ?? 5, 1, 20),
+      keywords: keyword.includes(';') ? keyword : `0;${keyword}`,
+      searchtype: 0,
+      depName: cleanOptional(input.issuingOrgan, 100),
+      timelinessnew: input.timeliness,
+    }), signal) as Promise<BaijianLawSearchResult>;
+  }
+
+  searchLawsSemantic(input: BaijianLawSemanticSearchInput, signal?: AbortSignal): Promise<BaijianLawSearchResult> {
+    const query = input.query.trim();
+    const keyword = input.keyword?.trim();
+    if (!query || query.length > 1_000 || (keyword?.length ?? 0) > 200) {
+      throw new BaijianError('BAIJIAN_INVALID_RESPONSE', '法规语义检索问题长度必须为 1–1000', false);
+    }
+    return this.callAndNormalize(BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL, compact({
+      rows: clampInteger(input.rows ?? 5, 1, 20),
+      vector: query,
+      keyword,
+      fbdwFacet: cleanOptional(input.issuingOrgan, 100),
+      lawstatexlsFacet: input.timeliness,
+    }), signal) as Promise<BaijianLawSearchResult>;
   }
 
   searchCases(input: BaijianCaseSearchInput, signal?: AbortSignal): Promise<BaijianCaseSearchResult> {
@@ -172,4 +217,13 @@ export class BaijianMcpClientService {
 function clampInteger(value: number, min: number, max: number): number {
   if (!Number.isInteger(value)) return min;
   return Math.min(max, Math.max(min, value));
+}
+
+function cleanOptional(value: string | undefined, max: number): string | undefined {
+  const cleaned = value?.trim().replace(/\s+/g, ' ');
+  return cleaned ? cleaned.slice(0, max) : undefined;
+}
+
+function compact(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== ''));
 }

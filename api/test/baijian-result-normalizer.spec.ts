@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BaijianResultNormalizer, classifySupplierError } from '../src/common/baijian/baijian-result.normalizer';
-import { BAIJIAN_CASE_SEARCH_TOOL, BAIJIAN_LAW_DETAIL_TOOL, BAIJIAN_LAW_SEARCH_TOOL } from '../src/common/baijian/baijian.types';
+import { BAIJIAN_CASE_SEARCH_TOOL, BAIJIAN_LAW_DETAIL_TOOL, BAIJIAN_LAW_SEARCH_TOOL, BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL } from '../src/common/baijian/baijian.types';
 
 const normalizer = new BaijianResultNormalizer();
 
@@ -108,6 +108,28 @@ describe('BaijianResultNormalizer', () => {
         { kind: 'heading', text: '第一章 总则' },
         { kind: 'paragraph', text: '第一条 <法规正文>' },
       ],
+    });
+  });
+
+  it('标准化法规语义命中片段、条号和相关度', () => {
+    const result = normalizer.normalize({
+      toolName: BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL,
+      structuredContent: {
+        code: '200',
+        data: { result: [{
+          lawId: 'D6592443DA000EF8D692CE667E947A69',
+          lawName: '<span>劳动合同法</span>',
+          content: '<em>违法解除劳动合同</em>应支付赔偿金',
+          rawnumber: '第八十七条', filenum: '主席令第73号', score: 0.92,
+        }] },
+      },
+    });
+    expect(result).toMatchObject({
+      toolName: BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL,
+      records: [{
+        lawName: '劳动合同法', matchedContent: '违法解除劳动合同应支付赔偿金',
+        articleNumber: '第八十七条', issuingNo: '主席令第73号', score: 0.92,
+      }],
     });
   });
 });

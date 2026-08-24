@@ -43,6 +43,8 @@ function createHarness() {
   const usage: any[] = [];
   const supplier = {
     searchLaws: vi.fn().mockResolvedValue(lawResult),
+    searchLawsAdvanced: vi.fn().mockResolvedValue({ ...lawResult, toolName: 'lawstar_data_k_query' }),
+    searchLawsSemantic: vi.fn().mockResolvedValue({ ...lawResult, toolName: 'lawstar_data_xl_query' }),
     searchCases: vi.fn(),
     getLawDetail: vi.fn().mockResolvedValue(lawDetail),
   };
@@ -134,5 +136,17 @@ describe('CachedLegalResearchGateway', () => {
 
     expect(supplier.searchLaws).toHaveBeenCalledTimes(1);
     expect(result.cache.status).toBe('shared');
+  });
+
+  it('法规语义检索也复用精确请求快照', async () => {
+    const { gateway, supplier } = createHarness();
+    const input = { query: '违法解除劳动合同如何赔偿', rows: 5 };
+
+    const first = await gateway.searchLawsSemantic(input);
+    const second = await gateway.searchLawsSemantic(input);
+
+    expect(supplier.searchLawsSemantic).toHaveBeenCalledTimes(1);
+    expect(first.cache.status).toBe('miss');
+    expect(second.cache.status).toBe('hit');
   });
 });

@@ -93,7 +93,7 @@ export class LegalEvidenceRepository {
             expiresAt,
           },
         });
-        if (value.toolName === 'lawstar_data_professional_query') {
+        if (value.toolName !== 'ldh_search') {
           await this.upsertLawRecords(tx, value, fetchedAt);
         } else {
           await this.upsertCaseRecords(tx, value, fetchedAt);

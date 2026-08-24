@@ -14,9 +14,11 @@ import {
   DshOptions,
   DshToolCallEvent,
   DshToolResultEvent,
-  toolNameForCapability,
+  DSH_CASE_SEARCH_TOOL,
+  DSH_LAW_DETAIL_TOOL,
+  toolNamesForCapability,
 } from './dsh-agent.types';
-import { BaijianNormalizedResult } from '../baijian/baijian.types';
+import { BaijianNormalizedToolResult } from '../baijian/baijian.types';
 
 /** dsh 侧类型（ESM-only，运行时按需 import；这里只声明调用方需要的最小结构方便类型检查）。 */
 interface DshContext {
@@ -290,15 +292,15 @@ export class DshService implements OnModuleDestroy {
     // 同一个 dsh session。合同起草/审查是单轮任务，不依赖跨调用会话延续；多轮会话复用
     // 属于二期（法律咨询）的 dsh resume 能力，见迁移计划 Phase 3。
     const dshSessionId = SessionId(params.resumeDshSessionId ?? `legalos-${randomUUID()}`);
-    const toolDefinition = params.researchCapability
-      ? await this.baijianTools.createDefinition(params.researchCapability)
-      : undefined;
+    const toolDefinitions = params.researchCapability
+      ? await this.baijianTools.createDefinitions(params.researchCapability)
+      : [];
 
     const agentConfig = {
       agentOptions: { provider: selection.provider, model, maxTokens: this.maxOutputTokens },
       setup: (agentCtx: any) => {
         installModelSelection(agentCtx, { current: { ...selection, model }, assembled: undefined });
-        if (toolDefinition) agentCtx.tools.register(toolDefinition);
+        for (const toolDefinition of toolDefinitions) agentCtx.tools.register(toolDefinition);
       },
     };
     const agentHandle = params.resumeDshSessionId
@@ -327,7 +329,7 @@ export class DshService implements OnModuleDestroy {
         const chunk = event.data.chunk;
         if (chunk.type === 'text-delta' && chunk.text) {
           fullText += chunk.text;
-          handle.emit('text', chunk.text);
+          if (!params.researchCapability) handle.emit('text', chunk.text);
         }
         return;
       }
@@ -378,18 +380,12 @@ export class DshService implements OnModuleDestroy {
 
       const reason = this.readTurnEndReason(agent.session.events);
       if (reason?.kind === 'completed') {
+        const finalText = this.readFinalAssistantText(agent.session.events) || fullText;
         if (params.researchCapability && params.requireResearchTool) {
-          const expectedTool = toolNameForCapability(params.researchCapability);
-          const unexpected = toolCalls.find((call) => call.name !== expectedTool);
-          if (unexpected) {
-            throw new Error(`dsh Agent 调用了白名单外工具：${unexpected.name}`);
-          }
-          const successful = toolResults.some((result) =>
-            result.name === expectedTool && !result.isError && result.result);
-          if (!successful) throw new Error(`dsh Agent 未产生必需工具结果：${expectedTool}`);
+          validateResearchEvidence(params.researchCapability, finalText, toolCalls, toolResults);
         }
         handle.emit('done', {
-          text: this.readFinalAssistantText(agent.session.events) || fullText,
+          text: finalText,
           dshSessionId: String(dshSessionId),
           toolCalls,
           toolResults,
@@ -447,9 +443,106 @@ function parseToolArguments(value: unknown): unknown {
   }
 }
 
-function readBaijianResultMeta(value: unknown): BaijianNormalizedResult | undefined {
+function readBaijianResultMeta(value: unknown): BaijianNormalizedToolResult | undefined {
   if (!isRecord(value) || value.kind !== DSH_BAIJIAN_RESULT_META_KIND) return undefined;
-  return isRecord(value.result) ? value.result as unknown as BaijianNormalizedResult : undefined;
+  return isRecord(value.result) ? value.result as unknown as BaijianNormalizedToolResult : undefined;
+}
+
+export function validateResearchEvidence(
+  capability: NonNullable<DshOptions['researchCapability']>,
+  text: string,
+  toolCalls: DshToolCallEvent[],
+  toolResults: DshToolResultEvent[],
+): void {
+  const allowed = new Set(toolNamesForCapability(capability));
+  const unexpected = toolCalls.find((call) => !allowed.has(call.name as any));
+  if (unexpected) throw new Error(`dsh Agent 调用了白名单外工具：${unexpected.name}`);
+
+  if (capability === 'similar_case') {
+    const successful = toolResults.some((result) =>
+      result.name === DSH_CASE_SEARCH_TOOL && !result.isError && result.result);
+    if (!successful) throw new Error(`dsh Agent 未产生必需工具结果：${DSH_CASE_SEARCH_TOOL}`);
+    return;
+  }
+
+  const searches = toolResults.filter((result) =>
+    result.name !== DSH_LAW_DETAIL_TOOL && !result.isError && result.result && 'records' in result.result);
+  if (!searches.length) throw new Error('dsh Agent 未产生成功的法规检索结果');
+  const candidateIds = new Set(searches.flatMap((result) =>
+    'records' in result.result! ? result.result.records.map((record) => record.recordId.toLowerCase()) : []));
+  if (!candidateIds.size) {
+    if (!text.trim().startsWith('未检索到可核验来源')) {
+      throw new Error('dsh Agent 零结果时未声明无可核验来源');
+    }
+    return;
+  }
+
+  const details = toolResults.filter((result) =>
+    result.name === DSH_LAW_DETAIL_TOOL
+      && !result.isError
+      && result.result
+      && 'contentBlocks' in result.result
+      && result.result.contentBlocks.length > 0);
+  if (!details.length) throw new Error('dsh Agent 命中法规后未读取权威正文');
+  const detailedIds = new Set(details.map((result) =>
+    'recordId' in result.result! ? result.result.recordId.toLowerCase() : ''));
+  const outsideCandidate = [...detailedIds].find((id) => !candidateIds.has(id));
+  if (outsideCandidate) throw new Error(`dsh Agent 读取了非候选法规：${outsideCandidate}`);
+
+  const answerText = evidenceTextForValidation(text);
+  const citedIds = [...answerText.matchAll(/\b[0-9a-f]{32}\b/gi)].map((match) => match[0].toLowerCase());
+  if (!citedIds.some((id) => detailedIds.has(id))) throw new Error('dsh Agent 最终回答未引用已核验法规 ID');
+  const unsupported = citedIds.find((id) => !detailedIds.has(id));
+  if (unsupported) throw new Error(`dsh Agent 引用了未核验法规 ID：${unsupported}`);
+
+  const evidenceQuotes = extractEvidenceQuotes(answerText);
+  if (!evidenceQuotes.length) throw new Error('dsh Agent 最终回答未提供可核验的法规原文引用');
+  const contentById = new Map(details.map((result) => {
+    const detail = result.result!;
+    const id = 'recordId' in detail ? detail.recordId.toLowerCase() : '';
+    const content = 'contentBlocks' in detail
+      ? normalizeEvidenceText(detail.contentBlocks.map((block) => block.text).join('\n'))
+      : '';
+    return [id, content] as const;
+  }));
+  for (const quote of evidenceQuotes) {
+    const sourceText = contentById.get(quote.recordId);
+    if (!sourceText) throw new Error(`dsh Agent 原文引用了未核验法规 ID：${quote.recordId}`);
+    const quotedText = normalizeEvidenceText(quote.text);
+    if (quotedText.length < 8 || !sourceText.includes(quotedText)) {
+      throw new Error(`dsh Agent 法规原文与权威详情不匹配：${quote.recordId}`);
+    }
+  }
+}
+
+function evidenceTextForValidation(text: string): string {
+  try {
+    const value = JSON.parse(text.trim());
+    if (isRecord(value) && typeof value.answer === 'string') {
+      const structuredQuotes = Array.isArray(value.evidenceQuotes)
+        ? value.evidenceQuotes.flatMap((quote) => {
+          if (!isRecord(quote)
+            || typeof quote.recordId !== 'string'
+            || typeof quote.article !== 'string'
+            || typeof quote.text !== 'string') return [];
+          return [`> [法规原文｜ID:${quote.recordId}｜条文:${quote.article}] ${quote.text}`];
+        })
+        : [];
+      return [value.answer, ...structuredQuotes].join('\n');
+    }
+  } catch {
+    // 业务回答通常是 Markdown，非 JSON 不是错误。
+  }
+  return text;
+}
+
+function extractEvidenceQuotes(text: string): Array<{ recordId: string; article: string; text: string }> {
+  return [...text.matchAll(/^\s*>?\s*(?:\*\*)?\[法规原文\s*[|｜]\s*ID\s*[:：]\s*([0-9a-f]{32})\s*[|｜]\s*条文\s*[:：]\s*([^\]\r\n]{1,40})\]\s*(?:\*\*)?\s*(.+)$/gimu)]
+    .map((match) => ({ recordId: match[1].toLowerCase(), article: match[2].trim(), text: match[3].trim() }));
+}
+
+function normalizeEvidenceText(value: string): string {
+  return value.normalize('NFKC').replace(/\s+/gu, '');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

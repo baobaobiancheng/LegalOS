@@ -3,14 +3,18 @@ import { ConfigService } from '@nestjs/config';
 import { createHash } from 'crypto';
 import {
   BaijianLawDetailInput,
+  BaijianLawAdvancedSearchInput,
   BaijianLawSearchInput,
+  BaijianLawSemanticSearchInput,
   BaijianCaseSearchInput,
   BaijianMcpClientService,
 } from './baijian-mcp-client.service';
 import {
   BAIJIAN_CASE_SEARCH_TOOL,
+  BAIJIAN_LAW_ADVANCED_SEARCH_TOOL,
   BAIJIAN_LAW_DETAIL_TOOL,
   BAIJIAN_LAW_SEARCH_TOOL,
+  BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL,
   BaijianLawDetail,
   BaijianLawSearchResult,
   BaijianNormalizedResult,
@@ -89,6 +93,46 @@ export class CachedLegalResearchGateway {
     );
   }
 
+  async searchLawsAdvanced(
+    input: BaijianLawAdvancedSearchInput,
+    signal?: AbortSignal,
+    options: LegalResearchRequestOptions = {},
+  ) {
+    const normalized = {
+      keyword: normalizeText(input.keyword).replace(/^0\s*;/, ''),
+      page: input.page ?? 1,
+      rows: input.rows ?? 5,
+      ...(input.issuingOrgan ? { issuingOrgan: normalizeText(input.issuingOrgan) } : {}),
+      ...(input.timeliness ? { timeliness: input.timeliness } : {}),
+    };
+    const requestHash = hashRequest(BAIJIAN_LAW_ADVANCED_SEARCH_TOOL, normalized);
+    return this.resolveSearch(
+      requestHash, 'law_search', BAIJIAN_LAW_ADVANCED_SEARCH_TOOL, options, signal,
+      (now) => this.repository.findFreshSearch(requestHash, now),
+      () => this.supplier.searchLawsAdvanced(normalized),
+    );
+  }
+
+  async searchLawsSemantic(
+    input: BaijianLawSemanticSearchInput,
+    signal?: AbortSignal,
+    options: LegalResearchRequestOptions = {},
+  ) {
+    const normalized = {
+      query: normalizeText(input.query),
+      rows: input.rows ?? 5,
+      ...(input.keyword ? { keyword: normalizeText(input.keyword) } : {}),
+      ...(input.issuingOrgan ? { issuingOrgan: normalizeText(input.issuingOrgan) } : {}),
+      ...(input.timeliness ? { timeliness: input.timeliness } : {}),
+    };
+    const requestHash = hashRequest(BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL, normalized);
+    return this.resolveSearch(
+      requestHash, 'law_search', BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL, options, signal,
+      (now) => this.repository.findFreshSearch(requestHash, now),
+      () => this.supplier.searchLawsSemantic(normalized),
+    );
+  }
+
   async getLawDetail(
     input: BaijianLawDetailInput,
     signal?: AbortSignal,
@@ -130,7 +174,7 @@ export class CachedLegalResearchGateway {
   private async resolveSearch<T extends BaijianNormalizedResult>(
     requestHash: string,
     capability: 'law_search' | 'similar_case',
-    toolName: typeof BAIJIAN_LAW_SEARCH_TOOL | typeof BAIJIAN_CASE_SEARCH_TOOL,
+    toolName: typeof BAIJIAN_LAW_SEARCH_TOOL | typeof BAIJIAN_LAW_ADVANCED_SEARCH_TOOL | typeof BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL | typeof BAIJIAN_CASE_SEARCH_TOOL,
     options: LegalResearchRequestOptions,
     signal: AbortSignal | undefined,
     findCached: (now: Date) => Promise<CachedSnapshot<T> | null>,
@@ -243,13 +287,17 @@ function withCache<T extends BaijianNormalizedResult | BaijianLawDetail>(
 
 function isSearchResult(value: BaijianNormalizedResult, toolName: string): boolean {
   if (value?.toolName !== toolName || !Number.isInteger(value.count) || !Array.isArray(value.records)) return false;
-  if (toolName === BAIJIAN_LAW_SEARCH_TOOL) {
+  if (toolName !== BAIJIAN_CASE_SEARCH_TOOL) {
     const law = value as BaijianLawSearchResult;
     return Number.isInteger(law.page)
       && Number.isInteger(law.pageSize)
       && Number.isInteger(law.totalPages);
   }
   return true;
+}
+
+function normalizeText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ');
 }
 
 function isLawDetail(value: BaijianLawDetail): boolean {

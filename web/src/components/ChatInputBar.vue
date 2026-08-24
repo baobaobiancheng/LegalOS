@@ -17,7 +17,7 @@ const emit = defineEmits<{
 type ConsultationCapability = 'general' | 'law_search' | 'similar_case'
 const capabilities: Array<{ id: ConsultationCapability; label: string; description: string }> = [
   { id: 'general', label: '通用咨询', description: '直接分析并回答，不检索外部法律数据' },
-  { id: 'law_search', label: 'AI 搜法', description: '检索国内法规元数据，暂不核验具体条文' },
+  { id: 'law_search', label: 'AI 搜法', description: '检索国内法规，并核验回答引用的具体条文' },
   { id: 'similar_case', label: 'AI 类案', description: '检索相似案例，结果取决于案例库可用性' },
 ]
 const menuOpen = ref(false)

@@ -6,10 +6,14 @@ import { DshBaijianToolsService } from '../src/common/services/dsh-baijian-tools
 import { DshExecutionResult, DshResearchCapability } from '../src/common/services/dsh-agent.types';
 import { BaijianMcpClientService } from '../src/common/baijian/baijian-mcp-client.service';
 import { BaijianResultNormalizer } from '../src/common/baijian/baijian-result.normalizer';
+import { CachedLegalResearchGateway } from '../src/common/baijian/cached-legal-research.gateway';
+import { LegalEvidenceRepository } from '../src/common/baijian/legal-evidence.repository';
+import { PrismaService } from '../src/prisma/prisma.service';
 
 export type GateFinal = {
   answer: string;
   sourceUses: Array<{ source: 'lawstar' | 'ldh'; recordId: string }>;
+  evidenceQuotes?: Array<{ recordId: string; article: string; text: string }>;
 };
 
 async function main() {
@@ -29,19 +33,24 @@ async function main() {
   const config = new ConfigService(process.env);
   const normalizer = new BaijianResultNormalizer();
   const baijian = new BaijianMcpClientService(config, normalizer);
+  const prisma = new PrismaService();
+  await prisma.$connect();
+  const cachedBaijian = new CachedLegalResearchGateway(config, baijian, new LegalEvidenceRepository(prisma));
   const dsh = new DshService(
     config,
     new AiExecutionQueueService(config),
-    new DshBaijianToolsService(baijian),
+    new DshBaijianToolsService(cachedBaijian),
   );
   const prompt = [
     '你正在执行 LegalOS dsh/百鉴只读技术闸门。',
     capability === 'law_search'
-      ? '必须调用 search_laws，自主提炼简短法规关键词。结果只是元数据，不得生成或引用具体条文。'
+      ? '使用关键词、高级或语义搜索召回法规；命中后必须调用 get_law_detail，传 articleHint 或 query 定位正文。evidenceQuotes 必须至少有一项，text 必须是 contentBlocks 返回的连续逐字原文，不得改写、省略或拼接。answer、sourceUses 和 evidenceQuotes 必须引用同一个已读取详情的32位法规ID。'
       : '必须调用 search_similar_cases，自主改写为不含个人信息的完整法律问题。',
     `本轮最多调用检索工具 ${dsh.getToolCallLimit()} 次；获得足以回答的有效结果后必须停止检索并输出最终答案。`,
     `用户问题：${question}`,
-    '最终只输出一行 JSON，格式为 {"answer":"...","sourceUses":[{"source":"lawstar|ldh","recordId":"..."}]}。',
+    capability === 'law_search'
+      ? '最终只输出一行 JSON，格式为 {"answer":"...","sourceUses":[{"source":"lawstar","recordId":"32位真实ID"}],"evidenceQuotes":[{"recordId":"同一个32位真实ID","article":"第八十七条","text":"contentBlocks中的连续逐字原文"}]}。'
+      : '最终只输出一行 JSON，格式为 {"answer":"...","sourceUses":[{"source":"ldh","recordId":"真实ID"}]}。',
     'sourceUses 只能引用本轮工具结果真实返回的 ID；命中时至少引用一条。',
   ].join('\n');
 
@@ -67,6 +76,7 @@ async function main() {
     }, null, 2));
   } finally {
     await dsh.close();
+    await prisma.$disconnect();
   }
 }
 
@@ -116,7 +126,24 @@ export function parseFinal(text: string): GateFinal {
     }
     return { source, recordId };
   });
-  return { answer: value.answer, sourceUses };
+  const evidenceQuotes = value.evidenceQuotes === undefined
+    ? undefined
+    : parseEvidenceQuotes(value.evidenceQuotes);
+  return { answer: value.answer, sourceUses, ...(evidenceQuotes ? { evidenceQuotes } : {}) };
+}
+
+function parseEvidenceQuotes(value: unknown): NonNullable<GateFinal['evidenceQuotes']> {
+  if (!Array.isArray(value)) throw new Error('dsh Agent evidenceQuotes 无效');
+  return value.map((item) => {
+    if (!isRecord(item)
+      || typeof item.recordId !== 'string'
+      || typeof item.article !== 'string'
+      || typeof item.text !== 'string'
+      || !item.recordId
+      || !item.article
+      || !item.text) throw new Error('dsh Agent evidenceQuotes 无效');
+    return { recordId: item.recordId, article: item.article, text: item.text };
+  });
 }
 
 /**
@@ -165,7 +192,8 @@ export function assertAuthoritativeSources(
 ) {
   const authoritative = new Set<string>();
   for (const toolResult of completion.toolResults) {
-    for (const record of toolResult.result?.records ?? []) {
+    const records = toolResult.result && 'records' in toolResult.result ? toolResult.result.records : [];
+    for (const record of records) {
       authoritative.add(`${record.source}:${record.recordId}`);
     }
   }

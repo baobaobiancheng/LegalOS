@@ -1,8 +1,12 @@
 export const BAIJIAN_LAW_SEARCH_TOOL = 'lawstar_data_professional_query' as const;
+export const BAIJIAN_LAW_ADVANCED_SEARCH_TOOL = 'lawstar_data_k_query' as const;
+export const BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL = 'lawstar_data_xl_query' as const;
 export const BAIJIAN_LAW_DETAIL_TOOL = 'lawstar_data_professional_detail' as const;
 export const BAIJIAN_CASE_SEARCH_TOOL = 'ldh_search' as const;
 export type BaijianToolName =
   | typeof BAIJIAN_LAW_SEARCH_TOOL
+  | typeof BAIJIAN_LAW_ADVANCED_SEARCH_TOOL
+  | typeof BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL
   | typeof BAIJIAN_LAW_DETAIL_TOOL
   | typeof BAIJIAN_CASE_SEARCH_TOOL;
 
@@ -26,6 +30,9 @@ export interface BaijianLawRecord {
   releaseDate: string | null;
   implementDate: string | null;
   timeliness: string | null;
+  matchedContent?: string | null;
+  articleNumber?: string | null;
+  score?: number | null;
 }
 
 export interface BaijianCaseRecord {
@@ -76,7 +83,7 @@ export interface BaijianLawDetail {
 
 export type BaijianNormalizedResult =
   | {
-      toolName: typeof BAIJIAN_LAW_SEARCH_TOOL;
+      toolName: typeof BAIJIAN_LAW_SEARCH_TOOL | typeof BAIJIAN_LAW_ADVANCED_SEARCH_TOOL | typeof BAIJIAN_LAW_SEMANTIC_SEARCH_TOOL;
       status: BaijianSourceStatus;
       count: number;
       page: number;
@@ -93,7 +100,7 @@ export type BaijianNormalizedResult =
       records: BaijianCaseRecord[];
     };
 
-export type BaijianLawSearchResult = Extract<BaijianNormalizedResult, { toolName: typeof BAIJIAN_LAW_SEARCH_TOOL }>;
+export type BaijianLawSearchResult = Exclude<BaijianNormalizedResult, { toolName: typeof BAIJIAN_CASE_SEARCH_TOOL }>;
 export type BaijianCaseSearchResult = Extract<BaijianNormalizedResult, { toolName: typeof BAIJIAN_CASE_SEARCH_TOOL }>;
 export type BaijianNormalizedToolResult = BaijianNormalizedResult | BaijianLawDetail;
 

@@ -161,6 +161,8 @@ cd api
 # 1. 官方 MCP TypeScript SDK：initialize + tools/list + 真实查询
 npm run baijian:verify -- health
 npm run baijian:verify -- law '劳动合同'
+npm run baijian:verify -- law-advanced '劳动合同'
+npm run baijian:verify -- law-semantic '违法解除劳动合同如何计算赔偿金'
 npm run baijian:verify -- case '劳动合同违法解除经济补偿的中国类似案例'
 
 # 2. 嵌入式 dsh Agent：自主规划 query + 单个只读工具 + 权威来源 ID 校验
@@ -168,6 +170,8 @@ npm run dsh:model-gate
 npm run dsh:baijian-gate -- law '劳动合同解除经济补偿'
 npm run dsh:baijian-gate -- case '劳动合同违法解除经济补偿的中国类似案例'
 ```
+
+PR-B 的 AI 搜法会同时开放关键词、高级、语义和法规详情四个受控工具。法规搜索命中后必须读取至少一份本轮候选正文，最终回答只能引用已读取详情的 32 位法规 ID；证据校验通过前不向客户端输出模型正文。高级与语义检索同样经过 PR-A 缓存，不新增 Redis 或环境变量。
 
 PR-A 部署必须执行 `20260824150000_add_legal_research_cache` migration，新增权威文档投影、精确请求快照和脱敏成本台账。当前单 API 实例使用进程内 single-flight，不依赖 Redis。同一精确请求在 TTL 内直接复用本地快照；只有显式「刷新权威数据」、缓存缺失或过期时才再调用百鉴。
 
