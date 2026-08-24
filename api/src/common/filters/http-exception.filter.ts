@@ -37,11 +37,21 @@ export class HttpExceptionFilter implements ExceptionFilter {
         (Array.isArray(messages) ? messages.join('；') : messages) ??
         body.error ??
         '请求失败';
+      const code = body.code ?? this.defaultCode(statusCode);
+
+      if (statusCode >= HttpStatus.INTERNAL_SERVER_ERROR) {
+        this.logger.error([
+          `requestId=${toLogToken(requestId)}`,
+          `statusCode=${statusCode}`,
+          `code=${toLogToken(code)}`,
+          ...causeDiagnostics(exception.cause),
+        ].join(' '));
+      }
 
       return response.status(statusCode).json({
         ...body,
         error,
-        code: body.code ?? this.defaultCode(statusCode),
+        code,
         statusCode,
         ...(requestId ? { requestId } : {}),
         message: undefined,
@@ -67,4 +77,20 @@ export class HttpExceptionFilter implements ExceptionFilter {
     };
     return map[statusCode] ?? 'REQUEST_FAILED';
   }
+}
+
+function causeDiagnostics(cause: unknown): string[] {
+  if (typeof cause !== 'object' || cause === null) return [];
+  const value = cause as Record<string, unknown>;
+  return [
+    ['causeName', value.name],
+    ['causeCode', value.code],
+    ['supplierCode', value.supplierCode],
+    ['retryable', value.retryable],
+  ].flatMap(([key, item]) => item === undefined ? [] : [`${key}=${toLogToken(item)}`]);
+}
+
+function toLogToken(value: unknown): string {
+  const normalized = String(value ?? '-').replace(/[^\p{L}\p{N}_.:@-]/gu, '_');
+  return normalized.slice(0, 120) || '-';
 }

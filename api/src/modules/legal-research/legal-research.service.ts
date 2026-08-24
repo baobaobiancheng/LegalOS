@@ -10,7 +10,7 @@ export class LegalResearchService {
   async searchLaws(dto: SearchLawsDto, signal?: AbortSignal) {
     try {
       const requestedKeyword = dto.keyword.trim();
-      const searchedKeyword = normalizeLawKeyword(requestedKeyword);
+      const searchedKeyword = requestedKeyword;
       const result = await this.baijian.searchLaws({ ...dto, keyword: searchedKeyword }, signal);
       const records = result.records.filter((record) => !isCaseLikeTitle(record.lawName));
       return {
@@ -42,12 +42,6 @@ export class LegalResearchService {
   }
 }
 
-export function normalizeLawKeyword(keyword: string): string {
-  const requested = keyword.trim().replace(/\s+/g, ' ');
-  const normalized = requested.replace(/(?:类似)?(?:纠纷|争议)(?:案件|案|案例)?$/u, '').trim();
-  return Array.from(normalized).length >= 4 ? normalized : requested;
-}
-
 export function isCaseLikeTitle(title: string): boolean {
   const value = title.replace(/\s+/g, '');
   return /(?:^|[\s——：:])(?:指导性|典型|参考)?案例\d*[：:]?/u.test(title)
@@ -64,10 +58,13 @@ function presentResearchError(error: unknown): ServiceUnavailableException {
     : code === 'BAIJIAN_TIMEOUT'
       ? '检索超时，请重试'
       : '法律数据源暂不可用，请稍后重试';
-  return new ServiceUnavailableException({
-    code,
-    message,
-    actions: supplier?.retryable === false ? [] : ['retry'],
-    retryable: supplier?.retryable ?? true,
-  });
+  return new ServiceUnavailableException(
+    {
+      code,
+      message,
+      actions: supplier?.retryable === false ? [] : ['retry'],
+      retryable: supplier?.retryable ?? true,
+    },
+    { cause: error },
+  );
 }

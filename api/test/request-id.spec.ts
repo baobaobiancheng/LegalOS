@@ -57,4 +57,35 @@ describe('HttpExceptionFilter requestId', () => {
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.json.mock.calls[0][0].requestId).toBe('rid-test-abc');
   });
+
+  it('5xx HttpException 记录 requestId、领域码和脱敏 cause，不再静默返回', () => {
+    const res: any = { status: vi.fn().mockReturnThis(), json: vi.fn() };
+    const req: any = { requestId: 'rid-research-503' };
+    const filter = new HttpExceptionFilter();
+    const error = vi.fn();
+    (filter as any).logger = { error };
+    const cause = Object.assign(new Error('不应直接记录的供应商消息'), {
+      name: 'BaijianError',
+      code: 'BAIJIAN_AUTH_FAILED',
+      supplierCode: 401,
+      retryable: false,
+    });
+
+    filter.catch(
+      new HttpException(
+        { code: 'BAIJIAN_AUTH_FAILED', message: '法律数据源暂不可用' },
+        HttpStatus.SERVICE_UNAVAILABLE,
+        { cause },
+      ),
+      makeCtx(req, res),
+    );
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('requestId=rid-research-503'));
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('code=BAIJIAN_AUTH_FAILED'));
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('causeCode=BAIJIAN_AUTH_FAILED'));
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('supplierCode=401'));
+    expect(error).not.toHaveBeenCalledWith(expect.stringContaining('不应直接记录的供应商消息'));
+    expect(res.json.mock.calls[0][0]).not.toHaveProperty('supplierCode');
+    expect(res.json.mock.calls[0][0]).not.toHaveProperty('cause');
+  });
 });
