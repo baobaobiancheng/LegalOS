@@ -1,8 +1,8 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Param, Query } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { Role } from '@prisma/client';
 import { Roles } from '../../common/decorators/roles.decorator';
-import { SearchCasesDto, SearchLawsDto } from './dto/legal-research.dto';
+import { LawDetailParamsDto, SearchCasesDto, SearchLawsDto } from './dto/legal-research.dto';
 import { LegalResearchService } from './legal-research.service';
 
 @Controller('legal-research')
@@ -14,6 +14,11 @@ export class LegalResearchController {
   @Get('laws')
   searchLaws(@Query() dto: SearchLawsDto) {
     return this.research.searchLaws(dto);
+  }
+
+  @Get('laws/:lawId')
+  getLawDetail(@Param() params: LawDetailParamsDto) {
+    return this.research.getLawDetail(params.lawId);
   }
 
   @Get('cases')

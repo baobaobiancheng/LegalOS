@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class SearchLawsDto {
@@ -33,4 +33,10 @@ export class SearchCasesDto {
   @Min(1)
   @Max(5)
   topK?: number;
+}
+
+export class LawDetailParamsDto {
+  @IsString()
+  @Matches(/^[0-9a-f]{32}$/i)
+  lawId: string;
 }

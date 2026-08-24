@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BaijianResultNormalizer, classifySupplierError } from '../src/common/baijian/baijian-result.normalizer';
-import { BAIJIAN_CASE_SEARCH_TOOL, BAIJIAN_LAW_SEARCH_TOOL } from '../src/common/baijian/baijian.types';
+import { BAIJIAN_CASE_SEARCH_TOOL, BAIJIAN_LAW_DETAIL_TOOL, BAIJIAN_LAW_SEARCH_TOOL } from '../src/common/baijian/baijian.types';
 
 const normalizer = new BaijianResultNormalizer();
 
@@ -86,5 +86,28 @@ describe('BaijianResultNormalizer', () => {
     expect(classifySupplierError({ code: -32029, message: 'free quota' }).code).toBe('BAIJIAN_QUOTA_EXHAUSTED');
     expect(classifySupplierError(new Error('request timed out')).code).toBe('BAIJIAN_TIMEOUT');
     expect(classifySupplierError(new Error('HTTP 401 unauthorized')).code).toBe('BAIJIAN_AUTH_FAILED');
+  });
+
+  it('把法规详情转换为无 HTML 的目录与正文块', () => {
+    const result = normalizer.normalize({
+      toolName: BAIJIAN_LAW_DETAIL_TOOL,
+      structuredContent: {
+        code: 200,
+        data: {
+          rjs8: 'D6592443DA000EF8D692CE667E947A69',
+          lawName: '中华人民共和国劳动合同法',
+          tocItem: [{ id: 'section0', text: '<b>第一章 总则</b>', indentLevel: 0, children: [] }],
+          lawSourceContent: "<p id='section0' style='text-align:center'><strong>第一章 总则</strong></p><p>　　第一条 &lt;法规正文&gt;</p><script>alert(1)</script>",
+        },
+      },
+    });
+    expect(result).toMatchObject({
+      toolName: BAIJIAN_LAW_DETAIL_TOOL,
+      toc: [{ id: 'section0', text: '第一章 总则' }],
+      contentBlocks: [
+        { kind: 'heading', text: '第一章 总则' },
+        { kind: 'paragraph', text: '第一条 <法规正文>' },
+      ],
+    });
   });
 });

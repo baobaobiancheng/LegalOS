@@ -44,7 +44,9 @@ describe('Baijian MCP SDK offline contract', () => {
           ? fixture('initialize.result.json')
           : message.method === 'tools/list'
             ? fixture('tools-list.result.json')
-            : fixture('law-call.result.json');
+            : message.params?.name === 'lawstar_data_professional_detail'
+              ? fixture('law-detail-call.result.json')
+              : fixture('law-call.result.json');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }));
       });
@@ -73,6 +75,19 @@ describe('Baijian MCP SDK offline contract', () => {
     expect(result).toMatchObject({
       status: 'success_hit',
       records: [{ recordId: 'SANITIZED-LAW-ID', lawName: '中华人民共和国劳动合同法' }],
+    });
+
+    const detail = await client.getLawDetail({ lawId: 'D6592443DA000EF8D692CE667E947A69' });
+    expect(detail).toMatchObject({
+      recordId: 'D6592443DA000EF8D692CE667E947A69',
+      lawName: '中华人民共和国劳动合同法',
+      historyCount: 1,
+      basisCount: 1,
+      toc: [{ id: 'section0', text: '第一章 总则' }],
+      contentBlocks: [
+        { id: 'section0', kind: 'heading', text: '第一章 总则' },
+        { id: null, kind: 'paragraph', text: '第一条 为了完善劳动合同制度，制定本法。' },
+      ],
     });
   });
 });

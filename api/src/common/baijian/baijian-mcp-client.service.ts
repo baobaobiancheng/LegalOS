@@ -5,9 +5,13 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { BaijianResultNormalizer, classifySupplierError } from './baijian-result.normalizer';
 import {
   BAIJIAN_CASE_SEARCH_TOOL,
+  BAIJIAN_LAW_DETAIL_TOOL,
   BAIJIAN_LAW_SEARCH_TOOL,
   BaijianError,
-  BaijianNormalizedResult,
+  BaijianCaseSearchResult,
+  BaijianLawDetail,
+  BaijianLawSearchResult,
+  BaijianNormalizedToolResult,
   BaijianToolName,
 } from './baijian.types';
 
@@ -20,6 +24,10 @@ export interface BaijianLawSearchInput {
 export interface BaijianCaseSearchInput {
   query: string;
   topK?: number;
+}
+
+export interface BaijianLawDetailInput {
+  lawId: string;
 }
 
 export interface BaijianMcpHealth {
@@ -48,7 +56,7 @@ export class BaijianMcpClientService {
     this.timeoutMs = Math.max(1_000, Number(config.get('BAIJIAN_MCP_TIMEOUT_MS', 15_000)));
   }
 
-  searchLaws(input: BaijianLawSearchInput, signal?: AbortSignal): Promise<BaijianNormalizedResult> {
+  searchLaws(input: BaijianLawSearchInput, signal?: AbortSignal): Promise<BaijianLawSearchResult> {
     const keyword = input.keyword.trim();
     if (!keyword || keyword.length > 200) {
       throw new BaijianError('BAIJIAN_INVALID_RESPONSE', '法规关键词长度必须为 1–200', false);
@@ -57,10 +65,10 @@ export class BaijianMcpClientService {
       keyword,
       page: clampInteger(input.page ?? 1, 1, 10_000),
       rows: clampInteger(input.rows ?? 10, 1, 20),
-    }, signal);
+    }, signal) as Promise<BaijianLawSearchResult>;
   }
 
-  searchCases(input: BaijianCaseSearchInput, signal?: AbortSignal): Promise<BaijianNormalizedResult> {
+  searchCases(input: BaijianCaseSearchInput, signal?: AbortSignal): Promise<BaijianCaseSearchResult> {
     const query = input.query.trim();
     if (!query || query.length > 1_000) {
       throw new BaijianError('BAIJIAN_INVALID_RESPONSE', '案例法律问题长度必须为 1–1000', false);
@@ -71,7 +79,15 @@ export class BaijianMcpClientService {
       top_k: clampInteger(input.topK ?? 5, 1, 5),
       alpha: 0.7,
       country: ['CN'],
-    }, signal);
+    }, signal) as Promise<BaijianCaseSearchResult>;
+  }
+
+  getLawDetail(input: BaijianLawDetailInput, signal?: AbortSignal): Promise<BaijianLawDetail> {
+    const lawId = input.lawId.trim();
+    if (!/^[0-9a-f]{32}$/i.test(lawId)) {
+      throw new BaijianError('BAIJIAN_INVALID_RESPONSE', '法规 ID 格式不正确', false);
+    }
+    return this.callAndNormalize(BAIJIAN_LAW_DETAIL_TOOL, { rjs8: lawId }, signal) as Promise<BaijianLawDetail>;
   }
 
   async health(signal?: AbortSignal): Promise<BaijianMcpHealth> {
@@ -96,7 +112,7 @@ export class BaijianMcpClientService {
     toolName: BaijianToolName,
     args: Record<string, unknown>,
     signal?: AbortSignal,
-  ): Promise<BaijianNormalizedResult> {
+  ): Promise<BaijianNormalizedToolResult> {
     const { client } = await this.connect(signal);
     try {
       const tools = await client.listTools(undefined, { signal, timeout: this.timeoutMs });

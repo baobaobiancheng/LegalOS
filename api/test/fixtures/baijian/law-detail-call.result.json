@@ -1,0 +1,8 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"code\":\"200\",\"data\":{\"lawName\":\"中华人民共和国劳动合同法\",\"rjs8\":\"D6592443DA000EF8D692CE667E947A69\",\"issuingOrgan\":\"全国人大常委会\",\"issuingNo\":\"主席令第73号\",\"releaseYearMonthDate\":\"2012年12月28日\",\"implementYearMonthDate\":\"2013年07月01日\",\"timeliness\":\"现行有效\",\"hasCompare\":\"1\",\"hisgroup\":[{}],\"enclosure\":[],\"basisList\":[{}],\"tocItem\":[{\"id\":\"section0\",\"text\":\"第一章 总则\",\"indentLevel\":0,\"children\":[]}],\"lawSourceContent\":\"<p id='section0' style='text-align:center'><strong>第一章 总则</strong></p><div id='第一条'><p>　　第一条 为了完善劳动合同制度，制定本法。</p></div>\"}}"
+    }
+  ]
+}

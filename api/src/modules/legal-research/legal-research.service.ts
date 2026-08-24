@@ -9,7 +9,25 @@ export class LegalResearchService {
 
   async searchLaws(dto: SearchLawsDto, signal?: AbortSignal) {
     try {
-      return await this.baijian.searchLaws(dto, signal);
+      const requestedKeyword = dto.keyword.trim();
+      const searchedKeyword = normalizeLawKeyword(requestedKeyword);
+      const result = await this.baijian.searchLaws({ ...dto, keyword: searchedKeyword }, signal);
+      const records = result.records.filter((record) => !isCaseLikeTitle(record.lawName));
+      return {
+        ...result,
+        records,
+        requestedKeyword,
+        searchedKeyword,
+        filteredCaseLikeCount: result.records.length - records.length,
+      };
+    } catch (error) {
+      throw presentResearchError(error);
+    }
+  }
+
+  async getLawDetail(lawId: string, signal?: AbortSignal) {
+    try {
+      return await this.baijian.getLawDetail({ lawId }, signal);
     } catch (error) {
       throw presentResearchError(error);
     }
@@ -22,6 +40,20 @@ export class LegalResearchService {
       throw presentResearchError(error);
     }
   }
+}
+
+export function normalizeLawKeyword(keyword: string): string {
+  const requested = keyword.trim().replace(/\s+/g, ' ');
+  const normalized = requested.replace(/(?:类似)?(?:纠纷|争议)(?:案件|案|案例)?$/u, '').trim();
+  return Array.from(normalized).length >= 4 ? normalized : requested;
+}
+
+export function isCaseLikeTitle(title: string): boolean {
+  const value = title.replace(/\s+/g, '');
+  return /(?:^|[\s——：:])(?:指导性|典型|参考)?案例\d*[：:]?/u.test(title)
+    || /纠纷案(?:$|[（(])/u.test(value)
+    || /^[^\s]{1,40}诉[^\s]{1,80}案$/u.test(value)
+    || /案例$/.test(value);
 }
 
 function presentResearchError(error: unknown): ServiceUnavailableException {

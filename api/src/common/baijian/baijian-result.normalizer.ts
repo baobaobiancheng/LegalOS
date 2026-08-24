@@ -1,23 +1,32 @@
 import { Injectable } from '@nestjs/common';
 import {
   BAIJIAN_CASE_SEARCH_TOOL,
+  BAIJIAN_LAW_DETAIL_TOOL,
   BAIJIAN_LAW_SEARCH_TOOL,
   BaijianCaseRecord,
   BaijianError,
+  BaijianLawContentBlock,
+  BaijianLawDetail,
   BaijianLawRecord,
+  BaijianLawTocItem,
   BaijianNormalizedResult,
+  BaijianNormalizedToolResult,
   BaijianRawToolResult,
 } from './baijian.types';
 
 @Injectable()
 export class BaijianResultNormalizer {
-  normalize(raw: BaijianRawToolResult): BaijianNormalizedResult {
+  normalize(raw: BaijianRawToolResult & { toolName: typeof BAIJIAN_LAW_DETAIL_TOOL }): BaijianLawDetail;
+  normalize(raw: BaijianRawToolResult & { toolName: typeof BAIJIAN_LAW_SEARCH_TOOL | typeof BAIJIAN_CASE_SEARCH_TOOL }): BaijianNormalizedResult;
+  normalize(raw: BaijianRawToolResult): BaijianNormalizedToolResult;
+  normalize(raw: BaijianRawToolResult): BaijianNormalizedToolResult {
     if (raw.isError) {
       const text = extractFirstText(raw.content) ?? '百鉴 MCP 返回 isError=true';
       throw classifySupplierError(text);
     }
     const inner = this.extractInner(raw);
     if (raw.toolName === BAIJIAN_LAW_SEARCH_TOOL) return normalizeLaws(inner);
+    if (raw.toolName === BAIJIAN_LAW_DETAIL_TOOL) return normalizeLawDetail(inner);
     if (raw.toolName === BAIJIAN_CASE_SEARCH_TOOL) return normalizeCases(inner);
     throw new BaijianError('BAIJIAN_TOOL_NOT_ALLOWED', '未允许的百鉴工具', false);
   }
@@ -34,6 +43,37 @@ export class BaijianResultNormalizer {
       throw new BaijianError('BAIJIAN_INVALID_RESPONSE', '百鉴内层结果不是合法 JSON 对象', false);
     }
   }
+}
+
+export function normalizeLawDetail(inner: Record<string, unknown>): BaijianLawDetail {
+  const code = inner.code;
+  if (code !== undefined && String(code) !== '200') {
+    const message = typeof inner.msg === 'string' ? inner.msg : `法律之星业务码 ${String(code)}`;
+    throw classifySupplierError({ code, message });
+  }
+  const data = isRecord(inner.data) ? inner.data : inner;
+  const recordId = cleanString(data.rjs8 ?? data.lawId);
+  const lawName = cleanHtml(data.lawName);
+  if (!recordId || !lawName) {
+    throw new BaijianError('BAIJIAN_INVALID_RESPONSE', '法规详情缺少法规 ID 或名称', false);
+  }
+
+  return {
+    toolName: BAIJIAN_LAW_DETAIL_TOOL,
+    recordId,
+    lawName,
+    issuingOrgan: nullableCleanString(data.issuingOrgan),
+    issuingNo: nullableCleanString(data.issuingNo),
+    releaseDate: nullableCleanString(data.releaseYearMonthDate),
+    implementDate: nullableCleanString(data.implementYearMonthDate),
+    timeliness: nullableCleanString(data.timeliness),
+    hasCompare: String(data.hasCompare ?? '') === '1',
+    historyCount: safeArrayLength(data.hisgroup),
+    enclosureCount: safeArrayLength(data.enclosure),
+    basisCount: safeArrayLength(data.basisList),
+    toc: normalizeToc(data.tocItem),
+    contentBlocks: normalizeLawContent(data.lawSourceContent),
+  };
 }
 
 export function classifySupplierError(error: unknown): BaijianError {
@@ -160,6 +200,99 @@ export function cleanHtml(value: unknown): string {
     .replace(/&#39;/gi, "'")
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function normalizeLawContent(value: unknown): BaijianLawContentBlock[] {
+  if (typeof value !== 'string' || !value.trim()) return [];
+  if (Buffer.byteLength(value, 'utf8') > 2_000_000) {
+    throw new BaijianError('BAIJIAN_INVALID_RESPONSE', '法规正文超过安全大小上限', false);
+  }
+  const blocks: BaijianLawContentBlock[] = [];
+  const paragraphs = value.matchAll(/<p\b([^>]*)>([\s\S]*?)<\/p>/gi);
+  for (const match of paragraphs) {
+    if (blocks.length >= 10_000) {
+      throw new BaijianError('BAIJIAN_INVALID_RESPONSE', '法规正文段落数超过安全上限', false);
+    }
+    const attrs = match[1] ?? '';
+    const inner = match[2] ?? '';
+    const text = cleanLongHtml(inner);
+    if (!text) continue;
+    const idMatch = attrs.match(/\bid\s*=\s*(['"])([^'"]+)\1/i);
+    const id = idMatch ? safeAnchorId(idMatch[2]) : null;
+    const isHeading = /<strong\b/i.test(inner)
+      || /text-align\s*:\s*center/i.test(attrs)
+      || /^\u7b2c[^\s]{1,12}[编章节]\s/.test(text);
+    const kind: BaijianLawContentBlock['kind'] = isHeading
+      ? 'heading'
+      : /text-align\s*:\s*right/i.test(attrs)
+        ? 'signature'
+        : 'paragraph';
+    blocks.push({ id, kind, text });
+  }
+  if (blocks.length) return blocks;
+  const fallback = cleanLongHtml(value);
+  return fallback ? [{ id: null, kind: 'paragraph', text: fallback }] : [];
+}
+
+function normalizeToc(value: unknown): BaijianLawTocItem[] {
+  if (!Array.isArray(value)) return [];
+  let count = 0;
+  const walk = (items: unknown[], depth: number): BaijianLawTocItem[] => {
+    if (depth > 8) return [];
+    const output: BaijianLawTocItem[] = [];
+    for (const item of items) {
+      if (count >= 1_000 || !isRecord(item)) break;
+      const id = safeAnchorId(item.id);
+      const text = cleanHtml(item.text);
+      if (!id || !text) continue;
+      count += 1;
+      output.push({
+        id,
+        text,
+        level: Math.min(8, Math.max(0, safeNonNegativeInteger(item.indentLevel, depth))),
+        children: walk(Array.isArray(item.children) ? item.children : [], depth + 1),
+      });
+    }
+    return output;
+  };
+  return walk(value, 0);
+}
+
+function cleanLongHtml(value: string): string {
+  return decodeHtmlEntities(value.replace(/<[^>]*>/g, ' '))
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 20_000);
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (entity: string, code: string) => decodeCodePoint(entity, Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (entity: string, code: string) => decodeCodePoint(entity, Number.parseInt(code, 16)));
+}
+
+function decodeCodePoint(entity: string, codePoint: number): string {
+  if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+    return entity;
+  }
+  return String.fromCodePoint(codePoint);
+}
+
+function safeAnchorId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const id = value.trim();
+  return /^[\w\-一-鿿]{1,80}$/u.test(id) ? id : null;
+}
+
+function safeArrayLength(value: unknown): number {
+  return Array.isArray(value) ? Math.min(value.length, 10_000) : 0;
 }
 
 function nullableCleanHtml(value: unknown): string | null {

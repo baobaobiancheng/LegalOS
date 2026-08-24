@@ -14,6 +14,17 @@
       }
     },
     {
+      "name": "lawstar_data_professional_detail",
+      "description": "Sanitized law detail fixture",
+      "inputSchema": {
+        "type": "object",
+        "required": ["rjs8"],
+        "properties": {
+          "rjs8": { "type": "string" }
+        }
+      }
+    },
+    {
       "name": "ldh_search",
       "description": "Sanitized similar-case search fixture",
       "inputSchema": {
