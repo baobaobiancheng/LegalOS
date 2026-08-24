@@ -1,17 +1,22 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
-import { BaijianMcpClientService } from '../../common/baijian/baijian-mcp-client.service';
 import { BaijianError } from '../../common/baijian/baijian.types';
+import { CachedLegalResearchGateway } from '../../common/baijian/cached-legal-research.gateway';
 import { SearchCasesDto, SearchLawsDto } from './dto/legal-research.dto';
 
 @Injectable()
 export class LegalResearchService {
-  constructor(private readonly baijian: BaijianMcpClientService) {}
+  constructor(private readonly baijian: CachedLegalResearchGateway) {}
 
   async searchLaws(dto: SearchLawsDto, signal?: AbortSignal) {
     try {
-      const requestedKeyword = dto.keyword.trim();
+      const { refresh, ...searchInput } = dto;
+      const requestedKeyword = searchInput.keyword.trim();
       const searchedKeyword = requestedKeyword;
-      const result = await this.baijian.searchLaws({ ...dto, keyword: searchedKeyword }, signal);
+      const result = await this.baijian.searchLaws(
+        { ...searchInput, keyword: searchedKeyword },
+        signal,
+        { refresh },
+      );
       const records = result.records.filter((record) => !isCaseLikeTitle(record.lawName));
       return {
         ...result,
@@ -25,9 +30,9 @@ export class LegalResearchService {
     }
   }
 
-  async getLawDetail(lawId: string, signal?: AbortSignal) {
+  async getLawDetail(lawId: string, refresh = false, signal?: AbortSignal) {
     try {
-      return await this.baijian.getLawDetail({ lawId }, signal);
+      return await this.baijian.getLawDetail({ lawId }, signal, { refresh });
     } catch (error) {
       throw presentResearchError(error);
     }
@@ -35,7 +40,8 @@ export class LegalResearchService {
 
   async searchCases(dto: SearchCasesDto, signal?: AbortSignal) {
     try {
-      return await this.baijian.searchCases(dto, signal);
+      const { refresh, ...searchInput } = dto;
+      return await this.baijian.searchCases(searchInput, signal, { refresh });
     } catch (error) {
       throw presentResearchError(error);
     }

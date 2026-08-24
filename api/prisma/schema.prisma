@@ -412,6 +412,60 @@ model ConsultationRun {
   @@map("consultation_runs")
 }
 
+// 百鉴权威文档本地投影：按供应商 ID 去重，为不同查询复用元数据与正文。
+model LegalSourceDocument {
+  id             String   @id @default(uuid())
+  source         String   @db.VarChar(32)
+  externalId     String   @map("external_id") @db.VarChar(191)
+  kind           String   @db.VarChar(16)
+  title          String   @db.VarChar(512)
+  metadata       Json
+  content        Json?
+  contentHash    String?  @map("content_hash") @db.Char(64)
+  contentVerifiedAt DateTime? @map("content_verified_at")
+  fetchedAt      DateTime @map("fetched_at")
+  lastVerifiedAt DateTime @map("last_verified_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([source, externalId])
+  @@index([kind, lastVerifiedAt])
+  @@map("legal_source_documents")
+}
+
+// 精确请求快照：不保存可能包含案情/个人信息的原始查询，只保存请求哈希与标准化结果。
+model LegalSearchSnapshot {
+  id          String   @id @default(uuid())
+  requestHash String   @unique @map("request_hash") @db.Char(64)
+  capability  String   @db.VarChar(32)
+  toolName    String   @map("tool_name") @db.VarChar(64)
+  payload     Json
+  fetchedAt   DateTime @map("fetched_at")
+  expiresAt   DateTime @map("expires_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([capability, expiresAt])
+  @@map("legal_search_snapshots")
+}
+
+// 不含原始查询的成本台账，用于评估缓存命中与实际节省的供应商调用。
+model LegalResearchUsage {
+  id             String   @id @default(uuid())
+  requestHash    String   @map("request_hash") @db.Char(64)
+  capability     String   @db.VarChar(32)
+  toolName       String   @map("tool_name") @db.VarChar(64)
+  cacheStatus    String   @map("cache_status") @db.VarChar(16)
+  supplierCalled Boolean  @map("supplier_called")
+  recordCount    Int      @default(0) @map("record_count")
+  durationMs     Int      @default(0) @map("duration_ms")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([capability, createdAt])
+  @@index([requestHash, createdAt])
+  @@map("legal_research_usage")
+}
+
 // 合同附件（本地磁盘文件，DB 只存元数据）
 // kind 仅 revised | final：草稿走前端 markdown→docx（DownloadMenu），不落盘
 model ContractFile {

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { BaijianMcpClientService } from '../baijian/baijian-mcp-client.service';
+import { CachedLegalResearchGateway } from '../baijian/cached-legal-research.gateway';
 import {
   DSH_CASE_SEARCH_TOOL,
   DSH_LAW_SEARCH_TOOL,
@@ -14,7 +14,7 @@ export const DSH_BAIJIAN_RESULT_META_KIND = 'baijian-result-v1';
  */
 @Injectable()
 export class DshBaijianToolsService {
-  constructor(private readonly baijian: BaijianMcpClientService) {}
+  constructor(private readonly baijian: CachedLegalResearchGateway) {}
 
   async createDefinition(capability: DshResearchCapability): Promise<any> {
     const { defineTool } = await import('@deepseek-ai/dsh-tools');

@@ -41,6 +41,8 @@ cp api/.env.example api/.env
 | `SEED_ADMIN_PASSWORD` 等 4 个 | 种子账号初始密码（首次 `db seed` 生效，之后改密码不走 seed） |
 | `BAIJIAN_MCP_APP_KEY` | 百鉴 MCP App Key，只进入服务器 Secret，不写入配置文件或命令参数 |
 | `BAIJIAN_MCP_APP_SECRET` | 百鉴 MCP App Secret；已在聊天或本地文档暴露的旧值必须先轮换 |
+| `LEGAL_RESEARCH_SEARCH_CACHE_TTL_MS` | 法规/类案精确请求快照 TTL，默认 24 小时 |
+| `LEGAL_RESEARCH_LAW_DETAIL_CACHE_TTL_MS` | 法规正文再校验间隔，默认 30 天 |
 
 ### 可保持默认
 
@@ -142,6 +144,8 @@ DSH_AGENT_TOOL_CALL_MAX=8
 BAIJIAN_MCP_URL=https://mcpgateway.100credit.cn/mcp
 BAIJIAN_MCP_APP_KEY=<轮换后的 key>
 BAIJIAN_MCP_APP_SECRET=<轮换后的 secret>
+LEGAL_RESEARCH_SEARCH_CACHE_TTL_MS=86400000
+LEGAL_RESEARCH_LAW_DETAIL_CACHE_TTL_MS=2592000000
 ```
 
 不要使用 `set -x`，不要把 Secret 直接写进 shell 命令、`.env.example`、日志或 CI 产物。推荐由 systemd、容器 Secret 或 CI Secret 注入。
@@ -164,6 +168,8 @@ npm run dsh:model-gate
 npm run dsh:baijian-gate -- law '劳动合同解除经济补偿'
 npm run dsh:baijian-gate -- case '劳动合同违法解除经济补偿的中国类似案例'
 ```
+
+PR-A 部署必须执行 `20260824150000_add_legal_research_cache` migration，新增权威文档投影、精确请求快照和脱敏成本台账。当前单 API 实例使用进程内 single-flight，不依赖 Redis。同一精确请求在 TTL 内直接复用本地快照；只有显式「刷新权威数据」、缓存缺失或过期时才再调用百鉴。
 
 PR1/PR2 部署还会执行 `20260820190000_add_consultation_research_trace` migration。它只给
 `consultation_runs` 增加能力快照、dsh 会话 ID 和有界来源 trace；不依赖 Redis。法务独立检索接口为

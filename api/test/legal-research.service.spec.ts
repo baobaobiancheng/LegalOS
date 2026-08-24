@@ -14,7 +14,11 @@ describe('LegalResearchService', () => {
 
     const result = await service.searchLaws({ keyword: '劳动合同纠纷', page: 2, rows: 10 });
 
-    expect(searchLaws).toHaveBeenCalledWith({ keyword: '劳动合同纠纷', page: 2, rows: 10 }, undefined);
+    expect(searchLaws).toHaveBeenCalledWith(
+      { keyword: '劳动合同纠纷', page: 2, rows: 10 },
+      undefined,
+      { refresh: undefined },
+    );
     expect(result).toMatchObject({
       requestedKeyword: '劳动合同纠纷',
       searchedKeyword: '劳动合同纠纷',

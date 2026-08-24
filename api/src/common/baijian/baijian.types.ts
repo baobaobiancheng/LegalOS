@@ -97,6 +97,18 @@ export type BaijianLawSearchResult = Extract<BaijianNormalizedResult, { toolName
 export type BaijianCaseSearchResult = Extract<BaijianNormalizedResult, { toolName: typeof BAIJIAN_CASE_SEARCH_TOOL }>;
 export type BaijianNormalizedToolResult = BaijianNormalizedResult | BaijianLawDetail;
 
+export type LegalResearchCacheStatus = 'hit' | 'miss' | 'refresh' | 'shared';
+
+export interface LegalResearchCacheInfo {
+  status: LegalResearchCacheStatus;
+  fetchedAt: string;
+  lastVerifiedAt: string;
+}
+
+export type CachedLegalResearchResult<T extends BaijianNormalizedToolResult> = T & {
+  cache: LegalResearchCacheInfo;
+};
+
 export type BaijianErrorCode =
   | 'BAIJIAN_QUOTA_EXHAUSTED'
   | 'BAIJIAN_TIMEOUT'
