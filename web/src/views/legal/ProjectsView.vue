@@ -1,368 +1,439 @@
-<template>
-  <div class="app-shell">
-    <div class="aurora">
-      <div class="orb orb-1" /><div class="orb orb-2" /><div class="orb orb-3" />
-    </div>
-
-    <aside class="app-sidebar sidebar-glass">
-      <button
-        class="app-brand"
-        @click="router.push('/legal/projects')"
-      >
-        <span class="brand-icon">⚖</span>
-        <span class="brand-text"><b>法务 Legal OS</b><small>法律团队项目空间</small></span>
-      </button>
-
-      <div class="nav-section">
-        <span class="nav-label">项目</span>
-        <button class="nav-btn active">
-          <span class="nav-ico"><svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-          ><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" /><rect
-            x="9"
-            y="3"
-            width="6"
-            height="4"
-            rx="1"
-          /><path d="M9 12h6M9 16h4" /></svg></span>
-          工单管理
-        </button>
-        <button
-          class="nav-btn"
-          @click="router.push('/legal/research')"
-        >
-          <span class="nav-ico"><svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-          ><circle
-            cx="11"
-            cy="11"
-            r="8"
-          /><line
-            x1="21"
-            y1="21"
-            x2="16.65"
-            y2="16.65"
-          /></svg></span>
-          法规与类案检索
-        </button>
-        <button
-          class="nav-btn"
-          @click="router.push('/legal/skills')"
-        >
-          <span class="nav-ico"><svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-          ><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg></span>
-          技能库
-        </button>
-      </div>
-      <div class="nav-section">
-        <span class="nav-label">企业能力</span>
-        <button
-          class="nav-btn"
-          disabled
-        >
-          知识库 · v0.2.0
-        </button>
-        <button
-          class="nav-btn"
-          disabled
-        >
-          数字分身 · v0.2.0
-        </button>
-      </div>
-
-      <div class="sidebar-footer">
-        <div class="user-avatar">
-          {{ auth.user?.displayName?.[0] || '法' }}
-        </div>
-        <div class="user-info">
-          <span class="user-name">{{ auth.user?.displayName || '用户' }}</span>
-          <span class="user-role">{{ auth.user?.role === 'legal_lead' ? '法务负责人' : '法务 BP' }}</span>
-        </div>
-        <button
-          class="logout-link"
-          title="退出登录"
-          @click="handleLogout"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-          ><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line
-            x1="21"
-            y1="12"
-            x2="9"
-            y2="12"
-          /></svg>
-        </button>
-      </div>
-    </aside>
-
-    <div class="app-main">
-      <header class="app-topbar topbar-glass">
-        <div class="tb-left">
-          <small class="tb-path">法务 Legal OS</small>
-          <strong class="tb-title">工单管理</strong>
-        </div>
-        <!-- 2026-08-05：右上角状态徽章（就绪/数量）无信息量，已删除 -->
-      </header>
-
-      <div class="app-content animate-in">
-        <!-- 统计概览 -->
-        <div class="stats-row">
-          <div
-            v-for="s in stats"
-            :key="s.label"
-            class="stat-card glass-card"
-          >
-            <span
-              class="stat-value"
-              :style="{ color: s.color }"
-            >{{ s.count }}</span>
-            <span class="stat-label">{{ s.label }}</span>
-          </div>
-        </div>
-
-        <!-- Tabs -->
-        <div class="tab-bar">
-          <button
-            v-for="t in tabs"
-            :key="t.key"
-            :class="['tab-item', { active: activeTab === t.key }]"
-            @click="activeTab = t.key"
-          >
-            {{ t.label }}<span class="tab-count">{{ groups[t.key]?.length || 0 }}</span>
-          </button>
-        </div>
-
-        <!-- Loading Skeleton -->
-        <template v-if="loading">
-          <div
-            v-for="i in 3"
-            :key="'sk-'+i"
-            class="project-card glass-card"
-            style="cursor:default; transform:none"
-          >
-            <div class="card-main">
-              <div
-                class="skeleton"
-                style="width:48px;height:24px;border-radius:20px"
-              />
-              <div
-                class="skeleton"
-                style="width:200px;height:18px;margin-left:14px"
-              />
-            </div>
-            <div class="card-meta-row">
-              <div
-                class="skeleton"
-                style="width:32px;height:22px;border-radius:11px"
-              />
-              <div
-                class="skeleton"
-                style="width:80px;height:14px;margin-left:12px"
-              />
-            </div>
-          </div>
-        </template>
-
-        <ErrorState
-          v-else-if="remote.status.value === 'error'"
-          :message="remote.error.value?.payload?.error || '工单加载失败，请重试'"
-          :request-id="remote.requestId.value"
-          :on-retry="remote.load"
-        />
-
-        <!-- Empty -->
-        <div
-          v-else-if="!groups[activeTab]?.length"
-          class="welcome-hero"
-        >
-          <div class="welcome-icon">
-            <svg
-              width="32"
-              height="32"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="#86868b"
-              stroke-width="1.6"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            ><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line
-              x1="12"
-              y1="18"
-              x2="12"
-              y2="12"
-            /><line
-              x1="9"
-              y1="15"
-              x2="15"
-              y2="15"
-            /></svg>
-          </div>
-          <h2 class="text-h2">
-            暂无工单
-          </h2>
-          <p class="text-body">
-            {{ activeTab }}分区为空，新工单将自动出现在这里
-          </p>
-        </div>
-
-        <!-- Project List -->
-        <div
-          v-else
-          class="card-stack"
-        >
-          <article
-            v-for="(p, idx) in groups[activeTab]"
-            :key="p.id"
-            :class="['project-card', 'glass-card', 'risk-' + p.risk]"
-            :style="{ animationDelay: idx * 0.04 + 's' }"
-            @click="openProject(p.id)"
-          >
-            <div class="card-main">
-              <span :class="['kind-badge', 'kind-' + p.kind]">
-                <span
-                  class="kind-icon"
-                  v-html="kindIcon(p.kind)"
-                />
-                {{ kindLabel(p.kind) }}
-              </span>
-              <span class="card-title">{{ p.title }}</span>
-              <span
-                v-if="p.isFailed"
-                class="failed-dot"
-              >异常</span>
-            </div>
-            <div class="card-meta-row">
-              <span :class="['risk-chip', 'risk-' + p.risk + '-bg']">{{ p.risk }}</span>
-              <span class="card-creator">{{ p.creator.displayName }}</span>
-              <span class="card-time">{{ fmtTime(p.createdAt) }}</span>
-            </div>
-          </article>
-        </div>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { gsap } from 'gsap'
 import { useRouter } from 'vue-router'
-import { useAuthStore } from '../../stores/auth'
 import { request } from '../../api/client'
 import ErrorState from '../../components/ErrorState.vue'
+import LegalWorkspaceLayout from '../../components/LegalWorkspaceLayout.vue'
 import { useRemoteData } from '../../composables/useRemoteData'
-import type { ProjectListResponse, ProjectListItem } from '../../types'
+import { buildPagination } from '../../domain/legal-research'
+import type { ProjectGroupKey, ProjectListItem, ProjectListResponse } from '../../types'
 
-const router = useRouter()
-const auth = useAuthStore()
-const activeTab = ref('待处理')
-
-const groups = ref<Record<string, ProjectListItem[]>>({
-  待处理: [], 合同协作: [], 已回传: [], 数字分身处理: [],
-})
-
-const totalCount = ref(0)
-
-const remote = useRemoteData(async () => {
-  const data = await request<ProjectListResponse>('/projects')
-  groups.value = data.groups
-  totalCount.value = data.total
-  return data
-})
-const loading = computed(() => remote.status.value === 'loading')
-
-// 统计概览
-const stats = computed(() => [
-  { label: '全部工单', count: totalCount.value, color: '#1d1d1f' },
-  { label: '待处理', count: groups.value['待处理'].length, color: '#C41212' },
-  { label: '合同协作', count: groups.value['合同协作'].length, color: '#0055B3' },
-  { label: 'AI 处理', count: groups.value['数字分身处理'].length, color: '#0E7A3C' },
-])
-
-const tabs = [
+const PAGE_SIZE = 10
+const GROUPS: Array<{ key: ProjectGroupKey; label: string }> = [
   { key: '待处理', label: '待处理' },
   { key: '合同协作', label: '合同协作' },
   { key: '已回传', label: '已回传' },
   { key: '数字分身处理', label: 'AI 处理' },
 ]
 
-onMounted(remote.load)
+const router = useRouter()
+const pageRoot = ref<HTMLElement | null>(null)
+const activeGroup = ref<ProjectGroupKey>('待处理')
+const currentPage = ref(1)
+let animationContext: gsap.Context | null = null
 
-const kindIcon = (k: string) => ({
-  consult: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
-  contract: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
-  research: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
-  draft: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>',
-})[k] || '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>'
-const kindLabel = (k: string) => ({ consult: '咨询', contract: '合同', research: '检索', draft: '文书' })[k] || k
-// 后端返回 UTC ISO，需转本地时区（slice 截取会差 8 小时）
-const fmtTime = (t: string) => {
-  const d = new Date(t)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+const remote = useRemoteData(() => request<ProjectListResponse>(
+  `/projects?group=${encodeURIComponent(activeGroup.value)}&page=${currentPage.value}&size=${PAGE_SIZE}`,
+))
+
+const loading = computed(() => remote.status.value === 'loading')
+const items = computed(() => remote.data.value?.items ?? [])
+const groupCounts = computed<Record<ProjectGroupKey, number>>(() => remote.data.value?.groupCounts ?? {
+  待处理: 0,
+  合同协作: 0,
+  已回传: 0,
+  数字分身处理: 0,
+})
+const allCount = computed(() => Object.values(groupCounts.value).reduce((sum, count) => sum + count, 0))
+const totalPages = computed(() => Math.max(1, Math.ceil((remote.data.value?.total ?? 0) / PAGE_SIZE)))
+const pagination = computed(() => buildPagination(currentPage.value, totalPages.value))
+
+const stats = computed(() => [
+  { label: '全部工单', count: allCount.value },
+  { label: '待处理', count: groupCounts.value.待处理 },
+  { label: '合同协作', count: groupCounts.value.合同协作 },
+  { label: 'AI 处理', count: groupCounts.value.数字分身处理 },
+])
+
+const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+async function animateRows() {
+  if (reducedMotion()) return
+  await nextTick()
+  animationContext?.add(() => {
+    gsap.fromTo(
+      '.project-row',
+      { autoAlpha: 0, y: 12 },
+      { autoAlpha: 1, y: 0, duration: 0.42, stagger: 0.045, ease: 'power2.out', overwrite: true },
+    )
+  })
 }
-const openProject = (id: string) => router.push(`/legal/projects/${id}`)
-async function handleLogout() { await auth.logout(); await router.replace('/login') }
+
+async function loadProjects() {
+  await remote.load()
+  const maximumPage = Math.max(1, Math.ceil((remote.data.value?.total ?? 0) / PAGE_SIZE))
+  if (currentPage.value > maximumPage) {
+    currentPage.value = maximumPage
+    await remote.load()
+  }
+  await animateRows()
+}
+
+async function selectGroup(group: ProjectGroupKey) {
+  if (loading.value || group === activeGroup.value) return
+  activeGroup.value = group
+  currentPage.value = 1
+  await loadProjects()
+}
+
+async function goToPage(page: number) {
+  if (loading.value || page === currentPage.value || page < 1 || page > totalPages.value) return
+  currentPage.value = page
+  await loadProjects()
+  pageRoot.value?.querySelector('.queue-heading')?.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' })
+}
+
+const kindLabel = (kind: ProjectListItem['kind']) => ({
+  consult: '咨询',
+  contract: '合同',
+  research: '检索',
+  draft: '文书',
+})[kind]
+
+const requester = (project: ProjectListItem) => project.requesterName || project.creator.displayName
+const assignee = (project: ProjectListItem) => project.legalBp?.displayName || project.owner.displayName
+
+const formatTime = (value: string) => {
+  const time = new Date(value).getTime()
+  const delta = Date.now() - time
+  if (delta >= 0 && delta < 60_000) return '刚刚'
+  if (delta >= 0 && delta < 3_600_000) return `${Math.max(1, Math.floor(delta / 60_000))} 分钟前`
+  if (delta >= 0 && delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`
+  const date = new Date(value)
+  const pad = (number: number) => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+onMounted(async () => {
+  if (pageRoot.value) {
+    animationContext = gsap.context(() => {
+      if (reducedMotion()) return
+      gsap.from('.page-heading > *', {
+        autoAlpha: 0,
+        y: 18,
+        duration: 0.62,
+        stagger: 0.08,
+        ease: 'power2.out',
+      })
+      gsap.from('.summary-cell', {
+        autoAlpha: 0,
+        y: 16,
+        duration: 0.5,
+        stagger: 0.07,
+        delay: 0.12,
+        ease: 'power2.out',
+      })
+    }, pageRoot.value)
+  }
+  await loadProjects()
+})
+
+onBeforeUnmount(() => animationContext?.revert())
 </script>
+
+<template>
+  <LegalWorkspaceLayout active-key="projects">
+    <div
+      ref="pageRoot"
+      class="projects-page"
+    >
+      <header class="page-heading">
+        <p class="breadcrumb">
+          法务工作台 <span>/</span> 工单管理
+        </p>
+        <div class="heading-row">
+          <div class="heading-copy">
+            <h1>工单管理</h1>
+            <span class="heading-divider" />
+            <p>集中处理业务咨询、合同协作与 AI 复核事项</p>
+          </div>
+          <button
+            class="refresh-button"
+            :disabled="loading"
+            @click="loadProjects"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            ><path d="M20 7h-5V2" /><path d="M20 2 9.5 12.5a5 5 0 1 0 7 7L20 16" /></svg>
+            {{ loading ? '刷新中' : '刷新工单' }}
+          </button>
+        </div>
+      </header>
+
+      <section
+        class="summary-grid"
+        aria-label="工单统计"
+      >
+        <div
+          v-for="stat in stats"
+          :key="stat.label"
+          class="summary-cell"
+        >
+          <span>{{ stat.label }}</span>
+          <strong>{{ stat.count }}</strong>
+        </div>
+      </section>
+
+      <nav
+        class="workflow-tabs"
+        aria-label="工单分组"
+      >
+        <button
+          v-for="group in GROUPS"
+          :key="group.key"
+          :class="{ active: activeGroup === group.key }"
+          :aria-current="activeGroup === group.key ? 'page' : undefined"
+          :disabled="loading"
+          @click="selectGroup(group.key)"
+        >
+          <span>{{ group.label }}</span>
+          <strong>{{ groupCounts[group.key] }}</strong>
+        </button>
+      </nav>
+
+      <section class="queue-section">
+        <div class="queue-heading">
+          <h2>{{ activeGroup === '待处理' ? '优先处理' : GROUPS.find(group => group.key === activeGroup)?.label }}</h2>
+          <span v-if="remote.data.value">共 {{ remote.data.value.total }} 条，每页 {{ PAGE_SIZE }} 条</span>
+        </div>
+
+        <div
+          v-if="loading"
+          class="project-table loading-table"
+          aria-label="正在加载工单"
+        >
+          <div
+            class="table-head"
+            aria-hidden="true"
+          >
+            <span>类型</span><span>标题</span><span>风险</span><span>申请人</span><span>负责人</span><span>更新时间</span><span>状态</span>
+          </div>
+          <div
+            v-for="index in 6"
+            :key="index"
+            class="skeleton-row"
+          >
+            <i
+              v-for="cell in 7"
+              :key="cell"
+            />
+          </div>
+        </div>
+
+        <ErrorState
+          v-else-if="remote.status.value === 'error'"
+          :message="remote.error.value?.payload.error || '工单加载失败，请重试'"
+          :request-id="remote.requestId.value"
+          :on-retry="loadProjects"
+        />
+
+        <div
+          v-else-if="items.length === 0"
+          class="empty-state"
+        >
+          <span
+            class="empty-document"
+            aria-hidden="true"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+            ><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6M8 13h8M8 17h5" /></svg>
+          </span>
+          <strong>该分组暂无工单</strong>
+          <p>新工单进入该流程后会显示在这里。</p>
+        </div>
+
+        <div
+          v-else
+          class="project-table"
+          role="table"
+          aria-label="工单列表"
+        >
+          <div
+            class="table-head"
+            role="row"
+          >
+            <span role="columnheader">类型</span>
+            <span role="columnheader">标题</span>
+            <span role="columnheader">风险</span>
+            <span role="columnheader">申请人</span>
+            <span role="columnheader">负责人</span>
+            <span role="columnheader">更新时间</span>
+            <span role="columnheader">状态</span>
+          </div>
+          <button
+            v-for="project in items"
+            :key="project.id"
+            class="project-row"
+            role="row"
+            :aria-label="`查看工单：${project.title}`"
+            @click="router.push(`/legal/projects/${project.id}`)"
+          >
+            <span role="cell"><i :class="['kind-tag', `kind-${project.kind}`]">{{ kindLabel(project.kind) }}</i></span>
+            <span
+              class="project-title"
+              role="cell"
+            >{{ project.title }}<small v-if="project.isFailed">处理异常</small></span>
+            <span role="cell"><i :class="['risk-tag', `risk-${project.risk}`]">{{ project.risk }}</i></span>
+            <span role="cell">{{ requester(project) }}</span>
+            <span role="cell">{{ assignee(project) }}</span>
+            <span role="cell">{{ formatTime(project.updatedAt || project.createdAt) }}</span>
+            <span
+              class="status-cell"
+              role="cell"
+            >{{ project.status }}</span>
+          </button>
+        </div>
+
+        <footer
+          v-if="!loading && remote.status.value === 'success' && remote.data.value && remote.data.value.total > PAGE_SIZE"
+          class="pagination-footer"
+        >
+          <span>第 {{ currentPage }} / {{ totalPages }} 页</span>
+          <nav aria-label="工单分页">
+            <button
+              aria-label="上一页"
+              :disabled="currentPage <= 1"
+              @click="goToPage(currentPage - 1)"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              ><path d="m15 18-6-6 6-6" /></svg>
+            </button>
+            <template
+              v-for="item in pagination"
+              :key="item.key"
+            >
+              <span
+                v-if="item.type === 'ellipsis'"
+                class="ellipsis"
+              >…</span>
+              <button
+                v-else
+                :class="{ active: item.page === currentPage }"
+                :aria-current="item.page === currentPage ? 'page' : undefined"
+                @click="goToPage(item.page)"
+              >
+                {{ item.page }}
+              </button>
+            </template>
+            <button
+              aria-label="下一页"
+              :disabled="currentPage >= totalPages"
+              @click="goToPage(currentPage + 1)"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              ><path d="m9 18 6-6-6-6" /></svg>
+            </button>
+          </nav>
+        </footer>
+      </section>
+    </div>
+  </LegalWorkspaceLayout>
+</template>
 
 <script lang="ts">export default { name: 'ProjectsView' }</script>
 
 <style scoped>
-.tb-left { display: flex; align-items: baseline; gap: 10px; }
-.tb-path { font-size: 11px; color: var(--text-tertiary); font-weight: 590; }
-.tb-title { font-size: 14px; font-weight: 650; color: var(--text); letter-spacing: -0.01em; }
-.tb-right { display: flex; align-items: center; }
-/* ── 统计概览 ── */
-.stats-row {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
-  margin-bottom: 24px;
+.projects-page { width: min(100%, 1540px); min-height: 100vh; margin: 0 auto; padding: 34px 38px 52px; color: #111827; }
+.page-heading { margin-bottom: 30px; }
+.breadcrumb { margin: 0 0 34px; color: #53627A; font-size: 13px; }
+.breadcrumb span { margin: 0 10px; color: #A8B1BF; }
+.heading-row { display: flex; align-items: center; justify-content: space-between; gap: 28px; }
+.heading-copy { display: flex; min-width: 0; align-items: center; gap: 18px; }
+.heading-copy h1 { margin: 0; color: #0B1222; font-size: clamp(34px, 3.2vw, 46px); font-weight: 680; letter-spacing: -0.045em; line-height: 1; white-space: nowrap; }
+.heading-divider { width: 1px; height: 36px; flex: 0 0 auto; background: #CBD5E1; }
+.heading-copy p { margin: 0; color: #526174; font-size: 15px; white-space: nowrap; }
+.refresh-button { display: inline-flex; min-width: 126px; height: 44px; padding: 0 16px; align-items: center; justify-content: center; gap: 8px; border: 1px solid #C7D2E2; border-radius: 7px; background: #FFFFFF; color: #334155; font: inherit; font-size: 14px; font-weight: 600; transition: border-color 180ms ease, color 180ms ease, transform 180ms ease; }
+.refresh-button:hover:not(:disabled) { transform: translateY(-1px); border-color: #93B0E5; color: #2563EB; }
+.refresh-button:disabled { opacity: 0.55; cursor: wait; }
+.refresh-button svg { width: 17px; height: 17px; }
+.summary-grid { display: grid; overflow: hidden; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 26px; border: 1px solid #DCE3EC; border-radius: 8px; background: #FFFFFF; }
+.summary-cell { position: relative; display: grid; min-height: 150px; padding: 34px 30px 28px; align-content: space-between; gap: 18px; }
+.summary-cell + .summary-cell::before { position: absolute; inset: 30px auto 30px 0; width: 1px; background: #DCE3EC; content: ""; }
+.summary-cell span { color: #475569; font-size: 14px; }
+.summary-cell strong { color: #0F172A; font-size: 42px; font-weight: 620; letter-spacing: -0.04em; line-height: 1; }
+.workflow-tabs { display: grid; overflow: hidden; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 30px; border: 1px solid #D7DFEA; border-radius: 7px; background: #FFFFFF; }
+.workflow-tabs button { position: relative; display: flex; min-height: 64px; align-items: center; justify-content: center; gap: 10px; border: 0; border-left: 1px solid #E5EAF1; background: #FFFFFF; color: #4B5568; font: inherit; font-size: 15px; transition: background 180ms ease, color 180ms ease; }
+.workflow-tabs button:first-child { border-left: 0; }
+.workflow-tabs button::after { position: absolute; inset: auto 0 0; height: 3px; background: transparent; content: ""; }
+.workflow-tabs button:hover:not(:disabled) { background: #F8FAFC; color: #2563EB; }
+.workflow-tabs button.active { background: #F5F8FF; color: #2563EB; }
+.workflow-tabs button.active::after { background: #2563EB; }
+.workflow-tabs button strong { font-weight: 560; }
+.workflow-tabs button:disabled { cursor: wait; }
+.queue-heading { display: flex; scroll-margin-top: 22px; margin: 0 0 12px; align-items: baseline; justify-content: space-between; gap: 20px; }
+.queue-heading h2 { margin: 0; color: #111827; font-size: 21px; font-weight: 680; letter-spacing: -0.02em; }
+.queue-heading span { color: #7B8798; font-size: 12px; }
+.project-table { overflow-x: auto; border: 1px solid #DCE3EC; border-radius: 7px; background: #FFFFFF; }
+.table-head, .project-row, .skeleton-row { display: grid; grid-template-columns: 92px minmax(260px, 2.4fr) 88px minmax(100px, .8fr) minmax(100px, .8fr) 126px 98px; align-items: center; column-gap: 18px; }
+.table-head { min-width: 1010px; min-height: 52px; padding: 0 24px; border-bottom: 1px solid #E5EAF1; color: #69768A; font-size: 12px; font-weight: 650; }
+.project-row { width: 100%; min-width: 1010px; min-height: 70px; padding: 0 24px; border: 0; border-bottom: 1px solid #E8EDF3; background: #FFFFFF; color: #334155; font: inherit; font-size: 13px; text-align: left; transition: background 160ms ease, box-shadow 160ms ease; }
+.project-row:last-child { border-bottom: 0; }
+.project-row:hover, .project-row:focus-visible { position: relative; z-index: 1; outline: 0; background: #F7FAFF; box-shadow: inset 3px 0 0 #2563EB, 0 0 0 1px #2563EB; }
+.project-title { overflow: hidden; color: #1F2937; font-size: 14px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.project-title small { margin-left: 10px; color: #DC2626; font-size: 10px; font-weight: 650; }
+.kind-tag, .risk-tag { display: inline-flex; width: max-content; min-width: 38px; min-height: 27px; padding: 0 8px; align-items: center; justify-content: center; border-radius: 5px; font-style: normal; font-size: 12px; font-weight: 650; }
+.kind-consult { background: #EAF3FF; color: #2563EB; }
+.kind-contract { background: #EAF8EF; color: #159447; }
+.kind-research { background: #EEF0FF; color: #4F5EDB; }
+.kind-draft { background: #FFF4E5; color: #B86A00; }
+.risk-tag { min-width: 34px; min-height: 25px; border: 1px solid currentColor; background: #FFFFFF; }
+.risk-P0 { color: #E11D48; }
+.risk-P1 { color: #F97316; }
+.risk-P2 { color: #2563EB; }
+.status-cell { color: #2563EB; font-weight: 650; }
+.loading-table { min-height: 472px; }
+.skeleton-row { min-width: 1010px; min-height: 70px; padding: 0 24px; border-bottom: 1px solid #E8EDF3; }
+.skeleton-row i { height: 12px; border-radius: 4px; background: linear-gradient(90deg, #EDF1F5 25%, #F8FAFC 50%, #EDF1F5 75%); background-size: 200% 100%; animation: loading-shimmer 1.25s linear infinite; }
+@keyframes loading-shimmer { to { background-position: -200% 0; } }
+.empty-state { display: grid; min-height: 360px; place-items: center; align-content: center; gap: 8px; border: 1px solid #DCE3EC; border-radius: 7px; background: #FFFFFF; text-align: center; }
+.empty-document { display: grid; width: 48px; height: 48px; margin-bottom: 4px; border: 1px solid #D7E1F0; border-radius: 9px; place-items: center; background: #F5F8FC; color: #2563EB; }
+.empty-document svg { width: 24px; height: 24px; }
+.empty-state strong { color: #334155; font-size: 15px; }
+.empty-state p { margin: 0; color: #7B8798; font-size: 12px; }
+.pagination-footer { display: flex; min-height: 72px; padding: 14px 18px; align-items: center; justify-content: space-between; gap: 18px; border: 1px solid #DCE3EC; border-top: 0; border-radius: 0 0 7px 7px; background: #FFFFFF; }
+.pagination-footer > span { color: #7B8798; font-size: 12px; }
+.pagination-footer nav { display: flex; align-items: center; gap: 7px; }
+.pagination-footer button { display: grid; min-width: 34px; height: 34px; padding: 0 9px; border: 1px solid #D7DFEA; border-radius: 6px; place-items: center; background: #FFFFFF; color: #475569; font: inherit; font-size: 12px; }
+.pagination-footer button:hover:not(:disabled) { border-color: #8DA8D7; color: #2563EB; }
+.pagination-footer button.active { border-color: #2563EB; color: #2563EB; box-shadow: inset 0 0 0 1px #2563EB; }
+.pagination-footer button:disabled { opacity: 0.4; cursor: not-allowed; }
+.pagination-footer svg { width: 16px; height: 16px; }
+.ellipsis { min-width: 24px; color: #94A3B8; text-align: center; }
+@media (max-width: 1180px) { .projects-page { padding-right: 26px; padding-left: 26px; } .heading-copy p, .heading-divider { display: none; } }
+@media (max-width: 760px) {
+  .projects-page { padding: 24px 18px 40px; }
+  .breadcrumb { margin-bottom: 24px; }
+  .heading-row { align-items: flex-start; }
+  .heading-copy h1 { font-size: 32px; }
+  .refresh-button { min-width: 44px; padding: 0 12px; font-size: 0; }
+  .refresh-button svg { width: 18px; height: 18px; }
+  .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summary-cell { min-height: 112px; padding: 24px; }
+  .summary-cell:nth-child(3)::before { display: none; }
+  .summary-cell:nth-child(n+3) { border-top: 1px solid #DCE3EC; }
+  .workflow-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .workflow-tabs button:nth-child(3) { border-top: 1px solid #E5EAF1; border-left: 0; }
+  .workflow-tabs button:nth-child(4) { border-top: 1px solid #E5EAF1; }
+  .project-table { overflow-x: auto; }
+  .pagination-footer { align-items: flex-start; flex-direction: column; }
 }
-.stat-card {
-  display: flex; flex-direction: column; gap: 4px;
-  padding: 18px 22px; border-radius: var(--radius-sm);
-}
-.stat-value { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; }
-.stat-label { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
-@media (max-width: 640px) {
-  .stats-row { grid-template-columns: repeat(2, 1fr); }
-}
-
-.card-stack { display: flex; flex-direction: column; gap: 6px; }
-
-.card-main { display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0; }
-.card-title {
-  font-size: 15px; font-weight: 600; color: var(--text);
-  letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.kind-icon { font-size: 13px; }
-.failed-dot {
-  padding: 2px 8px; border-radius: 8px; font-size: 10px; font-weight: 700;
-  background: rgba(255,59,48,0.10); color: #FF3B30; letter-spacing: 0.02em;
-}
-
-.card-meta-row { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
-.card-creator { font-size: 13px; color: var(--text-secondary); font-weight: 500; }
-.card-time { font-size: 12px; color: var(--text-tertiary); }
 </style>

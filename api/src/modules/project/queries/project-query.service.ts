@@ -10,9 +10,40 @@ const userSelect = { id: true, username: true, displayName: true, role: true };
 export interface ProjectListParams {
   status?: ProjectStatus;
   kind?: ProjectKind;
+  group?: ProjectGroupKey;
   mine?: boolean;
   page?: number;
   size?: number;
+}
+
+export const PROJECT_GROUP_KEYS = ['待处理', '合同协作', '已回传', '数字分身处理'] as const;
+export type ProjectGroupKey = (typeof PROJECT_GROUP_KEYS)[number];
+export const isProjectGroupKey = (value: string | undefined): value is ProjectGroupKey =>
+  Boolean(value && PROJECT_GROUP_KEYS.includes(value as ProjectGroupKey));
+
+/** 与列表投影的优先级保持一致：合同 > LLM > 已结束 > 待处理。 */
+export function projectGroupWhere(group: ProjectGroupKey): Prisma.ProjectWhereInput {
+  switch (group) {
+    case '合同协作':
+      return { kind: ProjectKind.contract };
+    case '数字分身处理':
+      return {
+        kind: { not: ProjectKind.contract },
+        route: 'llm',
+      };
+    case '已回传':
+      return {
+        kind: { not: ProjectKind.contract },
+        route: { not: 'llm' },
+        status: { in: [ProjectStatus.已回传, ProjectStatus.已取消] },
+      };
+    case '待处理':
+      return {
+        kind: { not: ProjectKind.contract },
+        route: { not: 'llm' },
+        status: { notIn: [ProjectStatus.已回传, ProjectStatus.已取消] },
+      };
+  }
 }
 
 /**
@@ -28,15 +59,19 @@ export class ProjectQueryService {
 
   /** 列表：服务端范围过滤 + 分页 + 按状态分组投影 */
   async findAll(actor: ProjectActor, params: ProjectListParams) {
-    const { status, kind, mine, page = 1, size = 20 } = params;
-    const where: Prisma.ProjectWhereInput = mine
+    const { status, kind, group, mine, page = 1, size = 20 } = params;
+    const baseWhere: Prisma.ProjectWhereInput = mine
       ? { creatorId: actor.id }
       : (this.accessPolicy.listScope(actor) as Prisma.ProjectWhereInput);
 
-    if (status) where.status = status;
-    if (kind) where.kind = kind;
+    if (status) baseWhere.status = status;
+    if (kind) baseWhere.kind = kind;
 
-    const [items, total] = await Promise.all([
+    const where: Prisma.ProjectWhereInput = group
+      ? { AND: [baseWhere, projectGroupWhere(group)] }
+      : baseWhere;
+
+    const [items, groupCountValues] = await Promise.all([
       this.prisma.project.findMany({
         where,
         include: {
@@ -48,8 +83,15 @@ export class ProjectQueryService {
         skip: (page - 1) * size,
         take: size,
       }),
-      this.prisma.project.count({ where }),
+      Promise.all(PROJECT_GROUP_KEYS.map((key) => this.prisma.project.count({
+        where: { AND: [baseWhere, projectGroupWhere(key)] },
+      }))),
     ]);
+
+    const groupCounts = Object.fromEntries(
+      PROJECT_GROUP_KEYS.map((key, index) => [key, groupCountValues[index]]),
+    ) as Record<ProjectGroupKey, number>;
+    const total = group ? groupCounts[group] : groupCountValues.reduce((sum, count) => sum + count, 0);
 
     // 脱敏：extra（技能 prompt 快照）不随列表响应返回
     const safeItems = items.map(({ extra: _extra, ...rest }) => rest);
@@ -63,7 +105,7 @@ export class ProjectQueryService {
       else groups['待处理'].push(p);
     }
 
-    return { items: safeItems, groups, total, page, size };
+    return { items: safeItems, groups, groupCounts, total, page, size };
   }
 
   /** 详情：含消息/事件/文件；对象级授权(P1-01);extra 脱敏 */

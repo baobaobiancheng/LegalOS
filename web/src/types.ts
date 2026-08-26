@@ -43,6 +43,7 @@ export type ApiError = {
 export type ProjectKind = 'consult' | 'contract' | 'research' | 'draft'
 export type ProjectStatus = '分析中' | '待处理' | '待复核' | '已回传' | '已取消'
 export type RiskLevel = 'P0' | 'P1' | 'P2'
+export type ProjectGroupKey = '待处理' | '合同协作' | '已回传' | '数字分身处理'
 
 export type ProjectListItem = {
   id: string
@@ -109,7 +110,8 @@ export type EventDto = {
 
 export type ProjectListResponse = {
   items: ProjectListItem[]
-  groups: Record<string, ProjectListItem[]>
+  groups: Record<ProjectGroupKey, ProjectListItem[]>
+  groupCounts: Record<ProjectGroupKey, number>
   total: number
   page: number
   size: number
