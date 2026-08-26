@@ -34,6 +34,18 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /**
+   * 统一登录入口：生产与预发始终走 CAS；本地开发仅固定种子账号走密码旁路。
+   * CAS 失败不降级到本地认证，避免形成隐式绕过路径。
+   */
+  async function signIn(username: string, password: string) {
+    const normalizedUsername = username.trim()
+    const localSeedUsers = new Set(['admin', 'legal_bp', 'business'])
+    return import.meta.env.DEV && localSeedUsers.has(normalizedUsername)
+      ? login(normalizedUsername, password)
+      : casLogin(normalizedUsername, password)
+  }
+
+  /**
    * 恢复会话：内存无 token 时先尝试 refresh（httpOnly cookie 自动携带）
    */
   async function fetchMe() {
@@ -60,5 +72,5 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
   }
 
-  return { user, resolved, isLoggedIn, currentRole, login, casLogin, fetchMe, logout }
+  return { user, resolved, isLoggedIn, currentRole, login, casLogin, signIn, fetchMe, logout }
 })

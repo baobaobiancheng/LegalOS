@@ -1,94 +1,67 @@
 <template>
-  <div class="login-scene">
-    <div class="aurora">
-      <div class="orb orb-1" />
-      <div class="orb orb-2" />
-      <div class="orb orb-3" />
-    </div>
+  <main
+    ref="pageRoot"
+    class="login-page"
+  >
+    <header class="brand-bar">
+      <div class="product-brand">
+        <span class="brand-logo-frame">
+          <img
+            :src="baijianLogo"
+            alt="百鉴"
+          >
+        </span>
+        <strong>LegalOS</strong>
+        <span class="brand-divider" />
+        <span class="brand-description">专业法务智能操作系统</span>
+      </div>
+      <span class="brand-assurance">全球服务覆盖 · 专业可信</span>
+    </header>
 
-    <div class="login-shell animate-in">
-      <!-- 左栏：品牌展示 -->
-      <div class="brand-panel">
-        <div class="brand-top">
-          <div class="brand-mark">
-            <svg
-              width="30"
-              height="30"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="#fff"
-              stroke-width="1.6"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            ><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z" /></svg>
-          </div>
-          <span class="brand-name">Legal Workbench</span>
+    <section class="login-layout">
+      <div class="story-panel">
+        <div class="story-copy">
+          <h1>把法律判断，<br>带到每一次业务决策</h1>
+          <p>统一身份 · 智能协同 · 专业可信</p>
         </div>
 
-        <div class="brand-body">
-          <h1>企业法务<br>智能协同工作台</h1>
-          <p class="brand-sub">
-            统一入口 · 三端协作 · AI 原生驱动
-          </p>
+        <DynamicLegalGlobe class="globe-visual" />
 
-          <div class="brand-features">
-            <div class="bf-item">
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="rgba(255,255,255,0.9)"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              ><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" /></svg>
-              <div><strong>AI 即时答复</strong><small>常规咨询 1 分钟内返回</small></div>
-            </div>
-            <div class="bf-item">
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="rgba(255,255,255,0.9)"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              ><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="M9 12l2 2 4-4" /></svg>
-              <div><strong>风险智能分级</strong><small>P0/P1/P2 自动路由</small></div>
-            </div>
-            <div class="bf-item">
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="rgba(255,255,255,0.9)"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              ><circle
-                cx="12"
-                cy="8"
-                r="4"
-              /><path d="M4 21c0-4 4-6 8-6s8 2 8 6" /></svg>
-              <div><strong>专家全程兜底</strong><small>高风险事项升级人工</small></div>
-            </div>
+        <ul class="sr-only">
+          <li
+            v-for="capability in capabilities"
+            :key="capability"
+          >
+            {{ capability }}
+          </li>
+        </ul>
+
+        <div
+          class="capability-marquee"
+          aria-hidden="true"
+        >
+          <div class="marquee-track">
+            <template
+              v-for="group in 2"
+              :key="group"
+            >
+              <span
+                v-for="capability in capabilities"
+                :key="`${group}-${capability}`"
+                class="capability-item"
+              >
+                {{ capability }}
+              </span>
+            </template>
           </div>
-        </div>
-
-        <div class="brand-footer">
-          <span>© 2026 Legal Workbench · 法务智能平台</span>
         </div>
       </div>
 
-      <!-- 右栏：登录卡 -->
-      <div class="login-panel">
-        <div class="login-card glass-card">
+      <div class="auth-panel">
+        <div class="login-card">
           <div class="login-head">
-            <h2>欢迎回来</h2>
-            <p>登录您的法务工作空间</p>
+            <h2>登录 LegalOS</h2>
+            <p>使用公司统一账号进入法务工作台</p>
           </div>
 
           <transition name="fade">
@@ -98,320 +71,596 @@
               role="alert"
             >
               <svg
-                width="15"
-                height="15"
+                width="16"
+                height="16"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
                 stroke-width="2"
                 stroke-linecap="round"
-              ><circle
-                cx="12"
-                cy="12"
-                r="9"
-              /><line
-                x1="12"
-                y1="8"
-                x2="12"
-                y2="12"
-              /><line
-                x1="12"
-                y1="16"
-                x2="12.01"
-                y2="16"
-              /></svg>
+              >
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="9"
+                />
+                <line
+                  x1="12"
+                  y1="8"
+                  x2="12"
+                  y2="12"
+                />
+                <line
+                  x1="12"
+                  y1="16"
+                  x2="12.01"
+                  y2="16"
+                />
+              </svg>
               <span>{{ errorMsg }}</span>
             </div>
           </transition>
 
-          <!-- 公司账号登录（CAS 方式一；生产/预发唯一入口） -->
           <form
             class="login-form"
-            @submit.prevent="handleCasLogin"
+            @submit.prevent="handleLogin"
           >
             <div class="field">
-              <label>公司账号</label>
+              <label for="login-username">公司账号</label>
               <input
+                id="login-username"
                 v-model="form.username"
-                class="input-apple"
-                placeholder="请输入公司 CAS 账号"
+                class="login-input"
+                placeholder="请输入公司账号"
                 maxlength="128"
                 autocomplete="username"
+                :disabled="loading"
               >
             </div>
+
             <div class="field">
-              <label>密码</label>
-              <input
-                v-model="form.password"
-                class="input-apple"
-                type="password"
-                placeholder="请输入密码"
-                maxlength="128"
-                autocomplete="current-password"
-              >
+              <label for="login-password">密码</label>
+              <div class="password-field">
+                <input
+                  id="login-password"
+                  v-model="form.password"
+                  class="login-input"
+                  :type="showPassword ? 'text' : 'password'"
+                  placeholder="请输入密码"
+                  maxlength="128"
+                  autocomplete="current-password"
+                  :disabled="loading"
+                >
+                <button
+                  class="password-toggle"
+                  type="button"
+                  :aria-label="showPassword ? '隐藏密码' : '显示密码'"
+                  :disabled="loading"
+                  @click="showPassword = !showPassword"
+                >
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
+                    <circle
+                      cx="12"
+                      cy="12"
+                      r="2.5"
+                    />
+                    <path
+                      v-if="!showPassword"
+                      d="M4 4l16 16"
+                    />
+                  </svg>
+                </button>
+              </div>
             </div>
 
             <button
               type="submit"
-              class="btn-primary login-btn"
+              class="login-button"
               :disabled="loading"
             >
               <span
                 v-if="loading"
                 class="spinner"
               />
-              {{ loading ? '验证中…' : '登录' }}
+              {{ loading ? '验证中…' : '登录工作台' }}
             </button>
           </form>
-
-          <!-- 本地开发：种子账号测试三端（仅 dev，生产构建隐藏） -->
-          <template v-if="showLocalDev">
-            <div class="divider">
-              本地测试账号
-            </div>
-            <form
-              class="login-form"
-              @submit.prevent="handleLocalLogin"
-            >
-              <div class="field">
-                <label>本地账号</label>
-                <input
-                  v-model="localForm.username"
-                  class="input-apple"
-                  placeholder="admin / legal_bp / business"
-                  maxlength="64"
-                >
-              </div>
-              <div class="field">
-                <label>密码</label>
-                <input
-                  v-model="localForm.password"
-                  class="input-apple"
-                  type="password"
-                  placeholder="本地种子密码"
-                  maxlength="128"
-                >
-              </div>
-              <button
-                type="submit"
-                class="btn-cas"
-                :disabled="localLoading"
-              >
-                <span
-                  v-if="localLoading"
-                  class="spinner"
-                />
-                {{ localLoading ? '登录中…' : '本地登录' }}
-              </button>
-            </form>
-            <p class="footer-note">
-              本地种子：admin / legal_bp / business
-            </p>
-          </template>
         </div>
       </div>
-    </div>
-  </div>
+    </section>
+  </main>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
-import { useAuthStore } from '../../stores/auth'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { gsap } from 'gsap'
+import { useRoute, useRouter } from 'vue-router'
+import DynamicLegalGlobe from '../../components/DynamicLegalGlobe.vue'
 import { RequestError } from '../../api/client'
+import baijianLogo from '../../assets/logo-header.jpeg'
+import { useAuthStore } from '../../stores/auth'
 import { HOME_BY_ROLE, type Role } from '../../types'
 
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
-
+const pageRoot = ref<HTMLElement | null>(null)
 const form = reactive({ username: '', password: '' })
-const localForm = reactive({ username: '', password: '' })
 const loading = ref(false)
-const localLoading = ref(false)
+const showPassword = ref(false)
 const errorMsg = ref('')
-// 本地测试账号(种子 admin/legal_bp/business)仅 dev 显示；生产/预发只走 CAS 表单
-const showLocalDev = import.meta.env.DEV
+let animationContext: gsap.Context | null = null
+
+const capabilities = ['法律咨询', '合同审查', '法规检索', '风险分级']
 
 const goHome = (user: { role: Role }) => {
   const redirect = (route.query.redirect as string) || HOME_BY_ROLE[user.role]
   return router.replace(redirect)
 }
 
-/** 公司账号登录（CAS 方式一：账号密码 → 后端换 ticket → validate → 登录） */
-async function handleCasLogin() {
-  if (!form.username.trim() || !form.password) {
+async function handleLogin() {
+  const username = form.username.trim()
+  if (!username || !form.password) {
     errorMsg.value = '请输入公司账号和密码'
     return
   }
+
   loading.value = true
   errorMsg.value = ''
   try {
-    const user = await auth.casLogin(form.username.trim(), form.password)
+    const user = await auth.signIn(username, form.password)
     await goHome(user)
   } catch (error) {
-    if (error instanceof RequestError) errorMsg.value = error.payload.error
-    else errorMsg.value = '登录失败，请稍后再试'
+    errorMsg.value = error instanceof RequestError
+      ? error.payload.error
+      : '登录失败，请稍后再试'
   } finally {
     loading.value = false
   }
 }
 
-/** 本地测试登录（仅 dev：种子账号测试三端） */
-async function handleLocalLogin() {
-  if (!localForm.username.trim() || !localForm.password) {
-    errorMsg.value = '请输入本地账号和密码'
-    return
-  }
-  localLoading.value = true
-  errorMsg.value = ''
-  try {
-    const user = await auth.login(localForm.username.trim(), localForm.password)
-    await goHome(user)
-  } catch (error) {
-    if (error instanceof RequestError) errorMsg.value = error.payload.error
-    else errorMsg.value = '登录失败，请稍后再试'
-  } finally {
-    localLoading.value = false
-  }
-}
+onMounted(() => {
+  if (!pageRoot.value || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+
+  animationContext = gsap.context(() => {
+    gsap.from('.brand-bar', {
+      autoAlpha: 0,
+      y: -18,
+      duration: 0.7,
+      ease: 'power2.out',
+    })
+    gsap.from('.story-copy > *', {
+      autoAlpha: 0,
+      y: 28,
+      duration: 0.85,
+      stagger: 0.12,
+      ease: 'power3.out',
+      delay: 0.12,
+    })
+    gsap.from('.login-card', {
+      autoAlpha: 0,
+      y: 34,
+      scale: 0.97,
+      duration: 0.9,
+      ease: 'power3.out',
+      delay: 0.2,
+    })
+  }, pageRoot.value)
+})
+
+onBeforeUnmount(() => animationContext?.revert())
 </script>
 
 <script lang="ts">export default { name: 'LoginView' }</script>
 
 <style scoped>
-.login-scene {
-  min-height: 100vh; display: flex; align-items: center; justify-content: center;
-  position: relative; overflow: hidden;
-  background: #F5F5F7;
+.login-page {
+  --login-text: #111827;
+  --login-secondary: #374151;
+  --login-tertiary: #6B7280;
+  --login-border: #E5E7EB;
+  --login-canvas: #F7F8FA;
+  min-height: 100vh;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--login-text);
+  background:
+    radial-gradient(circle at 22% 46%, rgba(191, 219, 254, 0.52), transparent 42%),
+    var(--login-canvas);
+  font-family: Geist, "Noto Sans SC", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
-.login-shell {
-  position: relative; z-index: 1;
-  display: flex; width: min(960px, 92vw); height: min(600px, 86vh);
-  border-radius: 28px; overflow: hidden;
-  box-shadow: 0 30px 80px rgba(0,0,0,0.12);
+.brand-bar {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 64px;
+  padding: 0 40px;
+  border-bottom: 1px solid var(--login-border);
+  background: rgba(255, 255, 255, 0.92);
 }
 
-/* ── 左栏品牌墙 ── */
-.brand-panel {
-  flex: 1; display: flex; flex-direction: column;
-  padding: 40px 44px; color: #fff;
-  background: linear-gradient(160deg, #1E3A8A 0%, #1E40AF 45%, #2563EB 100%);
+.product-brand {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+}
+
+.brand-logo-frame {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  overflow: hidden;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.brand-logo-frame img {
+  display: block;
+  width: 48px;
+  height: 48px;
+  max-width: none;
+  object-fit: cover;
+}
+
+.product-brand strong {
+  font-size: 21px;
+  font-weight: 720;
+  letter-spacing: -0.025em;
+}
+
+.brand-divider {
+  width: 1px;
+  height: 22px;
+  margin: 0 6px;
+  background: #D1D5DB;
+}
+
+.brand-description,
+.brand-assurance {
+  color: var(--login-secondary);
+  font-size: 14px;
+}
+
+.login-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(420px, 5fr);
+  min-height: calc(100vh - 64px);
+}
+
+.story-panel {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  flex-direction: column;
+  padding: clamp(72px, 9vh, 120px) clamp(52px, 7vw, 120px) 0;
+}
+
+.story-copy {
+  position: relative;
+  z-index: 2;
+}
+
+.story-copy h1 {
+  width: min(760px, 100%);
+  margin: 0;
+  color: #0F1D3A;
+  font-size: clamp(40px, 4.2vw, 68px);
+  font-weight: 650;
+  letter-spacing: -0.045em;
+  line-height: 1.18;
+}
+
+.story-copy p {
+  margin: 24px 0 0;
+  color: #42526E;
+  font-size: clamp(16px, 1.35vw, 20px);
+  letter-spacing: 0.05em;
+}
+
+.globe-visual {
+  position: absolute;
+  z-index: 1;
+  left: -4%;
+  bottom: 48px;
+}
+
+.capability-marquee {
+  position: absolute;
+  z-index: 3;
+  right: 42px;
+  bottom: 0;
+  left: 42px;
+  height: 72px;
+  overflow: hidden;
+  border-top: 1px solid rgba(148, 163, 184, 0.36);
+  background: rgba(247, 248, 250, 0.64);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.marquee-track {
+  display: flex;
+  width: max-content;
+  height: 100%;
+  align-items: center;
+  animation: capability-scroll 24s linear infinite;
+}
+
+.capability-item {
+  display: inline-flex;
+  align-items: center;
+  color: #334155;
+  font-size: 15px;
+  white-space: nowrap;
+}
+
+.capability-item::after {
+  width: 5px;
+  height: 5px;
+  margin: 0 34px;
+  border-radius: 50%;
+  background: #2563EB;
+  content: "";
+}
+
+@keyframes capability-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+.auth-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 48px clamp(36px, 4vw, 72px);
+  border-left: 1px solid rgba(229, 231, 235, 0.78);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.login-card {
+  width: min(100%, 520px);
+  min-height: 600px;
+  padding: clamp(44px, 5vw, 72px);
+  border: 1px solid var(--login-border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.login-head {
+  margin: 72px 0 48px;
+}
+
+.login-head h2 {
+  margin: 0;
+  font-size: clamp(30px, 2.35vw, 40px);
+  font-weight: 680;
+  letter-spacing: -0.035em;
+}
+
+.login-head p {
+  margin: 12px 0 0;
+  color: var(--login-tertiary);
+  font-size: 15px;
+}
+
+.field {
+  margin-bottom: 24px;
+}
+
+.field label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--login-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.password-field {
   position: relative;
 }
-.brand-panel::after {
-  content: ""; position: absolute; inset: 0;
-  background: radial-gradient(circle at 30% 20%, rgba(255,255,255,0.10), transparent 55%),
-              radial-gradient(circle at 80% 80%, rgba(255,255,255,0.06), transparent 50%);
-  pointer-events: none;
+
+.login-input {
+  width: 100%;
+  height: 48px;
+  padding: 0 14px;
+  border: 1px solid #D6DAE1;
+  border-radius: 6px;
+  outline: none;
+  background: #FFFFFF;
+  color: var(--login-text);
+  font: inherit;
+  font-size: 14px;
+  transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
 }
 
-.brand-top { display: flex; align-items: center; gap: 12px; position: relative; z-index: 1; }
-.brand-mark {
-  width: 42px; height: 42px; border-radius: 12px;
-  background: rgba(255,255,255,0.15);
-  border: 1px solid rgba(255,255,255,0.2);
-  display: grid; place-items: center;
-}
-.brand-name { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
-
-.brand-body { flex: 1; display: flex; flex-direction: column; justify-content: center; position: relative; z-index: 1; }
-.brand-body h1 {
-  margin: 0; font-size: 34px; font-weight: 700; line-height: 1.2;
-  letter-spacing: -0.02em;
-}
-.brand-sub {
-  margin: 14px 0 36px; font-size: 14px; font-weight: 400;
-  color: rgba(255,255,255,0.75);
+.password-field .login-input {
+  padding-right: 46px;
 }
 
-.brand-features { display: flex; flex-direction: column; gap: 20px; }
-.bf-item { display: flex; align-items: center; gap: 14px; }
-.bf-item strong { display: block; font-size: 14px; font-weight: 600; }
-.bf-item small { display: block; margin-top: 2px; font-size: 12px; color: rgba(255,255,255,0.65); }
-
-.brand-footer {
-  position: relative; z-index: 1;
-  font-size: 11px; color: rgba(255,255,255,0.45);
+.login-input::placeholder {
+  color: #9CA3AF;
 }
 
-/* ── 右栏登录 ── */
-.login-panel {
-  width: 420px; display: flex; align-items: center; justify-content: center;
-  background: rgba(255,255,255,0.7);
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
+.login-input:hover:not(:disabled) {
+  border-color: #BFD0EB;
 }
-.login-card {
-  width: 100%; height: 100%; border: none; border-radius: 0;
-  background: transparent; backdrop-filter: none;
-  padding: 48px 44px;
-  display: flex; flex-direction: column; justify-content: center;
-}
-.login-head { text-align: left; margin-bottom: 32px; }
-.login-head h2 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.02em; color: #1d1d1f; }
-.login-head p { margin: 6px 0 0; font-size: 14px; color: #86868b; }
 
-.login-form { text-align: left; }
-.field { margin-bottom: 20px; }
-.field label {
-  display: block; margin-bottom: 6px;
-  font-size: 13px; font-weight: 590; color: #1d1d1f; letter-spacing: -0.01em;
+.login-input:focus {
+  border-color: #2563EB;
+  box-shadow: 0 0 0 3px #EFF6FF;
 }
-.login-btn { width: 100%; margin-top: 8px; height: 46px; font-size: 16px; }
 
-/* CAS 登录（T3） */
-.divider {
-  margin: 18px 0; text-align: center; position: relative;
-  color: #aeaeb2; font-size: 12px;
+.login-input:disabled {
+  background: #F3F4F6;
+  color: #9CA3AF;
+  cursor: not-allowed;
 }
-.divider::before,
-.divider::after {
-  content: ""; position: absolute; top: 50%; width: 38%;
-  height: 1px; background: #e5e5ea;
-}
-.divider::before { left: 0; }
-.divider::after { right: 0; }
 
-.btn-cas {
-  width: 100%; height: 46px; margin-top: 8px;
-  border: 1px solid #d2d2d7; border-radius: 12px;
-  background: #fff; color: #1d1d1f;
-  font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
-  cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
-  transition: border-color 0.2s, background 0.2s;
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 6px;
+  place-items: center;
+  background: transparent;
+  color: #6B7280;
 }
-.btn-cas:hover:not(:disabled) { border-color: #2563eb; background: #f5f7ff; }
-.btn-cas:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.password-toggle:hover:not(:disabled) {
+  background: #F3F4F6;
+  color: #2563EB;
+}
+
+.login-button {
+  display: inline-flex;
+  width: 100%;
+  height: 48px;
+  margin-top: 8px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: #2563EB;
+  color: #FFFFFF;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 650;
+  transition: background 180ms ease, transform 180ms ease;
+}
+
+.login-button:hover:not(:disabled) {
+  background: #1D4ED8;
+  transform: translateY(-1px);
+}
+
+.login-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.login-button:disabled {
+  background: #9CA3AF;
+  cursor: not-allowed;
+}
 
 .error-banner {
-  margin-bottom: 16px; padding: 10px 14px;
-  border-radius: 12px;
-  background: rgba(255,59,48,0.08); color: #C41212;
-  font-size: 13px; font-weight: 500; letter-spacing: -0.01em;
-  display: flex; align-items: center; gap: 8px;
-}
-
-.footer-note {
-  margin: 28px 0 0; text-align: center;
-  font-size: 11px; color: #aeaeb2; letter-spacing: 0.01em;
+  display: flex;
+  margin: -24px 0 24px;
+  padding: 12px 14px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #FDA29B;
+  border-radius: 8px;
+  background: #FEF3F2;
+  color: #B42318;
+  font-size: 13px;
 }
 
 .spinner {
-  width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3);
-  border-top-color: #fff; border-radius: 50%;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.36);
+  border-top-color: #FFFFFF;
+  border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
 
-.fade-enter-active { transition: opacity 0.35s ease; }
-.fade-leave-active { transition: opacity 0.2s; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.fade-enter-active { transition: opacity 220ms ease; }
+.fade-leave-active { transition: opacity 160ms ease; }
+.fade-enter-from,
+.fade-leave-to { opacity: 0; }
+
+@media (max-width: 1080px) {
+  .login-layout {
+    grid-template-columns: minmax(0, 6fr) minmax(420px, 6fr);
+  }
+
+  .story-panel {
+    padding-right: 48px;
+    padding-left: 48px;
+  }
+
+  .story-copy h1 {
+    font-size: clamp(38px, 4.7vw, 54px);
+  }
+}
 
 @media (max-width: 860px) {
-  .brand-panel { display: none; }
-  .login-panel { width: 100%; }
-  .login-shell { height: auto; box-shadow: none; }
+  .brand-bar {
+    padding: 0 24px;
+  }
+
+  .brand-description,
+  .brand-assurance,
+  .brand-divider,
+  .story-panel {
+    display: none;
+  }
+
+  .login-layout {
+    display: block;
+    min-height: calc(100vh - 64px);
+  }
+
+  .auth-panel {
+    min-height: calc(100vh - 64px);
+    padding: 24px;
+    border-left: 0;
+    background:
+      radial-gradient(circle at 20% 10%, rgba(191, 219, 254, 0.5), transparent 40%),
+      #F7F8FA;
+  }
+
+  .login-card {
+    min-height: auto;
+    padding: 40px 28px 48px;
+  }
+
+  .login-head {
+    margin: 12px 0 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee-track {
+    animation-play-state: paused;
+  }
 }
 </style>
