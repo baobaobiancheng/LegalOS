@@ -24,7 +24,7 @@ import {
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { Role } from '@prisma/client';
 import { ProjectActor } from './domain/project-access.types';
-import { isProjectGroupKey } from './queries/project-query.service';
+import { isBusinessStatusGroupKey, isProjectGroupKey, isProjectKind } from './queries/project-query.service';
 
 @Controller('projects')
 export class ProjectController {
@@ -51,10 +51,12 @@ export class ProjectController {
   ) {
     const selectedGroup = group && isProjectGroupKey(group) ? group : undefined;
     if (group && !selectedGroup) throw new BadRequestException('未知工单分组');
+    const selectedKind = kind && isProjectKind(kind) ? kind : undefined;
+    if (kind && !selectedKind) throw new BadRequestException('未知工单类型');
     const actor: ProjectActor = { id: userId, role };
     return this.projectService.findAll(actor, {
       status: status as any,
-      kind: kind as any,
+      kind: selectedKind,
       group: selectedGroup,
       page: page ? Number(page) : 1,
       size: size ? Number(size) : 20,
@@ -68,13 +70,23 @@ export class ProjectController {
     @CurrentUser('id') userId: string,
     @CurrentUser('role') role: Role,
     @Query('status') status?: string,
+    @Query('group') group?: string,
+    @Query('kind') kind?: string,
+    @Query('query') query?: string,
     @Query('page') page?: string,
     @Query('size') size?: string,
   ) {
+    const selectedGroup = group && isBusinessStatusGroupKey(group) ? group : undefined;
+    if (group && !selectedGroup) throw new BadRequestException('未知记录分组');
+    const selectedKind = kind && isProjectKind(kind) ? kind : undefined;
+    if (kind && !selectedKind) throw new BadRequestException('未知记录类型');
     const actor: ProjectActor = { id: userId, role };
     return this.projectService.findAll(actor, {
       mine: true,
       status: status as any,
+      statusGroup: selectedGroup,
+      kind: selectedKind,
+      query,
       page: page ? Number(page) : 1,
       size: size ? Number(size) : 20,
     });

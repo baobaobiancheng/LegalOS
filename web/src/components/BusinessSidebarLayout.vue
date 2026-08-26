@@ -1,112 +1,131 @@
 <script setup lang="ts">
+import { computed, useSlots } from 'vue'
 import { useRouter } from 'vue-router'
+import baijianLogo from '../assets/logo-header.jpeg'
 import { useAuthStore } from '../stores/auth'
 
-/**
- * 业务端通用布局（DRY：4 个业务页面共用侧边栏/顶栏/内容骨架）。
- * 用法：
- *   <BusinessSidebarLayout active-key="consult" content-class="chat-content">
- *     <template #topbar>…顶栏内容…</template>
- *     …页面内容…
- *   </BusinessSidebarLayout>
- */
 defineProps<{
   activeKey: 'consult' | 'contract' | 'records'
-  /** 附加到 .app-content 的页面类（如 chat-content / contract-content） */
   contentClass?: string
 }>()
 
 const router = useRouter()
 const auth = useAuthStore()
+const slots = useSlots()
+const hasTopbar = computed(() => Boolean(slots.topbar))
 
-async function handleLogout() { await auth.logout(); await router.replace('/login') }
+const navItems = [
+  {
+    key: 'consult' as const,
+    label: '法律咨询',
+    path: '/business/consult',
+    icon: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/>',
+  },
+  {
+    key: 'contract' as const,
+    label: '合同助手',
+    path: '/business/contract',
+    icon: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h6"/>',
+  },
+  {
+    key: 'records' as const,
+    label: '我的记录',
+    path: '/business/records',
+    icon: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  },
+]
+
+async function handleLogout() {
+  await auth.logout()
+  await router.replace('/login')
+}
 </script>
 
 <template>
-  <div class="app-shell">
-    <div class="aurora">
-      <div class="orb orb-1" /><div class="orb orb-2" /><div class="orb orb-3" />
-    </div>
-
-    <aside class="app-sidebar sidebar-glass">
+  <div class="business-workspace-shell">
+    <aside class="business-sidebar">
       <button
-        class="app-brand"
+        class="workspace-brand"
+        aria-label="返回法律咨询"
         @click="router.push('/business/consult')"
       >
-        <span class="brand-icon">💼</span>
-        <span class="brand-text"><b>Business OS</b><small>业务法律协同空间</small></span>
+        <span class="workspace-logo">
+          <img
+            :src="baijianLogo"
+            alt="百鉴"
+          >
+        </span>
+        <span class="workspace-brand-copy">
+          <strong>LegalOS</strong>
+          <small>专业法务智能操作系统</small>
+        </span>
       </button>
-      <div class="nav-section">
-        <span class="nav-label">业务服务</span>
+
+      <nav
+        class="workspace-nav"
+        aria-label="业务工作台导航"
+      >
         <button
-          class="nav-btn"
-          :class="{ active: activeKey === 'consult' }"
-          @click="router.push('/business/consult')"
+          v-for="item in navItems"
+          :key="item.key"
+          :class="['workspace-nav-item', { active: activeKey === item.key }]"
+          :aria-current="activeKey === item.key ? 'page' : undefined"
+          @click="router.push(item.path)"
         >
-          <span class="nav-ico"><svg
-            width="16"
-            height="16"
+          <svg
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            stroke-width="1.8"
+            stroke-width="1.7"
             stroke-linecap="round"
-          ><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg></span>
-          法律咨询
+            stroke-linejoin="round"
+            aria-hidden="true"
+            v-html="item.icon"
+          />
+          <span>{{ item.label }}</span>
         </button>
-        <button
-          class="nav-btn"
-          :class="{ active: activeKey === 'contract' }"
-          @click="router.push('/business/contract')"
-        >
-          <span class="nav-ico"><svg
-            width="16"
-            height="16"
+      </nav>
+
+      <div class="workspace-secondary-nav">
+        <button disabled>
+          <svg
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            stroke-width="1.8"
+            stroke-width="1.7"
             stroke-linecap="round"
-          ><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line
-            x1="16"
-            y1="13"
-            x2="8"
-            y2="13"
-          /><line
-            x1="16"
-            y1="17"
-            x2="8"
-            y2="17"
-          /></svg></span>
-          合同助手
+            stroke-linejoin="round"
+            aria-hidden="true"
+          ><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" /></svg>
+          <span>知识库</span>
         </button>
-        <button
-          class="nav-btn"
-          :class="{ active: activeKey === 'records' }"
-          @click="router.push('/business/records')"
-        >
-          <span class="nav-ico"><svg
-            width="16"
-            height="16"
+        <button disabled>
+          <svg
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            stroke-width="1.8"
+            stroke-width="1.7"
             stroke-linecap="round"
-          ><path d="M3 5h18M3 12h18M3 19h12" /></svg></span>
-          我的记录
+            stroke-linejoin="round"
+            aria-hidden="true"
+          ><circle
+            cx="12"
+            cy="8"
+            r="4"
+          /><path d="M4 21c0-4 4-6 8-6s8 2 8 6" /></svg>
+          <span>数字分身</span>
         </button>
       </div>
-      <div class="sidebar-footer">
-        <div class="user-avatar">
-          {{ auth.user?.displayName?.[0] || '用' }}
-        </div>
-        <div class="user-info">
-          <span class="user-name">{{ auth.user?.displayName || '用户' }}</span>
-          <span class="user-role">业务人员</span>
-        </div>
+
+      <div class="workspace-user">
+        <span class="workspace-avatar">{{ auth.user?.displayName?.[0] || '业' }}</span>
+        <span class="workspace-user-copy">
+          <strong>{{ auth.user?.displayName || '业务用户' }}</strong>
+          <small>业务人员</small>
+        </span>
         <button
-          class="logout-link"
+          class="workspace-logout"
+          aria-label="退出登录"
           title="退出登录"
           @click="handleLogout"
         >
@@ -114,25 +133,149 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            stroke-width="2"
+            stroke-width="1.8"
             stroke-linecap="round"
-          ><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line
-            x1="21"
-            y1="12"
-            x2="9"
-            y2="12"
-          /></svg>
+            stroke-linejoin="round"
+            aria-hidden="true"
+          ><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5M21 12H9" /></svg>
         </button>
       </div>
     </aside>
 
-    <div class="app-main">
-      <header class="app-topbar topbar-glass">
+    <main :class="['business-workspace-main', { 'has-topbar': hasTopbar }]">
+      <header
+        v-if="hasTopbar"
+        class="app-topbar business-legacy-topbar"
+      >
         <slot name="topbar" />
       </header>
-      <div :class="['app-content', 'animate-in', contentClass]">
+      <div :class="['app-content', contentClass, { 'topbarless-content': !hasTopbar }]">
         <slot />
       </div>
-    </div>
+    </main>
   </div>
 </template>
+
+<style scoped>
+.business-workspace-shell {
+  --workspace-blue: #2563eb;
+  --workspace-blue-weak: #eff6ff;
+  --workspace-canvas: #f7f8fa;
+  --workspace-text: #111827;
+  --workspace-border: #e5e7eb;
+  min-height: 100vh;
+  background: var(--workspace-canvas);
+  color: var(--workspace-text);
+  font-family: Outfit, Geist, "Noto Sans SC", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.business-sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 20;
+  display: flex;
+  width: 254px;
+  height: 100vh;
+  overflow: hidden;
+  flex-direction: column;
+  border-right: 1px solid var(--workspace-border);
+  background: #fff;
+}
+
+.workspace-brand {
+  display: flex;
+  min-height: 162px;
+  padding: 28px 28px 26px;
+  align-items: flex-start;
+  gap: 13px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-logo {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  overflow: hidden;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.workspace-logo img { display: block; width: 62px; height: 62px; max-width: none; object-fit: cover; }
+.workspace-brand-copy { display: grid; min-width: 0; padding-top: 4px; gap: 12px; }
+.workspace-brand-copy strong { color: #0f172a; font-size: 23px; font-weight: 720; letter-spacing: -.035em; }
+.workspace-brand-copy small { width: 156px; color: #526174; font-size: 12px; letter-spacing: .13em; line-height: 1.7; }
+.workspace-nav { display: grid; gap: 2px; }
+
+.workspace-nav-item,
+.workspace-secondary-nav button {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-height: 68px;
+  padding: 0 30px 0 38px;
+  align-items: center;
+  gap: 16px;
+  border: 0;
+  background: transparent;
+  color: #25324a;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 560;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-nav-item svg,
+.workspace-secondary-nav svg { width: 21px; height: 21px; flex: 0 0 auto; }
+.workspace-nav-item::before { position: absolute; inset: 0 auto 0 0; width: 4px; background: transparent; content: ""; }
+.workspace-nav-item:hover { background: #f8fafc; color: var(--workspace-blue); }
+.workspace-nav-item.active { background: linear-gradient(90deg, #eff6ff 0%, #f5f8ff 100%); color: var(--workspace-blue); font-weight: 680; }
+.workspace-nav-item.active::before { background: var(--workspace-blue); }
+
+.workspace-secondary-nav { display: grid; margin: auto 24px 0; padding: 22px 0 18px; border-top: 1px solid var(--workspace-border); }
+.workspace-secondary-nav button { min-height: 58px; padding: 0 12px; color: #61708a; cursor: default; }
+.workspace-user { display: flex; min-height: 112px; margin: 0 24px; padding: 20px 8px; align-items: center; gap: 12px; border-top: 1px solid var(--workspace-border); }
+.workspace-avatar { display: grid; width: 44px; height: 44px; border-radius: 50%; place-items: center; flex: 0 0 auto; background: var(--workspace-blue); color: #fff; font-size: 16px; font-weight: 700; }
+.workspace-user-copy { display: grid; min-width: 0; gap: 4px; }
+.workspace-user-copy strong,
+.workspace-user-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-user-copy strong { color: #1f2937; font-size: 13px; font-weight: 680; }
+.workspace-user-copy small { color: #6b7280; font-size: 12px; }
+.workspace-logout { display: grid; width: 36px; height: 36px; margin-left: auto; padding: 0; border: 0; border-radius: 7px; place-items: center; background: transparent; color: #64748b; cursor: pointer; }
+.workspace-logout:hover { background: #f1f5f9; color: var(--workspace-blue); }
+.workspace-logout svg { width: 20px; height: 20px; }
+
+.business-workspace-main {
+  min-width: 0;
+  min-height: 100vh;
+  height: 100vh;
+  margin-left: 254px;
+  overflow: hidden;
+}
+
+.business-workspace-main > .app-content { width: 100%; height: 100%; }
+.business-workspace-main > .topbarless-content { max-width: none; padding: 0; overflow: hidden; }
+.business-workspace-main.has-topbar > .app-content { height: calc(100vh - 56px); }
+.business-legacy-topbar { background: #fff; border-bottom: 1px solid var(--workspace-border); box-shadow: none; }
+
+@media (max-width: 920px) {
+  .business-sidebar { width: 78px; }
+  .workspace-brand { min-height: 96px; padding: 22px 16px; }
+  .workspace-logo { width: 46px; }
+  .workspace-brand-copy,
+  .workspace-nav-item span,
+  .workspace-secondary-nav span,
+  .workspace-user-copy,
+  .workspace-logout { display: none; }
+  .workspace-nav-item,
+  .workspace-secondary-nav button { justify-content: center; padding: 0; }
+  .workspace-secondary-nav { margin-right: 12px; margin-left: 12px; }
+  .workspace-user { justify-content: center; margin: 0 12px; padding-right: 0; padding-left: 0; }
+  .business-workspace-main { margin-left: 78px; }
+}
+</style>

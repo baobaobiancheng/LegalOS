@@ -1,382 +1,548 @@
-<template>
-  <BusinessSidebarLayout active-key="records">
-    <template #topbar>
-      <div class="tb-left">
-        <small class="tb-path">Business OS</small>
-        <strong class="tb-title">我的记录</strong>
-      </div>
-      <div class="tb-right">
-        <span
-          v-if="!loading"
-          class="tb-count"
-        >{{ filterLabel }} · {{ items.length }} 条</span>
-        <button
-          class="new-btn"
-          @click="router.push('/business/consult')"
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-          ><line
-            x1="12"
-            y1="5"
-            x2="12"
-            y2="19"
-          /><line
-            x1="5"
-            y1="12"
-            x2="19"
-            y2="12"
-          /></svg>
-          新咨询
-        </button>
-      </div>
-    </template>
-    <!-- 统计概览 = 筛选入口 -->
-    <div class="stats-row">
-      <div
-        v-for="s in stats"
-        :key="s.label"
-        :class="['stat-card', 'glass-card', { active: filter === s.filter }]"
-        @click="filter = s.filter"
-      >
-        <div
-          class="stat-icon"
-          :style="{ background: s.bg, color: s.color }"
-        >
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <path
-              v-if="s.icon === 'all'"
-              d="M22 12h-6l-2 3h-4l-2-3H2"
-            /><path
-              v-if="s.icon === 'all'"
-              d="M5.5 5.1L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z"
-            />
-            <circle
-              v-if="s.icon === 'process'"
-              cx="12"
-              cy="12"
-              r="9"
-            /><path
-              v-if="s.icon === 'process'"
-              d="M12 8v4l3 3"
-            />
-            <path
-              v-if="s.icon === 'done'"
-              d="M22 11.08V12a10 10 0 1 1-5.93-9.14"
-            /><polyline
-              v-if="s.icon === 'done'"
-              points="22 4 12 14.01 9 11.01"
-            />
-            <circle
-              v-if="s.icon === 'cancel'"
-              cx="12"
-              cy="12"
-              r="9"
-            /><line
-              v-if="s.icon === 'cancel'"
-              x1="15"
-              y1="9"
-              x2="9"
-              y2="15"
-            /><line
-              v-if="s.icon === 'cancel'"
-              x1="9"
-              y1="9"
-              x2="15"
-              y2="15"
-            />
-          </svg>
-        </div>
-        <div class="stat-body">
-          <span
-            class="stat-value"
-            :style="{ color: s.color }"
-          >{{ s.count }}</span>
-          <span class="stat-label">{{ s.label }}</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Loading -->
-    <template v-if="loading">
-      <div
-        v-for="i in 3"
-        :key="'sk-'+i"
-        class="record-card glass-card"
-        style="cursor:default;transform:none"
-      >
-        <div
-          class="rc-icon skeleton"
-          style="width:42px;height:42px;border-radius:12px"
-        />
-        <div
-          class="rc-main"
-          style="flex:1"
-        >
-          <div
-            class="skeleton"
-            style="width:60%;height:16px;margin-bottom:10px"
-          />
-          <div
-            class="skeleton"
-            style="width:30%;height:12px"
-          />
-        </div>
-      </div>
-    </template>
-
-    <!-- P2-03:主数据加载失败 → 错误态(带 requestId + 重试),不伪装为空态 -->
-    <ErrorState
-      v-else-if="remote.status.value === 'error'"
-      :message="remote.error.value?.payload?.error || '加载失败,请重试'"
-      :request-id="remote.requestId.value"
-      :on-retry="remote.load"
-    />
-
-    <!-- Empty -->
-    <div
-      v-else-if="items.length === 0"
-      class="welcome-hero"
-    >
-      <div class="welcome-icon">
-        <svg
-          width="32"
-          height="32"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="#86868b"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        ><path d="M22 12h-6l-2 3h-4l-2-3H2" /><path d="M5.5 5.1L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z" /></svg>
-      </div>
-      <h2 class="text-h2">
-        {{ filter === '' ? '暂无记录' : '该分类暂无记录' }}
-      </h2>
-      <p class="text-body">
-        您的法律咨询和合同协作记录将显示在这里
-      </p>
-      <button
-        class="btn-primary"
-        style="margin-top:20px"
-        @click="router.push('/business/consult')"
-      >
-        发起咨询
-      </button>
-    </div>
-
-    <!-- List -->
-    <div
-      v-else
-      class="card-stack"
-    >
-      <article
-        v-for="(r, idx) in items"
-        :key="r.id"
-        :class="['record-card', 'glass-card', 'risk-' + r.risk]"
-        :style="{ animationDelay: idx * 0.04 + 's' }"
-        @click="router.push('/business/records/' + r.id)"
-      >
-        <div
-          class="rc-icon"
-          :class="'kind-' + r.kind"
-          v-html="kindIcon(r.kind)"
-        />
-        <div class="rc-main">
-          <div class="rc-title-row">
-            <span class="rc-title">{{ r.title }}</span>
-            <span :class="['status-chip', 'status-' + r.status]">{{ r.status }}</span>
-          </div>
-          <div class="rc-sub-row">
-            <span class="rc-kind">{{ kindLabel(r.kind) }}</span>
-            <span :class="['risk-chip', 'risk-' + r.risk + '-bg']">{{ r.risk }}</span>
-            <span class="rc-time">{{ fmtTime(r.createdAt) }}</span>
-          </div>
-        </div>
-        <svg
-          class="rc-arrow"
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="#c7c7cc"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        ><path d="M9 18l6-6-6-6" /></svg>
-      </article>
-    </div>
-  </BusinessSidebarLayout>
-</template>
-
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { gsap } from 'gsap'
 import { useRouter } from 'vue-router'
 import { request } from '../../api/client'
 import BusinessSidebarLayout from '../../components/BusinessSidebarLayout.vue'
 import ErrorState from '../../components/ErrorState.vue'
 import { useRemoteData } from '../../composables/useRemoteData'
-import type { ProjectListItem } from '../../types'
-import { ALL_PROJECT_STATUSES, isStatusInGroup } from '../../domain/project-status'
+import { buildPagination } from '../../domain/legal-research'
+import { statusClass } from '../../domain/project-status'
+import type { ProjectKind, ProjectListResponse, ProjectStatus } from '../../types'
+
+const PAGE_SIZE = 10
+type RecordGroup = '' | 'processing' | 'completed' | 'cancelled'
 
 const router = useRouter()
-const filter = ref('')  // ''全部 | process处理中 | 已回传 | 已取消
+const pageRoot = ref<HTMLElement | null>(null)
+const activeGroup = ref<RecordGroup>('')
+const currentPage = ref(1)
+const kind = ref<'' | ProjectKind>('')
+const searchDraft = ref('')
+const searchQuery = ref('')
+let animationContext: gsap.Context | null = null
 
-// P2-03：主数据用统一异步状态(loading/error/empty 严格区分),失败不再伪装成"暂无记录"
-const remote = useRemoteData(() =>
-  request<{ items: ProjectListItem[] }>('/projects/mine?page=1&size=100'),
-)
+const requestUrl = computed(() => {
+  const params = new URLSearchParams({
+    page: String(currentPage.value),
+    size: String(PAGE_SIZE),
+  })
+  if (activeGroup.value) params.set('group', activeGroup.value)
+  if (kind.value) params.set('kind', kind.value)
+  if (searchQuery.value) params.set('query', searchQuery.value)
+  return `/projects/mine?${params.toString()}`
+})
+
+const remote = useRemoteData(() => request<ProjectListResponse>(requestUrl.value))
 const loading = computed(() => remote.status.value === 'loading')
-const allItems = computed(() => remote.data.value?.items ?? [])
-
-// 当前筛选后的展示列表（P2-02：分组从唯一配置派生，待处理 已包含在 processing）
-const items = computed(() => {
-  if (filter.value === '') return allItems.value
-  if (filter.value === 'process') {
-    return allItems.value.filter(i => isStatusInGroup(i.status, 'processing'))
-  }
-  return allItems.value.filter(i => i.status === filter.value)
-})
-
-// 状态统计（基于全部数据；P2-02：五种状态都初始化，待处理 不再缺失）
-const statusCount = computed(() => {
-  const c: Record<string, number> = {}
-  for (const s of ALL_PROJECT_STATUSES) c[s] = 0
-  for (const i of allItems.value) c[i.status] = (c[i.status] || 0) + 1
-  return c
-})
-
-// 处理中 = processing 分组内状态之和
+const items = computed(() => remote.data.value?.items ?? [])
+const total = computed(() => remote.data.value?.total ?? 0)
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
+const pagination = computed(() => buildPagination(currentPage.value, totalPages.value))
+const emptyStatusCounts: Record<ProjectStatus, number> = {
+  分析中: 0,
+  待处理: 0,
+  待复核: 0,
+  已回传: 0,
+  已取消: 0,
+}
+const statusCounts = computed(() => remote.data.value?.statusCounts ?? emptyStatusCounts)
 const processingCount = computed(() =>
-  ALL_PROJECT_STATUSES.reduce((sum, s) => (isStatusInGroup(s, 'processing') ? sum + (statusCount.value[s] || 0) : sum), 0),
+  statusCounts.value.分析中 + statusCounts.value.待处理 + statusCounts.value.待复核,
 )
-
-const stats = computed(() => [
-  { label: '全部记录', count: allItems.value.length, color: '#1d1d1f', icon: 'all', bg: '#f0f0f0', filter: '' },
-  { label: '处理中', count: processingCount.value, color: '#0055B3', icon: 'process', bg: '#e8f0fe', filter: 'process' },
-  { label: '已回传', count: statusCount.value['已回传'] || 0, color: '#0E7A3C', icon: 'done', bg: '#e6f4ea', filter: '已回传' },
-  { label: '已取消', count: statusCount.value['已取消'] || 0, color: '#5A5A5E', icon: 'cancel', bg: '#f0f0f0', filter: '已取消' },
+const allCount = computed(() => Object.values(statusCounts.value).reduce((sum, count) => sum + count, 0))
+const groups = computed<Array<{ key: RecordGroup; label: string; count: number }>>(() => [
+  { key: '', label: '全部', count: allCount.value },
+  { key: 'processing', label: '处理中', count: processingCount.value },
+  { key: 'completed', label: '已回传', count: statusCounts.value.已回传 },
+  { key: 'cancelled', label: '已取消', count: statusCounts.value.已取消 },
+])
+const summary = computed(() => [
+  { label: '全部记录', count: allCount.value },
+  { label: '处理中', count: processingCount.value },
+  { label: '已回传', count: statusCounts.value.已回传 },
+  { label: '已取消', count: statusCounts.value.已取消 },
 ])
 
-const filterLabel = computed(() =>
-  ({ '': '全部记录', process: '处理中', 已回传: '已回传', 已取消: '已取消' })[filter.value] || '全部记录'
-)
+const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
-onMounted(remote.load)
-
-const kindLabel = (k: string) => ({ consult: '咨询', contract: '合同', research: '检索', draft: '文书' })[k] || k
-const kindIcon = (k: string) => ({
-  consult: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
-  contract: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
-  research: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
-  draft: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>',
-})[k] || '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>'
-// 后端返回 UTC ISO，需转本地时区（slice 截取会差 8 小时）
-const fmtTime = (t: string) => {
-  const d = new Date(t)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+async function animateRows() {
+  if (reducedMotion()) return
+  await nextTick()
+  animationContext?.add(() => {
+    gsap.fromTo(
+      '.record-row',
+      { autoAlpha: 0, y: 10 },
+      { autoAlpha: 1, y: 0, duration: .38, stagger: .035, ease: 'power2.out', overwrite: true },
+    )
+  })
 }
 
+async function loadRecords() {
+  await remote.load()
+  const maximumPage = Math.max(1, Math.ceil((remote.data.value?.total ?? 0) / PAGE_SIZE))
+  if (currentPage.value > maximumPage) {
+    currentPage.value = maximumPage
+    await remote.load()
+  }
+  await animateRows()
+}
+
+async function selectGroup(group: RecordGroup) {
+  if (loading.value || group === activeGroup.value) return
+  activeGroup.value = group
+  currentPage.value = 1
+  await loadRecords()
+}
+
+async function selectKind() {
+  currentPage.value = 1
+  await loadRecords()
+}
+
+async function applySearch() {
+  if (loading.value) return
+  const value = searchDraft.value.trim()
+  if (value === searchQuery.value) return
+  searchQuery.value = value
+  currentPage.value = 1
+  await loadRecords()
+}
+
+async function clearSearchWhenEmpty() {
+  if (!searchDraft.value && searchQuery.value) await applySearch()
+}
+
+async function goToPage(page: number) {
+  if (loading.value || page === currentPage.value || page < 1 || page > totalPages.value) return
+  currentPage.value = page
+  await loadRecords()
+  pageRoot.value?.querySelector('.records-toolbar')?.scrollIntoView({
+    behavior: reducedMotion() ? 'auto' : 'smooth',
+    block: 'start',
+  })
+}
+
+const kindLabel = (value: ProjectKind) => ({
+  consult: '咨询',
+  contract: '合同',
+  research: '检索',
+  draft: '文书',
+})[value]
+
+const formatTime = (value: string) => {
+  const date = new Date(value)
+  const pad = (number: number) => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}  ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+onMounted(async () => {
+  if (pageRoot.value) {
+    animationContext = gsap.context(() => {
+      if (reducedMotion()) return
+      gsap.from('.records-heading > *', {
+        autoAlpha: 0,
+        y: 18,
+        duration: .58,
+        stagger: .08,
+        ease: 'power2.out',
+      })
+      gsap.from('.summary-cell', {
+        autoAlpha: 0,
+        y: 14,
+        duration: .46,
+        stagger: .06,
+        delay: .12,
+        ease: 'power2.out',
+      })
+    }, pageRoot.value)
+  }
+  await loadRecords()
+})
+
+onBeforeUnmount(() => animationContext?.revert())
 </script>
+
+<template>
+  <BusinessSidebarLayout active-key="records">
+    <div
+      ref="pageRoot"
+      class="records-page"
+    >
+      <header class="records-heading">
+        <p class="breadcrumb">
+          业务工作台 <span>/</span> 我的记录
+        </p>
+        <div class="heading-row">
+          <div class="heading-copy">
+            <h1>我的记录</h1>
+            <span class="heading-divider" />
+            <p>集中查看法律咨询与合同协作进度，快速回到未完成事项</p>
+          </div>
+          <button
+            class="new-consult-button"
+            @click="router.push('/business/consult')"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              aria-hidden="true"
+            ><path d="M12 5v14M5 12h14" /></svg>
+            发起新咨询
+          </button>
+        </div>
+      </header>
+
+      <section
+        class="summary-grid"
+        aria-label="记录统计"
+      >
+        <div
+          v-for="stat in summary"
+          :key="stat.label"
+          class="summary-cell"
+        >
+          <span>{{ stat.label }}</span>
+          <strong>{{ stat.count }}</strong>
+        </div>
+      </section>
+
+      <div class="records-toolbar">
+        <nav aria-label="记录状态">
+          <button
+            v-for="group in groups"
+            :key="group.key || 'all'"
+            :class="{ active: activeGroup === group.key }"
+            :aria-current="activeGroup === group.key ? 'page' : undefined"
+            :disabled="loading"
+            @click="selectGroup(group.key)"
+          >
+            {{ group.label }} <span>{{ group.count }}</span>
+          </button>
+        </nav>
+        <div class="filters">
+          <label class="search-field">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              aria-hidden="true"
+            ><circle
+              cx="11"
+              cy="11"
+              r="7"
+            /><path d="m20 20-4-4" /></svg>
+            <input
+              v-model="searchDraft"
+              type="search"
+              placeholder="搜索记录标题"
+              :disabled="loading"
+              @keydown.enter="applySearch"
+              @input="clearSearchWhenEmpty"
+            >
+          </label>
+          <label class="kind-filter">
+            <span class="sr-only">记录类型</span>
+            <select
+              v-model="kind"
+              :disabled="loading"
+              @change="selectKind"
+            >
+              <option value="">
+                全部类型
+              </option>
+              <option value="consult">
+                法律咨询
+              </option>
+              <option value="contract">
+                合同
+              </option>
+              <option value="research">
+                检索
+              </option>
+              <option value="draft">
+                文书
+              </option>
+            </select>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              aria-hidden="true"
+            ><path d="m7 10 5 5 5-5" /></svg>
+          </label>
+        </div>
+      </div>
+
+      <section class="records-table-section">
+        <div
+          v-if="loading"
+          class="records-table loading-table"
+          aria-label="正在加载记录"
+        >
+          <div class="table-head">
+            <span>类型</span><span>标题</span><span>风险</span><span>创建时间</span><span>更新时间</span><span>状态</span><span />
+          </div>
+          <div
+            v-for="index in PAGE_SIZE"
+            :key="index"
+            class="skeleton-row"
+          >
+            <i
+              v-for="cell in 7"
+              :key="cell"
+            />
+          </div>
+        </div>
+
+        <ErrorState
+          v-else-if="remote.status.value === 'error'"
+          :message="remote.error.value?.payload.error || '记录加载失败，请重试'"
+          :request-id="remote.requestId.value"
+          :on-retry="loadRecords"
+        />
+
+        <div
+          v-else-if="items.length === 0"
+          class="empty-state"
+        >
+          <span class="empty-icon">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              aria-hidden="true"
+            ><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6M8 13h8M8 17h5" /></svg>
+          </span>
+          <strong>没有找到匹配记录</strong>
+          <p>调整状态、类型或标题关键词后再试。</p>
+        </div>
+
+        <div
+          v-else
+          class="records-table"
+          role="table"
+          aria-label="我的记录列表"
+        >
+          <div
+            class="table-head"
+            role="row"
+          >
+            <span role="columnheader">类型</span>
+            <span role="columnheader">标题</span>
+            <span role="columnheader">风险</span>
+            <span role="columnheader">创建时间</span>
+            <span role="columnheader">更新时间</span>
+            <span role="columnheader">状态</span>
+            <span role="columnheader" />
+          </div>
+          <button
+            v-for="record in items"
+            :key="record.id"
+            class="record-row"
+            role="row"
+            :aria-label="`查看记录：${record.title}`"
+            @click="router.push('/business/records/' + record.id)"
+          >
+            <span role="cell"><i :class="['kind-tag', `kind-${record.kind}`]">{{ kindLabel(record.kind) }}</i></span>
+            <span
+              class="record-title"
+              role="cell"
+            >{{ record.title }}</span>
+            <span role="cell"><i :class="['risk-tag', `risk-${record.risk}`]">{{ record.risk }}</i></span>
+            <span role="cell">{{ formatTime(record.createdAt) }}</span>
+            <span role="cell">{{ formatTime(record.updatedAt || record.createdAt) }}</span>
+            <span
+              :class="['status-cell', statusClass(record.status)]"
+              role="cell"
+            >{{ record.status }}</span>
+            <span
+              class="row-arrow"
+              role="cell"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                aria-hidden="true"
+              ><path d="m9 18 6-6-6-6" /></svg>
+            </span>
+          </button>
+        </div>
+
+        <footer
+          v-if="!loading && remote.status.value === 'success'"
+          class="pagination-footer"
+        >
+          <span>第 {{ currentPage }} / {{ totalPages }} 页&nbsp;&nbsp;·&nbsp;&nbsp;共 {{ total }} 条&nbsp;&nbsp;·&nbsp;&nbsp;每页 {{ PAGE_SIZE }} 条</span>
+          <nav aria-label="记录分页">
+            <button
+              aria-label="上一页"
+              :disabled="currentPage <= 1"
+              @click="goToPage(currentPage - 1)"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                aria-hidden="true"
+              ><path d="m15 18-6-6 6-6" /></svg>
+            </button>
+            <template
+              v-for="item in pagination"
+              :key="item.key"
+            >
+              <span
+                v-if="item.type === 'ellipsis'"
+                class="ellipsis"
+              >…</span>
+              <button
+                v-else
+                :class="{ active: item.page === currentPage }"
+                :aria-current="item.page === currentPage ? 'page' : undefined"
+                @click="goToPage(item.page)"
+              >
+                {{ item.page }}
+              </button>
+            </template>
+            <button
+              aria-label="下一页"
+              :disabled="currentPage >= totalPages"
+              @click="goToPage(currentPage + 1)"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                aria-hidden="true"
+              ><path d="m9 18 6-6-6-6" /></svg>
+            </button>
+          </nav>
+        </footer>
+      </section>
+    </div>
+  </BusinessSidebarLayout>
+</template>
 
 <script lang="ts">export default { name: 'RecordsView' }</script>
 
 <style scoped>
-.tb-left { display: flex; align-items: baseline; gap: 10px; }
-.tb-path { font-size: 11px; color: var(--text-tertiary); font-weight: 590; }
-.tb-title { font-size: 14px; font-weight: 650; color: var(--text); letter-spacing: -0.01em; }
-.tb-right { display: flex; align-items: center; gap: 14px; }
-.tb-count { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
-.new-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 7px 16px; border: none; border-radius: 18px;
-  background: #1E3A8A; color: #fff;
-  font-family: inherit; font-size: 12px; font-weight: 600;
-  cursor: pointer; transition: all 0.3s var(--spring);
-}
-.new-btn:hover { background: #1E40AF; transform: translateY(-1px); box-shadow: 0 6px 20px rgba(30,58,138,0.25); }
+.records-page { width: min(100%, 1540px); min-height: 100vh; margin: 0 auto; padding: 34px 38px 48px; overflow-y: auto; color: #111827; }
+.records-heading { margin-bottom: 28px; }
+.breadcrumb { margin: 0 0 30px; color: #53627a; font-size: 13px; }
+.breadcrumb span { margin: 0 10px; color: #a8b1bf; }
+.heading-row { display: flex; align-items: center; justify-content: space-between; gap: 28px; }
+.heading-copy { display: flex; min-width: 0; align-items: center; gap: 18px; }
+.heading-copy h1 { margin: 0; color: #0b1222; font-size: clamp(34px, 3.2vw, 46px); font-weight: 680; letter-spacing: -.045em; line-height: 1; white-space: nowrap; }
+.heading-divider { width: 1px; height: 36px; flex: 0 0 auto; background: #cbd5e1; }
+.heading-copy p { margin: 0; color: #526174; font-size: 14px; white-space: nowrap; }
+.new-consult-button { display: inline-flex; min-width: 136px; height: 44px; padding: 0 16px; align-items: center; justify-content: center; gap: 8px; border: 1px solid #0f5fff; border-radius: 6px; background: #0f5fff; color: #fff; font: inherit; font-size: 14px; font-weight: 620; cursor: pointer; transition: background 160ms ease, transform 160ms ease; }
+.new-consult-button:hover { transform: translateY(-1px); background: #004dcc; }
+.new-consult-button svg { width: 18px; height: 18px; }
+.summary-grid { display: grid; overflow: hidden; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 24px; border: 1px solid #dce3ec; border-radius: 8px; background: #fff; }
+.summary-cell { position: relative; display: grid; min-height: 112px; padding: 24px 34px; align-content: space-between; gap: 14px; }
+.summary-cell + .summary-cell::before { position: absolute; inset: 22px auto 22px 0; width: 1px; background: #dce3ec; content: ""; }
+.summary-cell span { color: #526174; font-size: 13px; }
+.summary-cell strong { color: #0f172a; font-size: 34px; font-weight: 620; letter-spacing: -.04em; line-height: 1; }
+.records-toolbar { display: flex; scroll-margin-top: 20px; margin-bottom: 12px; align-items: stretch; justify-content: space-between; gap: 24px; }
+.records-toolbar > nav { display: grid; min-width: 560px; overflow: hidden; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid #d7dfea; border-radius: 7px; background: #fff; }
+.records-toolbar > nav button { position: relative; min-height: 52px; border: 0; border-left: 1px solid #e5eaf1; background: #fff; color: #4b5568; font: inherit; font-size: 14px; cursor: pointer; }
+.records-toolbar > nav button:first-child { border-left: 0; }
+.records-toolbar > nav button::after { position: absolute; inset: auto 0 0; height: 3px; background: transparent; content: ""; }
+.records-toolbar > nav button:hover:not(:disabled) { background: #f8fafc; color: #2563eb; }
+.records-toolbar > nav button.active { color: #2563eb; }
+.records-toolbar > nav button.active::after { background: #2563eb; }
+.records-toolbar > nav button span { margin-left: 7px; font-weight: 600; }
+.filters { display: flex; min-width: 430px; gap: 12px; }
+.search-field,
+.kind-filter { display: flex; height: 52px; align-items: center; border: 1px solid #d7dfea; border-radius: 7px; background: #fff; color: #66758b; }
+.search-field { min-width: 268px; padding: 0 14px; gap: 9px; }
+.search-field svg { width: 18px; height: 18px; flex: 0 0 auto; }
+.search-field input { min-width: 0; width: 100%; border: 0; outline: 0; background: transparent; color: #24324a; font: inherit; font-size: 13px; }
+.search-field input::placeholder { color: #8a96a8; }
+.kind-filter { position: relative; min-width: 150px; }
+.kind-filter select { width: 100%; height: 100%; padding: 0 38px 0 16px; appearance: none; border: 0; outline: 0; background: transparent; color: #334155; font: inherit; font-size: 13px; cursor: pointer; }
+.kind-filter > svg { position: absolute; right: 13px; width: 17px; height: 17px; pointer-events: none; }
+.records-table-section { min-width: 0; }
+.records-table { overflow-x: auto; border: 1px solid #dce3ec; border-radius: 7px 7px 0 0; background: #fff; }
+.table-head,
+.record-row,
+.skeleton-row { display: grid; min-width: 1050px; grid-template-columns: 82px minmax(280px, 2.4fr) 76px 168px 168px 92px 24px; align-items: center; column-gap: 18px; }
+.table-head { min-height: 48px; padding: 0 24px; border-bottom: 1px solid #e5eaf1; color: #69768a; font-size: 12px; font-weight: 650; }
+.record-row { width: 100%; min-height: 58px; padding: 0 24px; border: 0; border-bottom: 1px solid #e8edf3; background: #fff; color: #40506a; font: inherit; font-size: 12px; text-align: left; cursor: pointer; transition: background 150ms ease, box-shadow 150ms ease; }
+.record-row:last-child { border-bottom: 0; }
+.record-row:hover,
+.record-row:focus-visible { position: relative; z-index: 1; outline: 0; background: #f7faff; box-shadow: inset 3px 0 0 #2563eb, 0 0 0 1px #2563eb; }
+.record-title { overflow: hidden; color: #1f2937; font-size: 13px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.kind-tag,
+.risk-tag { display: inline-flex; width: max-content; min-width: 37px; min-height: 25px; padding: 0 7px; align-items: center; justify-content: center; border-radius: 5px; font-style: normal; font-size: 11px; font-weight: 650; }
+.kind-consult { background: #eaf3ff; color: #2563eb; }
+.kind-contract { background: #eaf8ef; color: #159447; }
+.kind-research { background: #eef0ff; color: #4f5edb; }
+.kind-draft { background: #fff4e5; color: #b86a00; }
+.risk-tag { min-width: 32px; min-height: 23px; border: 1px solid currentColor; background: #fff; }
+.risk-P0 { color: #e11d48; }
+.risk-P1 { color: #f97316; }
+.risk-P2 { color: #2563eb; }
+.status-cell { font-weight: 650; }
+.status-info,
+.status-warning { color: #2563eb; }
+.status-success { color: #159447; }
+.status-neutral { color: #64748b; }
+.row-arrow { display: grid; place-items: center; color: #64748b; }
+.row-arrow svg { width: 17px; height: 17px; }
+.loading-table { min-height: 628px; }
+.skeleton-row { min-height: 58px; padding: 0 24px; border-bottom: 1px solid #e8edf3; }
+.skeleton-row i { height: 11px; border-radius: 3px; background: linear-gradient(90deg, #edf1f5 25%, #f8fafc 50%, #edf1f5 75%); background-size: 200% 100%; animation: loading-shimmer 1.25s linear infinite; }
+@keyframes loading-shimmer { to { background-position: -200% 0; } }
+.empty-state { display: grid; min-height: 420px; place-items: center; align-content: center; gap: 8px; border: 1px solid #dce3ec; border-radius: 7px 7px 0 0; background: #fff; text-align: center; }
+.empty-icon { display: grid; width: 48px; height: 48px; margin-bottom: 4px; border: 1px solid #d7e1f0; border-radius: 9px; place-items: center; background: #f5f8fc; color: #2563eb; }
+.empty-icon svg { width: 24px; height: 24px; }
+.empty-state strong { color: #334155; font-size: 15px; }
+.empty-state p { margin: 0; color: #7b8798; font-size: 12px; }
+.pagination-footer { display: flex; min-height: 60px; padding: 10px 18px; align-items: center; justify-content: space-between; gap: 18px; border: 1px solid #dce3ec; border-top: 0; border-radius: 0 0 7px 7px; background: #fff; }
+.pagination-footer > span { color: #718096; font-size: 12px; }
+.pagination-footer nav { display: flex; align-items: center; gap: 7px; }
+.pagination-footer button { display: grid; min-width: 34px; height: 34px; padding: 0 9px; border: 1px solid #d7dfea; border-radius: 6px; place-items: center; background: #fff; color: #475569; font: inherit; font-size: 12px; }
+.pagination-footer button:hover:not(:disabled) { border-color: #8da8d7; color: #2563eb; }
+.pagination-footer button.active { border-color: #2563eb; color: #2563eb; box-shadow: inset 0 0 0 1px #2563eb; }
+.pagination-footer button:disabled { opacity: .4; cursor: not-allowed; }
+.pagination-footer svg { width: 16px; height: 16px; }
+.ellipsis { min-width: 24px; color: #94a3b8; text-align: center; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
-/* ── 统计概览 = 筛选入口 ── */
-.stats-row {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
-  margin-bottom: 28px;
-}
-.stat-card {
-  display: flex; align-items: center; gap: 14px;
-  padding: 18px 20px; border-radius: var(--radius-sm);
-  cursor: pointer; position: relative;
-  border: 1.5px solid transparent;
-  transition: all 0.25s var(--spring);
-}
-.stat-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.08); }
-.stat-card.active {
-  border-color: #1E3A8A;
-  background: rgba(255,255,255,0.95);
-  box-shadow: 0 8px 28px rgba(30,58,138,0.12);
-}
-.stat-card.active::after {
-  content: ""; position: absolute; bottom: 0; left: 20px; right: 20px;
-  height: 2px; border-radius: 1px; background: #1E3A8A;
-}
-.stat-icon {
-  width: 40px; height: 40px; border-radius: 12px;
-  display: grid; place-items: center; flex-shrink: 0;
-}
-.stat-body { display: flex; flex-direction: column; gap: 2px; }
-.stat-value { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; }
-.stat-label { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
-@media (max-width: 640px) {
-  .stats-row { grid-template-columns: repeat(2, 1fr); }
+@media (max-width: 1220px) {
+  .records-page { padding-right: 26px; padding-left: 26px; }
+  .heading-copy p,
+  .heading-divider { display: none; }
+  .records-toolbar { align-items: stretch; flex-direction: column; }
+  .records-toolbar > nav { min-width: 0; }
+  .filters { min-width: 0; justify-content: flex-end; }
 }
 
-/* ── 记录卡片 ── */
-.card-stack { display: flex; flex-direction: column; gap: 8px; }
-.record-card {
-  display: flex; align-items: center; gap: 16px;
-  padding: 16px 20px; border-radius: var(--radius-sm);
-  cursor: pointer; transition: all 0.3s var(--spring);
-  /* 性能修复（2026-08-05）：滚动列表内禁用 backdrop-filter（滚动时每帧重采样背景 → 明显卡顿）；
-     背景已是半透明白 rgba(255,255,255,0.80)，视觉近似毛玻璃 */
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+@media (max-width: 760px) {
+  .records-page { padding: 24px 18px 38px; }
+  .breadcrumb { margin-bottom: 24px; }
+  .heading-copy h1 { font-size: 32px; }
+  .new-consult-button { min-width: 44px; padding: 0 12px; font-size: 0; }
+  .new-consult-button svg { width: 20px; height: 20px; }
+  .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summary-cell { min-height: 96px; padding: 20px; }
+  .summary-cell:nth-child(3)::before { display: none; }
+  .records-toolbar > nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .filters { flex-direction: column; }
+  .search-field,
+  .kind-filter { min-width: 0; width: 100%; }
+  .pagination-footer { align-items: flex-start; flex-direction: column; }
 }
-.record-card:hover {
-  transform: translateX(4px);
-  box-shadow: 0 10px 30px rgba(0,0,0,0.08);
-}
-.record-card:hover .rc-arrow { color: #1E3A8A; transform: translateX(2px); }
-
-.rc-icon {
-  width: 42px; height: 42px; border-radius: 12px;
-  display: grid; place-items: center; flex-shrink: 0;
-}
-.rc-icon.kind-consult { background: rgba(0,113,227,0.08); color: #0055B3; }
-.rc-icon.kind-contract { background: rgba(52,199,89,0.08); color: #0E7A3C; }
-.rc-icon.kind-research { background: rgba(175,82,222,0.08); color: #8B3CC0; }
-.rc-icon.kind-draft { background: rgba(255,149,0,0.08); color: #C46200; }
-
-.rc-main { flex: 1; min-width: 0; }
-.rc-title-row { display: flex; align-items: center; gap: 10px; }
-.rc-title { font-size: 15px; font-weight: 600; color: var(--text); letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.rc-sub-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
-.rc-kind { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
-.rc-time { font-size: 12px; color: var(--text-tertiary); }
-
-.rc-arrow { flex-shrink: 0; transition: all 0.25s; }
 </style>

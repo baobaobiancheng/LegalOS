@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
-import { useAuthStore } from '../../stores/auth'
+import { gsap } from 'gsap'
 import { request, RequestError } from '../../api/client'
 import { requestStreamOrJson, type ConsultStreamEvent } from '../../api/sse'
 import { useFileUpload } from '../../composables/useFileUpload'
@@ -11,11 +11,10 @@ import DownloadMenu from '../../components/DownloadMenu.vue'
 import ChatInputBar from '../../components/ChatInputBar.vue'
 import BusinessSidebarLayout from '../../components/BusinessSidebarLayout.vue'
 import ErrorState from '../../components/ErrorState.vue'
-import type { Skill, ProjectDetail } from '../../types'
-import { GENERAL_SKILL } from '../../types'
+import type { ProjectDetail } from '../../types'
 
-const auth = useAuthStore()
 const { buildFullInput, buildDisplayText, formatSize } = useFileUpload()
+const pageRoot = ref<HTMLElement | null>(null)
 
 const sending = ref(false)
 const upgrading = ref(false)
@@ -47,26 +46,10 @@ const thinkingTail = computed(() => {
   return boundary >= 0 ? tail.slice(boundary + 1) : tail
 })
 
-// 技能选择（2026-08-04 技能库模块）：默认兜底"通用法务咨询"（skillId=null 不注入）
-// 交互（frontend-design 重设计）：欢迎页领域卡片选择（对话方向感），对话开始后不再显示
-const usableSkills = ref<Skill[]>([])
-const selectedSkill = ref<{ id?: string; name: string }>({ name: GENERAL_SKILL.name })
-const skillsError = ref<RequestError | null>(null)
 const lastError = ref<RequestError | null>(null)
 type ConsultationCapability = 'general' | 'law_search' | 'similar_case'
 const selectedCapability = ref<ConsultationCapability>('general')
 const lastSubmission = ref<{ text: string; files: AttachedFile[]; capability: ConsultationCapability } | null>(null)
-
-const loadSkills = async () => {
-  try {
-    usableSkills.value = await request<Skill[]>('/skills?scope=usable')
-    skillsError.value = null
-  } catch (error) {
-    skillsError.value = error instanceof RequestError
-      ? error
-      : new RequestError({ error: '咨询领域加载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
-  }
-}
 
 // ── 会话持久化（2026-08-11）：切页/刷新保留当前咨询，「新建会话」才清空 ──
 const SESSION_KEY = 'legalos:consult-session'
@@ -131,27 +114,6 @@ const restoreSession = async () => {
   }
 }
 
-onMounted(() => {
-  loadSkills()
-  restoreSession()
-})
-onUnmounted(abortActiveRequest) // 离开页面中止在途请求
-
-const pickSkill = (s: { id?: string; name: string }) => {
-  selectedSkill.value = s
-}
-
-// 技能组 → 图标（Apple SF 风格语义映射）
-const GROUP_ICONS: Record<string, string> = {
-  合规法务: '规',
-  合同与交易: '约',
-  劳动法务: '人',
-  争议法务: '争',
-  法律研究: '研',
-  知识运营: '知',
-}
-const groupIcon = (g: string) => GROUP_ICONS[g] || '法'
-
 /** P1-3：是否贴合底部（用户向上滚超过 80px 则暂停自动跟随） */
 const stickToBottom = ref(true)
 const onMsgScroll = () => {
@@ -178,13 +140,51 @@ const scheduleScroll = () => {
   })
 }
 
-// 建议问题快捷入口
-const suggestedQuestions = [
-  '促销活动合规吗？',
-  '客户要求修改合同付款条款',
-  '数据出境需要什么审批流程',
-  '劳动用工有哪些法律风险',
+const suggestionGroups = [
+  [
+    '员工拒签劳动合同怎么办？',
+    '供应商违约后如何追责？',
+    '营销活动需要哪些合规审查？',
+    '客户数据能否用于模型训练？',
+  ],
+  [
+    '试用期解除员工有哪些风险？',
+    '客户拖欠货款如何保全证据？',
+    '对外宣传能否使用竞品数据？',
+    '业务系统收集信息需要哪些授权？',
+  ],
 ]
+const suggestionGroup = ref(0)
+const suggestedQuestions = computed(() => suggestionGroups[suggestionGroup.value])
+const cycleSuggestions = () => {
+  suggestionGroup.value = (suggestionGroup.value + 1) % suggestionGroups.length
+}
+const hasConversation = computed(() => Boolean(projectId.value || messages.value.length || expectingAI.value || restoring.value))
+const conversationTitle = computed(() => {
+  const firstQuestion = messages.value.find(message => message?.role === 'user')?.text?.trim()
+  return firstQuestion ? String(firstQuestion).split('\n')[0].slice(0, 36) : '法律咨询'
+})
+const copiedMessageId = ref('')
+const copyAnswer = async (message: any) => {
+  const text = String(message.text || '')
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    textarea.remove()
+  }
+  copiedMessageId.value = String(message.id ?? message._key ?? '')
+  window.setTimeout(() => {
+    if (copiedMessageId.value === String(message.id ?? message._key ?? '')) copiedMessageId.value = ''
+  }, 1600)
+}
 
 /** 客户端幂等键（2026-08-12 多轮上下文改造）：每次发送生成一个，防双重提交/网络重试产生重复回答。
  *  非安全上下文(http://IP)没有 crypto.randomUUID，用 getRandomValues 兜底。 */
@@ -238,8 +238,6 @@ const handleSend = async (text: string, files: AttachedFile[], capability = sele
           kind: 'consult',
           title: text.slice(0, 50) || '文件咨询',
           input: fullInput,
-          // 技能（2026-08-04）：选中兜底"通用法务咨询"时 skillId=undefined → 后端不注入（工程评审决策 #2）
-          skillId: selectedSkill.value.id || undefined,
           // P2d：建单也带幂等键——建单成功但响应丢失时重试不会创建第二个工单
           idempotencyKey,
           // 附件 id（正文由后端注入；2026-08-12）
@@ -424,456 +422,481 @@ const handleUpgrade = async () => {
   upgrading.value = false
 }
 
+let animationContext: gsap.Context | null = null
+const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+onMounted(() => {
+  void restoreSession()
+  nextTick(() => {
+    if (!pageRoot.value) return
+    animationContext = gsap.context(() => {
+      if (reducedMotion()) return
+      gsap.from('.consult-breadcrumb', { autoAlpha: 0, y: 10, duration: .42, ease: 'power2.out' })
+      gsap.from('.consult-intro > *, .session-heading > *', {
+        autoAlpha: 0,
+        y: 18,
+        duration: .58,
+        stagger: .08,
+        ease: 'power2.out',
+      })
+      gsap.from('.suggestion-item, .msg-row', {
+        autoAlpha: 0,
+        y: 14,
+        duration: .48,
+        stagger: .055,
+        delay: .12,
+        ease: 'power2.out',
+      })
+      gsap.from('.welcome-composer, .conversation-composer', {
+        autoAlpha: 0,
+        y: 12,
+        duration: .5,
+        delay: .2,
+        ease: 'power2.out',
+      })
+    }, pageRoot.value)
+  })
+})
+
+onUnmounted(() => {
+  abortActiveRequest()
+  animationContext?.revert()
+})
+
 </script>
 
 <template>
-  <BusinessSidebarLayout
-    active-key="consult"
-    content-class="chat-content"
-  >
-    <template #topbar>
-      <div class="tb-left">
-        <small class="tb-path">Business OS</small>
-        <strong class="tb-title">法律咨询</strong>
-      </div>
-      <!-- 2026-08-05：无信息量的"在线"徽章已删除；仅保留真实状态 -->
-      <span
-        v-if="expectingAI"
-        class="tb-badge thinking"
-      >AI 思考中…</span>
-      <span
-        v-else-if="upgraded"
-        class="tb-badge escalated"
-      >已升级人工</span>
-      <button
-        v-if="projectId"
-        class="tb-new-btn"
-        :disabled="sending || expectingAI"
-        @click="startNewSession"
-      >
-        ＋ 新建会话
-      </button>
-    </template>
-    <!-- 多轮上下文轻提示（2026-08-12）：会话内追问参考此前问答，新建会话才重新开始 -->
+  <BusinessSidebarLayout active-key="consult">
     <div
-      v-if="projectId && messages.length > 0"
-      class="ctx-tip"
+      ref="pageRoot"
+      :class="['consult-page', { 'conversation-state': hasConversation }]"
     >
-      本会话内的后续问题会参考此前问答；新建会话后上下文将重新开始。
-    </div>
-    <div
-      v-if="messages.length === 0 && !expectingAI"
-      class="welcome-hero"
-    >
-      <div class="welcome-icon">
-        <svg
-          width="34"
-          height="34"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="#1E3A8A"
-          stroke-width="1.8"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        ><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z" /><path d="M9 12l2 2 4-4" /></svg>
-      </div>
-      <h2 class="text-h2">
-        业务法律咨询
-      </h2>
-      <p
-        class="text-body"
-        style="max-width:420px"
-      >
-        用自然语言描述您的法律问题<br>常规问题 AI 将在 1 分钟内答复<br>高风险问题将自动升级法务 BP
-      </p>
-
-      <!-- 咨询领域选择（2026-08-04 技能库模块）：对话方向感，点选即锁定 -->
-      <div class="domain-group">
-        <span class="domain-label">选择咨询领域</span>
-        <div class="domain-cards">
-          <button
-            class="domain-card"
-            :class="{ active: !selectedSkill.id }"
-            @click="pickSkill({ name: GENERAL_SKILL.name })"
-          >
-            <span class="dc-ico">法</span>
-            <span class="dc-name">{{ GENERAL_SKILL.name }}</span>
-            <span
-              v-if="!selectedSkill.id"
-              class="dc-check"
-            >✓</span>
-          </button>
-          <button
-            v-for="s in usableSkills"
-            :key="s.id"
-            class="domain-card"
-            :class="{ active: selectedSkill.id === s.id }"
-            @click="pickSkill({ id: s.id, name: s.name })"
-          >
-            <span class="dc-ico">{{ groupIcon(s.group) }}</span>
-            <span class="dc-name">{{ s.name }}</span>
-            <span
-              v-if="selectedSkill.id === s.id"
-              class="dc-check"
-            >✓</span>
-          </button>
-        </div>
-      </div>
-
-      <div class="suggest-grid">
-        <button
-          v-for="q in suggestedQuestions"
-          :key="q"
-          class="suggest-chip"
-          @click="sendSuggested(q)"
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          ><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" /></svg>
-          {{ q }}
-        </button>
-      </div>
-    </div>
-
-    <ErrorState
-      v-if="skillsError"
-      :message="skillsError.payload.error"
-      :request-id="skillsError.payload.requestId"
-      :on-retry="loadSkills"
-    />
-
-    <div
-      ref="msgContainer"
-      class="msg-scroll"
-      @scroll="onMsgScroll"
-    >
-      <div class="msg-thread">
-        <template
-          v-for="m in messages"
-          :key="m.id ?? m._key"
-        >
-          <div
-            v-if="m._event"
-            class="msg-event"
-          >
-            <span>{{ m.text }}</span>
-            <span
-              v-if="m.actions?.length"
-              class="event-actions"
-            >
-              <button
-                v-if="m.actions.includes('retry')"
-                @click="handleErrorAction('retry')"
-              >重试</button>
-              <button
-                v-if="m.actions.includes('switch_general')"
-                @click="handleErrorAction('switch_general')"
-              >改选通用咨询</button>
-              <button
-                v-if="m.actions.includes('escalate')"
-                @click="handleErrorAction('escalate')"
-              >转人工</button>
-            </span>
+      <template v-if="!hasConversation">
+        <header class="consult-welcome-header">
+          <p class="consult-breadcrumb">
+            业务工作台 <span>/</span> 法律咨询
+          </p>
+          <div class="consult-intro">
+            <h1>今天想解决什么法律问题？</h1>
+            <p>描述业务背景与诉求，AI 将先给出可核验的法律建议；<br>高风险事项可随时转交法务 BP。</p>
           </div>
-          <div
-            v-else
-            :class="['msg-row', m.role === 'user' ? 'out' : 'in']"
+        </header>
+
+        <section
+          class="suggestions-section"
+          aria-labelledby="suggestions-title"
+        >
+          <div class="suggestions-heading">
+            <h2 id="suggestions-title">
+              推荐提问
+            </h2>
+            <button
+              type="button"
+              @click="cycleSuggestions"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              ><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4M4 13a8.1 8.1 0 0 0 15.5 2M20 19v-4h-4" /></svg>
+              换一组
+            </button>
+          </div>
+          <div class="suggestions-grid">
+            <button
+              v-for="question in suggestedQuestions"
+              :key="question"
+              class="suggestion-item"
+              type="button"
+              @click="sendSuggested(question)"
+            >
+              <span>{{ question }}</span>
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              ><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+            </button>
+          </div>
+        </section>
+
+        <div class="welcome-composer">
+          <ChatInputBar
+            v-model:capability="selectedCapability"
+            appearance="welcome"
+            :disabled="sending || restoring"
+            @send="handleSend"
+          />
+          <p>AI 生成内容仅供参考，重要事项建议由法务复核</p>
+        </div>
+        <ErrorState
+          v-if="lastError"
+          :message="lastError.payload.error"
+          :request-id="lastError.payload.requestId"
+        />
+      </template>
+
+      <template v-else>
+        <header class="session-heading">
+          <div>
+            <p class="consult-breadcrumb">
+              业务工作台 <span>/</span> 法律咨询
+            </p>
+            <h1>{{ conversationTitle }}</h1>
+            <p>本会话内的追问会参考此前问答</p>
+          </div>
+          <button
+            class="new-session-button"
+            type="button"
+            :disabled="sending || expectingAI || restoring"
+            @click="startNewSession"
           >
-            <div :class="['msg-avatar', m.role === 'user' ? 'user' : 'ai']">
-              {{ m.role === 'user' ? (auth.user?.displayName?.[0] || 'U') : 'AI' }}
-            </div>
-            <div class="msg-body">
-              <div class="msg-bubble">
-                <div
-                  v-if="m.role === 'assistant' && m.research"
-                  class="evidence-status"
-                >
-                  <span>✓ {{ m.research.trace.status === 'success_hit' ? '已完成来源检索' : '未检索到可核验来源' }}</span>
-                  <span>· {{ m.research.trace.limitations?.[0] }}</span>
-                </div>
-                <MarkdownContent
-                  v-if="m.role === 'assistant'"
-                  :text="m.text"
-                  :streaming="m.status === 'streaming'"
-                  :done="m.status === 'completed'"
-                />
-                <template v-else>
-                  {{ m.text }}
-                </template>
-                <!-- P0-3：流式错误/不完整附着在回答内，不再全局 ErrorState 双重显示 -->
-                <div
-                  v-if="m.role === 'assistant' && (m.status === 'failed' || m.status === 'incomplete')"
-                  class="msg-error"
-                >
-                  {{ m.errorText || (m.status === 'incomplete' ? '回答可能不完整' : 'AI 答复生成失败') }}
-                </div>
-              </div>
-              <details
-                v-if="m.role === 'assistant' && m.research?.trace?.calls?.some((c: any) => c.records?.length)"
-                class="research-sources"
-                open
-              >
-                <summary>参考来源</summary>
-                <div
-                  v-for="record in m.research.trace.calls.flatMap((call: any) => call.records)"
-                  :key="String(record.recordId || record.sourceId)"
-                  class="source-row"
-                >
-                  <strong>{{ record.lawName || record.title }}</strong>
-                  <span v-if="record.issuingOrgan || record.court">{{ record.issuingOrgan || record.court }}</span>
-                  <span v-if="record.issuingNo || record.caseNumber">{{ record.issuingNo || record.caseNumber }}</span>
-                  <span v-if="record.implementDate || record.date">{{ record.implementDate || record.date }}</span>
-                  <span v-if="record.timeliness">{{ record.timeliness }}</span>
-                  <a
-                    v-if="record.url"
-                    :href="String(record.url)"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >查看原始来源</a>
-                </div>
-              </details>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              aria-hidden="true"
+            ><path d="M12 5v14M5 12h14" /></svg>
+            新建会话
+          </button>
+        </header>
+
+        <div
+          ref="msgContainer"
+          class="msg-scroll"
+          @scroll="onMsgScroll"
+        >
+          <div class="msg-thread">
+            <template
+              v-for="m in messages"
+              :key="m.id ?? m._key"
+            >
               <div
-                v-if="m._files?.length"
-                class="file-tags"
+                v-if="m._event"
+                class="msg-event"
               >
+                <span>{{ m.text }}</span>
                 <span
-                  v-for="f in m._files"
-                  :key="f.id"
-                  class="file-tag"
+                  v-if="m.actions?.length"
+                  class="event-actions"
                 >
-                  <span class="ft-icon">📎</span><span class="ft-name">{{ f.name }}</span><span class="ft-size">{{ formatSize(f.size) }}</span>
+                  <button
+                    v-if="m.actions.includes('retry')"
+                    @click="handleErrorAction('retry')"
+                  >重试</button>
+                  <button
+                    v-if="m.actions.includes('switch_general')"
+                    @click="handleErrorAction('switch_general')"
+                  >改选通用咨询</button>
+                  <button
+                    v-if="m.actions.includes('escalate')"
+                    @click="handleErrorAction('escalate')"
+                  >转人工</button>
                 </span>
               </div>
               <div
-                v-if="m.role === 'assistant' && m.status === 'completed' && m.text"
-                class="ai-disclaimer"
+                v-else
+                :class="['msg-row', m.role === 'user' ? 'out' : 'in']"
               >
-                AI 生成 · 仅供参考
+                <div
+                  v-if="m.role === 'assistant'"
+                  class="msg-avatar ai"
+                >
+                  AI
+                </div>
+                <div class="msg-body">
+                  <div class="msg-bubble">
+                    <div
+                      v-if="m.role === 'assistant' && m.research"
+                      class="evidence-status"
+                    >
+                      <span>✓ {{ m.research.trace.status === 'success_hit' ? '已完成来源检索' : '未检索到可核验来源' }}</span>
+                    </div>
+                    <MarkdownContent
+                      v-if="m.role === 'assistant'"
+                      :text="m.text"
+                      :streaming="m.status === 'streaming'"
+                      :done="m.status === 'completed'"
+                    />
+                    <template v-else>
+                      {{ m.text }}
+                    </template>
+                    <!-- P0-3：流式错误/不完整附着在回答内，不再全局 ErrorState 双重显示 -->
+                    <div
+                      v-if="m.role === 'assistant' && (m.status === 'failed' || m.status === 'incomplete')"
+                      class="msg-error"
+                    >
+                      {{ m.errorText || (m.status === 'incomplete' ? '回答可能不完整' : 'AI 答复生成失败') }}
+                    </div>
+                    <details
+                      v-if="m.role === 'assistant' && m.research?.trace?.calls?.some((call: any) => call.records?.length)"
+                      class="research-sources"
+                      open
+                    >
+                      <summary>参考来源</summary>
+                      <div
+                        v-for="record in m.research.trace.calls.flatMap((call: any) => call.records)"
+                        :key="String(record.recordId || record.sourceId)"
+                        class="source-row"
+                      >
+                        <strong>{{ record.lawName || record.title }}</strong>
+                        <span v-if="record.issuingOrgan || record.court">{{ record.issuingOrgan || record.court }}</span>
+                        <span v-if="record.issuingNo || record.caseNumber">{{ record.issuingNo || record.caseNumber }}</span>
+                        <span v-if="record.implementDate || record.date">{{ record.implementDate || record.date }}</span>
+                        <span v-if="record.timeliness">{{ record.timeliness }}</span>
+                        <a
+                          v-if="record.url"
+                          :href="String(record.url)"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >查看原始来源</a>
+                      </div>
+                    </details>
+                    <div
+                      v-if="m.role === 'assistant' && m.status === 'completed' && m.text"
+                      class="answer-actions"
+                    >
+                      <button
+                        class="copy-answer"
+                        type="button"
+                        @click="copyAnswer(m)"
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.8"
+                          aria-hidden="true"
+                        ><rect
+                          x="9"
+                          y="9"
+                          width="11"
+                          height="11"
+                          rx="2"
+                        /><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" /></svg>
+                        {{ copiedMessageId === String(m.id ?? m._key ?? '') ? '已复制' : '复制' }}
+                      </button>
+                      <DownloadMenu
+                        :content="m.text"
+                        :filename="'法律咨询答复'"
+                      />
+                      <button
+                        v-if="projectId && projectRoute === 'llm' && !upgraded && m === messages[messages.length - 1]"
+                        class="escalate-btn"
+                        :disabled="upgrading"
+                        @click="handleUpgrade"
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.8"
+                          aria-hidden="true"
+                        ><circle
+                          cx="12"
+                          cy="8"
+                          r="4"
+                        /><path d="M4 21c0-4 4-6 8-6s8 2 8 6" /></svg>
+                        {{ upgrading ? '转交中…' : '转交法务 BP' }}
+                      </button>
+                    </div>
+                  </div>
+                  <div
+                    v-if="m._files?.length"
+                    class="file-tags"
+                  >
+                    <span
+                      v-for="f in m._files"
+                      :key="f.id"
+                      class="file-tag"
+                    >
+                      <svg
+                        class="ft-icon"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        aria-hidden="true"
+                      ><path d="m21.4 11.1-9.2 9.1a6 6 0 0 1-8.5-8.5l9.2-9.1a4 4 0 0 1 5.7 5.6l-9.2 9.2a2 2 0 1 1-2.8-2.8l8.5-8.5" /></svg>
+                      <span class="ft-name">{{ f.name }}</span><span class="ft-size">{{ formatSize(f.size) }}</span>
+                    </span>
+                  </div>
+                </div>
               </div>
-              <DownloadMenu
-                v-if="m.role === 'assistant' && m.status === 'completed' && m.text"
-                :content="m.text"
-                :filename="'法律咨询答复'"
-              />
-              <button
-                v-if="m.role === 'assistant' && m.status === 'completed' && projectId && projectRoute === 'llm' && !upgraded && m === messages[messages.length - 1]"
-                class="escalate-btn"
-                :disabled="upgrading"
-                @click="handleUpgrade"
+              <!-- 思考过程：紧跟最后一条用户消息下方,每次回答仅一个框（P1-2：无内部滚动条,展示尾部,正文开始自动收起） -->
+              <div
+                v-if="(m.id ?? m._key) === lastUserMsgKey && expectingAI && aiThinking"
+                class="thinking-panel"
               >
-                {{ upgrading ? '升级中…' : '↑ 升级人工处理' }}
-              </button>
-            </div>
+                <button
+                  class="thinking-toggle"
+                  @click="showThinking = !showThinking"
+                >
+                  {{ showThinking ? '▾' : '▸' }} {{ thinkingDone ? '分析完成' : '思考过程' }}
+                </button>
+                <div
+                  v-if="showThinking"
+                  class="thinking-body"
+                >
+                  {{ thinkingTail }}
+                </div>
+              </div>
+            </template>
           </div>
-          <!-- 思考过程：紧跟最后一条用户消息下方,每次回答仅一个框（P1-2：无内部滚动条,展示尾部,正文开始自动收起） -->
-          <div
-            v-if="(m.id ?? m._key) === lastUserMsgKey && expectingAI && aiThinking"
-            class="thinking-panel"
+          <!-- P1-3：用户向上滚动暂停自动跟随后，底部悬浮「回到最新」 -->
+          <button
+            v-if="!stickToBottom && messages.length"
+            class="back-to-latest"
+            @click="forceScrollBottom"
           >
-            <button
-              class="thinking-toggle"
-              @click="showThinking = !showThinking"
-            >
-              {{ showThinking ? '▾' : '▸' }} {{ thinkingDone ? '分析完成' : '思考过程' }}
-            </button>
-            <div
-              v-if="showThinking"
-              class="thinking-body"
-            >
-              {{ thinkingTail }}
-            </div>
-          </div>
-        </template>
-      </div>
-      <!-- P1-3：用户向上滚动暂停自动跟随后，底部悬浮「回到最新」 -->
-      <button
-        v-if="!stickToBottom && messages.length"
-        class="back-to-latest"
-        @click="forceScrollBottom"
-      >
-        ↓ 回到最新
-      </button>
-    </div>
+            ↓ 回到最新
+          </button>
+        </div>
 
-    <ChatInputBar
-      v-if="!upgraded"
-      v-model:capability="selectedCapability"
-      :disabled="sending || restoring"
-      @send="handleSend"
-    />
-    <ErrorState
-      v-if="lastError"
-      :message="lastError.payload.error"
-      :request-id="lastError.payload.requestId"
-    />
+        <div
+          v-if="!upgraded"
+          class="conversation-composer"
+        >
+          <ChatInputBar
+            v-model:capability="selectedCapability"
+            appearance="conversation"
+            placeholder="继续追问，或补充新的事实与材料"
+            :disabled="sending || restoring"
+            @send="handleSend"
+          />
+          <p>AI 生成内容仅供参考，重要事项建议由法务复核</p>
+        </div>
+        <div
+          v-else
+          class="handoff-state"
+        >
+          已转交法务 BP，处理进展会在本会话与“我的记录”中同步。
+        </div>
+        <ErrorState
+          v-if="lastError"
+          :message="lastError.payload.error"
+          :request-id="lastError.payload.requestId"
+        />
+      </template>
+    </div>
   </BusinessSidebarLayout>
 </template>
 
 <script lang="ts">export default { name: 'ConsultView' }</script>
 
 <style scoped>
-.event-actions { display: inline-flex; gap: 6px; margin-left: 8px; }.event-actions button { border: 0; border-radius: 7px; background: #eef4ff; color: #1e3a8a; padding: 4px 8px; font: inherit; font-size: 11px; font-weight: 650; cursor: pointer; }
-.evidence-status { display: flex; flex-wrap: wrap; gap: 5px; margin: -2px 0 12px; padding: 8px 10px; border: 1px solid #d8e5f8; border-radius: 9px; background: #f4f8ff; color: #35506f; font-size: 11px; line-height: 1.45; }
-.research-sources { margin-top: 8px; border: 1px solid rgba(30,58,138,.12); border-radius: 12px; background: rgba(255,255,255,.94); overflow: hidden; }
+.consult-page {
+  width: min(100%, 1540px);
+  height: 100vh;
+  margin: 0 auto;
+  padding: 34px 48px 38px;
+  overflow-y: auto;
+  color: #111827;
+}
+
+.consult-breadcrumb { margin: 0; color: #53627a; font-size: 13px; }
+.consult-breadcrumb span { margin: 0 10px; color: #a8b1bf; }
+.consult-welcome-header { min-height: 330px; }
+.consult-intro { display: grid; grid-template-columns: minmax(520px, 1.05fr) minmax(390px, .95fr); gap: 72px; margin-top: 96px; align-items: start; }
+.consult-intro h1 { max-width: 720px; margin: 0; color: #0b1222; font-size: clamp(38px, 3.35vw, 56px); font-weight: 680; letter-spacing: -.05em; line-height: 1.08; white-space: nowrap; }
+.consult-intro p { max-width: 520px; margin: 4px 0 0; color: #526174; font-size: 16px; line-height: 1.85; }
+.suggestions-section { margin-top: 16px; }
+.suggestions-heading { display: flex; margin-bottom: 12px; align-items: center; justify-content: space-between; }
+.suggestions-heading h2 { margin: 0; color: #111827; font-size: 21px; font-weight: 680; letter-spacing: -.02em; }
+.suggestions-heading button { display: inline-flex; padding: 8px 0; align-items: center; gap: 8px; border: 0; background: transparent; color: #0f5fff; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+.suggestions-heading button:hover { color: #004dcc; }
+.suggestions-heading svg { width: 18px; height: 18px; }
+.suggestions-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 54px; }
+.suggestion-item { display: flex; min-height: 74px; padding: 0 8px; align-items: center; justify-content: space-between; gap: 22px; border: 0; border-bottom: 1px solid #d7dee8; background: transparent; color: #0f5fff; font: inherit; font-size: 16px; font-weight: 580; text-align: left; cursor: pointer; transition: color 160ms ease, padding 160ms ease; }
+.suggestion-item:hover { padding-right: 2px; padding-left: 14px; color: #004dcc; }
+.suggestion-item svg { width: 21px; height: 21px; flex: 0 0 auto; }
+.welcome-composer { margin-top: 44px; }
+.welcome-composer > p,
+.conversation-composer > p { margin: 12px 14px 0; color: #718096; font-size: 12px; }
+
+.conversation-state { display: flex; padding-top: 18px; padding-bottom: 18px; flex-direction: column; overflow: hidden; }
+.session-heading { display: flex; padding-bottom: 12px; align-items: flex-start; justify-content: space-between; gap: 28px; flex: 0 0 auto; }
+.session-heading h1 { max-width: 780px; margin: 26px 0 8px; overflow: hidden; color: #0b1222; font-size: clamp(24px, 2.25vw, 34px); font-weight: 680; letter-spacing: -.035em; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
+.session-heading > div > p:last-child { margin: 0; color: #718096; font-size: 13px; }
+.new-session-button { display: inline-flex; min-width: 132px; height: 44px; margin-top: 28px; padding: 0 16px; align-items: center; justify-content: center; gap: 8px; border: 1px solid #2563eb; border-radius: 6px; background: #fff; color: #0f5fff; font: inherit; font-size: 14px; font-weight: 620; cursor: pointer; }
+.new-session-button:hover:not(:disabled) { background: #f5f8ff; }
+.new-session-button:disabled { opacity: .5; cursor: wait; }
+.new-session-button svg { width: 18px; height: 18px; }
+.msg-scroll { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: rgba(71, 85, 105, .28) transparent; }
+.msg-thread { display: flex; width: 100%; padding: 0 8px 24px 0; flex-direction: column; gap: 14px; }
+.msg-row { display: flex; gap: 14px; }
+.msg-row.out { width: fit-content; max-width: min(72%, 720px); margin-left: auto; }
+.msg-row.in { width: 100%; }
+.msg-avatar { display: grid; width: 34px; height: 34px; margin-top: 1px; border-radius: 6px; place-items: center; flex: 0 0 auto; background: #0f5fff; color: #fff; font-size: 12px; font-weight: 700; }
+.msg-body { min-width: 0; width: 100%; }
+.msg-bubble { color: #202b3c; font-size: 14px; line-height: 1.65; word-break: break-word; }
+.msg-row.out .msg-bubble { padding: 12px 18px; border-radius: 8px 8px 2px 8px; background: #2f7df6; color: #fff; white-space: pre-wrap; }
+.msg-row.in .msg-bubble { padding: 16px 18px 0; border: 1px solid #d5dde8; border-radius: 8px; background: #fff; }
+.msg-row.in .msg-bubble :deep(.markstream-vue) { --ms-text-h1: 1.25rem; --ms-text-h2: 1.08rem; --ms-flow-paragraph-y: .45em; --ms-flow-list-item-y: .14em; --ms-flow-table-y: .8em; }
+.evidence-status { display: flex; margin-bottom: 12px; align-items: center; gap: 6px; color: #16a05d; font-size: 12px; font-weight: 650; }
+.research-sources { margin-top: 10px; overflow: hidden; border: 1px solid #dce3ec; border-radius: 6px; background: #fff; }
 .research-sources summary { padding: 10px 12px; color: #243b5a; font-size: 12px; font-weight: 700; cursor: pointer; }
-.source-row { display: grid; grid-template-columns: minmax(180px,2fr) repeat(4,minmax(80px,1fr)); gap: 10px; align-items: center; padding: 10px 12px; border-top: 1px solid #e8edf4; color: #5d6878; font-size: 11px; }
+.source-row { display: grid; grid-template-columns: minmax(180px, 2fr) repeat(4, minmax(80px, 1fr)); gap: 10px; padding: 9px 12px; align-items: center; border-top: 1px solid #e8edf4; color: #5d6878; font-size: 11px; }
 .source-row strong { color: #202b3c; font-size: 12px; }
 .source-row a { color: #1d5fd1; }
-@media (max-width: 1023px) { .source-row { grid-template-columns: 1fr; } }
-.domain-group {
-  width: min(620px, 100%);
-  margin-top: 26px;
-  text-align: left;
-  animation: domain-in 0.5s var(--spring) 0.15s backwards;
-}
-@keyframes domain-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: none; }
-}
-.domain-label {
-  display: block;
-  margin: 0 0 10px 2px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.08em;
-}
-.domain-cards {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-}
-.domain-card {
-  position: relative;
-  display: flex;
-  min-height: 78px;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 13px 12px 12px;
-  border: 1px solid rgba(30, 58, 138, 0.12);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.58);
-  color: var(--text);
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-  transition: transform 0.25s var(--spring), border-color 0.25s var(--spring), background 0.25s var(--spring), box-shadow 0.25s var(--spring);
-}
-.domain-card::after {
-  content: "";
-  position: absolute;
-  right: 12px;
-  bottom: 12px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: rgba(30, 58, 138, 0.14);
-}
-.domain-card:hover {
-  transform: translateY(-2px);
-  border-color: rgba(30, 58, 138, 0.30);
-  background: rgba(255, 255, 255, 0.86);
-  box-shadow: 0 8px 20px rgba(30, 58, 138, 0.08);
-}
-.domain-card.active {
-  border-color: #1e3a8a;
-  background: linear-gradient(145deg, rgba(239, 245, 255, 0.96), rgba(228, 237, 255, 0.78));
-  color: #1e3a8a;
-  box-shadow: 0 7px 18px rgba(30, 58, 138, 0.12);
-}
-.domain-card.active::after {
-  background: #1e3a8a;
-  box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.10);
-}
-.dc-ico {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  border: 1px solid rgba(30, 58, 138, 0.12);
-  border-radius: 9px;
-  background: rgba(30, 58, 138, 0.06);
-  color: #1e3a8a;
-  font-size: 12px;
-  font-weight: 750;
-  line-height: 1;
-}
-.domain-card.active .dc-ico {
-  border-color: rgba(30, 58, 138, 0.18);
-  background: #1e3a8a;
-  color: #fff;
-}
-.dc-name { max-width: calc(100% - 4px); line-height: 1.2; }
-.dc-check {
-  position: absolute;
-  top: 12px;
-  right: 11px;
-  display: grid;
-  width: 17px;
-  height: 17px;
-  place-items: center;
-  border-radius: 50%;
-  background: #1e3a8a;
-  color: #fff;
-  font-size: 10px;
-  font-weight: 750;
+.answer-actions { display: flex; min-height: 52px; margin: 14px -18px 0; padding: 8px 12px; align-items: center; gap: 6px; border-top: 1px solid #e4e9f0; }
+.copy-answer,
+.escalate-btn { display: inline-flex; height: 34px; padding: 0 10px; align-items: center; justify-content: center; gap: 6px; border: 0; border-radius: 5px; background: transparent; color: #53627a; font: inherit; font-size: 12px; cursor: pointer; }
+.copy-answer:hover { background: #f4f7fb; color: #2563eb; }
+.copy-answer svg,
+.escalate-btn svg { width: 16px; height: 16px; }
+.answer-actions :deep(.download-wrap) { margin-top: 0; }
+.answer-actions :deep(.dl-trigger) { height: 34px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: #53627a; }
+.answer-actions :deep(.dl-trigger:hover) { background: #f4f7fb; color: #2563eb; }
+.escalate-btn { width: auto; min-width: 148px; margin-top: 0; margin-left: auto; padding: 0 12px; align-self: center; border: 1px solid #2563eb; color: #0f5fff; font-weight: 620; }
+.escalate-btn:hover:not(:disabled) { background: #f4f7ff; }
+.escalate-btn:disabled { opacity: .55; cursor: wait; }
+.msg-error { margin: 10px 0; padding: 8px 10px; border: 1px solid #fecaca; border-radius: 6px; background: #fff1f2; color: #be123c; font-size: 12px; }
+.msg-event { align-self: center; padding: 6px 14px; border-radius: 5px; background: #eef2f7; color: #61708a; font-size: 11px; }
+.event-actions { display: inline-flex; gap: 6px; margin-left: 8px; }
+.event-actions button { padding: 4px 8px; border: 0; border-radius: 5px; background: #fff; color: #1d5fd1; font: inherit; font-size: 11px; font-weight: 650; cursor: pointer; }
+.thinking-panel { margin: -4px 0 0 48px; overflow: hidden; border: 1px solid #e1e7ef; border-radius: 7px; background: #f7f9fc; }
+.thinking-toggle { display: block; width: 100%; padding: 8px 12px; border: 0; background: none; color: #607087; font: inherit; font-size: 12px; font-weight: 600; text-align: left; cursor: pointer; }
+.thinking-body { max-height: 120px; padding: 0 12px 10px; overflow: hidden; color: #718096; font-size: 12px; line-height: 1.7; white-space: pre-wrap; mask-image: linear-gradient(to bottom, transparent 0, #000 22px); }
+.back-to-latest { position: sticky; bottom: 8px; display: block; z-index: 10; margin: 0 auto; padding: 7px 14px; border: 1px solid #d7dfeb; border-radius: 18px; background: #fff; color: #2563eb; font: inherit; font-size: 12px; cursor: pointer; box-shadow: 0 5px 16px rgba(15, 23, 42, .08); }
+.file-tags { display: flex; margin-top: 6px; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.file-tag { display: inline-flex; padding: 5px 9px; align-items: center; gap: 5px; border-radius: 5px; background: #edf4ff; font-size: 11px; }
+.ft-icon { width: 14px; height: 14px; color: #2563eb; }
+.ft-name { max-width: 180px; overflow: hidden; color: #2563eb; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ft-size { color: #718096; }
+.conversation-composer { flex: 0 0 auto; padding-top: 12px; }
+.conversation-composer > p { text-align: center; }
+.handoff-state { flex: 0 0 auto; margin-top: 12px; padding: 14px 18px; border: 1px solid #cfe0ff; border-radius: 7px; background: #f3f7ff; color: #315a9d; font-size: 13px; text-align: center; }
+
+@media (max-width: 1180px) {
+  .consult-page { padding-right: 32px; padding-left: 32px; }
+  .consult-intro { grid-template-columns: 1fr; gap: 18px; margin-top: 72px; }
+  .consult-intro h1 { white-space: normal; }
+  .consult-welcome-header { min-height: 320px; }
 }
 
-.tb-left { display: flex; align-items: baseline; gap: 10px; }
-.tb-path { font-size: 11px; color: var(--text-tertiary); font-weight: 590; }
-.tb-title { font-size: 14px; font-weight: 650; color: var(--text); letter-spacing: -0.01em; }
-.tb-badge { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 10px; }
-.tb-badge.thinking { background: rgba(0,113,227,0.08); color: var(--blue); animation: pulse 2s infinite; }
-.tb-badge.escalated { background: rgba(255,149,0,0.08); color: #FF9500; }
-.tb-new-btn { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--blue); background: rgba(0,113,227,0.08); border: none; padding: 5px 12px; border-radius: 999px; cursor: pointer; }
-.tb-new-btn:hover { background: rgba(0,113,227,0.15); }
-/* 多轮上下文轻提示（2026-08-12） */
-.ctx-tip { font-size: 11px; color: var(--text-tertiary); padding: 6px 16px 0; text-align: center; }
-@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
-/* 布局由 apple.css .chat-content/.msg-scroll 全局管理（scoped 收不到 BusinessSidebarLayout 容器） */
-.thinking-panel { margin: 2px 0 12px 52px; border: 1px solid rgba(15,23,42,0.08); background: rgba(100,116,139,0.06); border-radius: 12px; overflow: hidden; }
-.thinking-toggle { display: block; width: 100%; text-align: left; font-size: 12px; font-weight: 600; color: var(--text-secondary); background: none; border: none; padding: 8px 14px; cursor: pointer; }
-.thinking-body { padding: 0 14px 12px; font-size: 12px; line-height: 1.7; color: var(--text-secondary); white-space: pre-wrap; max-height: 132px; overflow: hidden; mask-image: linear-gradient(to bottom, transparent 0, #000 26px); -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 26px); }
-/* P1-3：用户向上滚暂停跟随后的「回到最新」悬浮按钮 */
-.back-to-latest { position: sticky; bottom: 12px; display: block; margin: 0 auto 8px; font-size: 12px; font-weight: 600; color: var(--blue); background: #fff; border: 1px solid rgba(15,23,42,0.1); border-radius: 999px; padding: 6px 14px; box-shadow: 0 4px 16px rgba(15,23,42,0.1); cursor: pointer; z-index: 10; }
-.ai-disclaimer { margin-top: 4px; font-size: 10px; color: var(--text-tertiary); padding-left: 4px; }
-.file-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.file-tag { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 8px; background: rgba(0,113,227,0.06); font-size: 11px; }
-.ft-icon { font-size: 12px; }
-.ft-name { color: var(--blue); font-weight: 550; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ft-size { color: var(--text-tertiary); }
-
-/* ── 建议问题快捷卡 ── */
-.suggest-grid {
-  display: flex; flex-wrap: wrap; gap: 10px; justify-content: center;
-  margin-top: 30px; max-width: 480px;
-}
-.suggest-chip {
-  display: inline-flex; align-items: center; gap: 7px;
-  padding: 10px 18px; border: 1px solid rgba(30,58,138,0.15);
-  border-radius: 18px; background: rgba(255,255,255,0.7);
-  backdrop-filter: blur(10px);
-  font-family: inherit; font-size: 13px; color: #1E3A8A; font-weight: 550;
-  cursor: pointer; transition: all 0.25s var(--spring);
-}
-.suggest-chip:hover {
-  background: #1E3A8A; color: #fff;
-  transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(30,58,138,0.25);
-}
-
-@media (max-width: 620px) {
-  .domain-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 760px) {
+  .consult-page { padding: 24px 18px 28px; }
+  .consult-welcome-header { min-height: 280px; }
+  .consult-intro { margin-top: 54px; }
+  .consult-intro h1 { font-size: 36px; }
+  .consult-intro p br { display: none; }
+  .suggestions-grid { grid-template-columns: 1fr; }
+  .session-heading h1 { max-width: 420px; font-size: 25px; }
+  .new-session-button { min-width: 44px; padding: 0 12px; font-size: 0; }
+  .new-session-button svg { width: 20px; height: 20px; }
+  .msg-row.out { max-width: 88%; }
+  .source-row { grid-template-columns: 1fr; }
+  .escalate-btn { min-width: 128px; }
 }
 </style>

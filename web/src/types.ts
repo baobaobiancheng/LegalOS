@@ -112,6 +112,7 @@ export type ProjectListResponse = {
   items: ProjectListItem[]
   groups: Record<ProjectGroupKey, ProjectListItem[]>
   groupCounts: Record<ProjectGroupKey, number>
+  statusCounts: Record<ProjectStatus, number>
   total: number
   page: number
   size: number

@@ -9,8 +9,10 @@ const userSelect = { id: true, username: true, displayName: true, role: true };
 
 export interface ProjectListParams {
   status?: ProjectStatus;
+  statusGroup?: BusinessStatusGroupKey;
   kind?: ProjectKind;
   group?: ProjectGroupKey;
+  query?: string;
   mine?: boolean;
   page?: number;
   size?: number;
@@ -20,6 +22,24 @@ export const PROJECT_GROUP_KEYS = ['待处理', '合同协作', '已回传', '�
 export type ProjectGroupKey = (typeof PROJECT_GROUP_KEYS)[number];
 export const isProjectGroupKey = (value: string | undefined): value is ProjectGroupKey =>
   Boolean(value && PROJECT_GROUP_KEYS.includes(value as ProjectGroupKey));
+
+export const BUSINESS_STATUS_GROUP_KEYS = ['processing', 'completed', 'cancelled'] as const;
+export type BusinessStatusGroupKey = (typeof BUSINESS_STATUS_GROUP_KEYS)[number];
+export const isBusinessStatusGroupKey = (value: string | undefined): value is BusinessStatusGroupKey =>
+  Boolean(value && BUSINESS_STATUS_GROUP_KEYS.includes(value as BusinessStatusGroupKey));
+export const isProjectKind = (value: string | undefined): value is ProjectKind =>
+  Boolean(value && Object.values(ProjectKind).includes(value as ProjectKind));
+
+export function businessStatusGroupWhere(group: BusinessStatusGroupKey): Prisma.ProjectWhereInput {
+  switch (group) {
+    case 'processing':
+      return { status: { in: [ProjectStatus.分析中, ProjectStatus.待处理, ProjectStatus.待复核] } };
+    case 'completed':
+      return { status: ProjectStatus.已回传 };
+    case 'cancelled':
+      return { status: ProjectStatus.已取消 };
+  }
+}
 
 /** 与列表投影的优先级保持一致：合同 > LLM > 已结束 > 待处理。 */
 export function projectGroupWhere(group: ProjectGroupKey): Prisma.ProjectWhereInput {
@@ -59,19 +79,24 @@ export class ProjectQueryService {
 
   /** 列表：服务端范围过滤 + 分页 + 按状态分组投影 */
   async findAll(actor: ProjectActor, params: ProjectListParams) {
-    const { status, kind, group, mine, page = 1, size = 20 } = params;
+    const { status, statusGroup, kind, group, query, mine, page = 1, size = 20 } = params;
+    const mineScopeWhere: Prisma.ProjectWhereInput | undefined = mine ? { creatorId: actor.id } : undefined;
     const baseWhere: Prisma.ProjectWhereInput = mine
-      ? { creatorId: actor.id }
+      ? { ...mineScopeWhere }
       : (this.accessPolicy.listScope(actor) as Prisma.ProjectWhereInput);
 
     if (status) baseWhere.status = status;
     if (kind) baseWhere.kind = kind;
+    if (query?.trim()) baseWhere.title = { contains: query.trim().slice(0, 100) };
 
-    const where: Prisma.ProjectWhereInput = group
-      ? { AND: [baseWhere, projectGroupWhere(group)] }
-      : baseWhere;
+    const groupWhere = group
+      ? projectGroupWhere(group)
+      : statusGroup
+        ? businessStatusGroupWhere(statusGroup)
+        : undefined;
+    const where: Prisma.ProjectWhereInput = groupWhere ? { AND: [baseWhere, groupWhere] } : baseWhere;
 
-    const [items, groupCountValues] = await Promise.all([
+    const [items, groupCountValues, mineTotal, mineStatusRows] = await Promise.all([
       this.prisma.project.findMany({
         where,
         include: {
@@ -86,12 +111,28 @@ export class ProjectQueryService {
       Promise.all(PROJECT_GROUP_KEYS.map((key) => this.prisma.project.count({
         where: { AND: [baseWhere, projectGroupWhere(key)] },
       }))),
+      mine ? this.prisma.project.count({ where }) : Promise.resolve(undefined),
+      mine
+        ? this.prisma.project.groupBy({
+            by: ['status'],
+            where: mineScopeWhere,
+            _count: { _all: true },
+          })
+        : Promise.resolve([]),
     ]);
 
     const groupCounts = Object.fromEntries(
       PROJECT_GROUP_KEYS.map((key, index) => [key, groupCountValues[index]]),
     ) as Record<ProjectGroupKey, number>;
-    const total = group ? groupCounts[group] : groupCountValues.reduce((sum, count) => sum + count, 0);
+    const total = mine
+      ? (mineTotal ?? 0)
+      : group
+        ? groupCounts[group]
+        : groupCountValues.reduce((sum, count) => sum + count, 0);
+    const statusCounts = Object.fromEntries(
+      Object.values(ProjectStatus).map((statusKey) => [statusKey, 0]),
+    ) as Record<ProjectStatus, number>;
+    for (const row of mineStatusRows) statusCounts[row.status] = row._count._all;
 
     // 脱敏：extra（技能 prompt 快照）不随列表响应返回
     const safeItems = items.map(({ extra: _extra, ...rest }) => rest);
@@ -105,7 +146,7 @@ export class ProjectQueryService {
       else groups['待处理'].push(p);
     }
 
-    return { items: safeItems, groups, groupCounts, total, page, size };
+    return { items: safeItems, groups, groupCounts, statusCounts, total, page, size };
   }
 
   /** 详情：含消息/事件/文件；对象级授权(P1-01);extra 脱敏 */

@@ -1,9 +1,11 @@
 import { ProjectKind, ProjectStatus } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  businessStatusGroupWhere,
   PROJECT_GROUP_KEYS,
   ProjectQueryService,
   isProjectGroupKey,
+  isProjectKind,
   projectGroupWhere,
 } from '../src/modules/project/queries/project-query.service';
 
@@ -12,6 +14,8 @@ describe('ProjectQueryService 工单分组分页', () => {
     expect(PROJECT_GROUP_KEYS).toEqual(['待处理', '合同协作', '已回传', '数字分身处理']);
     expect(isProjectGroupKey('待处理')).toBe(true);
     expect(isProjectGroupKey('其它')).toBe(false);
+    expect(isProjectKind('consult')).toBe(true);
+    expect(isProjectKind('unknown')).toBe(false);
     expect(projectGroupWhere('合同协作')).toEqual({ kind: ProjectKind.contract });
     expect(projectGroupWhere('数字分身处理')).toEqual({
       kind: { not: ProjectKind.contract },
@@ -59,6 +63,60 @@ describe('ProjectQueryService 工单分组分页', () => {
       total: 23,
       page: 2,
       size: 10,
+    });
+  });
+
+  it('业务端记录按状态分组服务端分页，并返回当前用户的全量状态统计', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const count = vi.fn()
+      .mockResolvedValueOnce(8)
+      .mockResolvedValueOnce(4)
+      .mockResolvedValueOnce(12)
+      .mockResolvedValueOnce(3)
+      .mockResolvedValueOnce(8);
+    const groupBy = vi.fn().mockResolvedValue([
+      { status: ProjectStatus.分析中, _count: { _all: 3 } },
+      { status: ProjectStatus.待处理, _count: { _all: 4 } },
+      { status: ProjectStatus.待复核, _count: { _all: 1 } },
+      { status: ProjectStatus.已回传, _count: { _all: 16 } },
+      { status: ProjectStatus.已取消, _count: { _all: 3 } },
+    ]);
+    const service = new ProjectQueryService(
+      { project: { findMany, count, groupBy } } as any,
+      { listScope: vi.fn() } as any,
+    );
+
+    const result = await service.findAll(
+      { id: 'business-1', role: 'business' },
+      { mine: true, statusGroup: 'processing', page: 2, size: 10 },
+    );
+
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        AND: [
+          { creatorId: 'business-1' },
+          businessStatusGroupWhere('processing'),
+        ],
+      },
+      skip: 10,
+      take: 10,
+    }));
+    expect(groupBy).toHaveBeenCalledWith({
+      by: ['status'],
+      where: { creatorId: 'business-1' },
+      _count: { _all: true },
+    });
+    expect(result).toMatchObject({
+      total: 8,
+      page: 2,
+      size: 10,
+      statusCounts: {
+        分析中: 3,
+        待处理: 4,
+        待复核: 1,
+        已回传: 16,
+        已取消: 3,
+      },
     });
   });
 });
