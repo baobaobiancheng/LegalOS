@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, useSlots } from 'vue'
 import { useRouter } from 'vue-router'
-import baijianLogo from '../assets/logo-header.jpeg'
+import bairongMark from '../assets/bairong-intelligence-mark.png'
 import { useAuthStore } from '../stores/auth'
 
 defineProps<{
@@ -51,8 +51,8 @@ async function handleLogout() {
       >
         <span class="workspace-logo">
           <img
-            :src="baijianLogo"
-            alt="百鉴"
+            :src="bairongMark"
+            alt="百融智能"
           >
         </span>
         <span class="workspace-brand-copy">
@@ -205,7 +205,7 @@ async function handleLogout() {
   flex: 0 0 auto;
 }
 
-.workspace-logo img { display: block; width: 62px; height: 62px; max-width: none; object-fit: cover; }
+.workspace-logo img { display: block; width: 46px; height: 46px; object-fit: contain; }
 .workspace-brand-copy { display: grid; min-width: 0; padding-top: 4px; gap: 12px; }
 .workspace-brand-copy strong { color: #0f172a; font-size: 23px; font-weight: 720; letter-spacing: -.035em; }
 .workspace-brand-copy small { width: 156px; color: #526174; font-size: 12px; letter-spacing: .13em; line-height: 1.7; }

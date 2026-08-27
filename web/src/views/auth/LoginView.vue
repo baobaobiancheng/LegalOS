@@ -7,8 +7,8 @@
       <div class="product-brand">
         <span class="brand-logo-frame">
           <img
-            :src="baijianLogo"
-            alt="百鉴"
+            :src="bairongMark"
+            alt="百融智能"
           >
         </span>
         <strong>LegalOS</strong>
@@ -187,7 +187,7 @@ import { gsap } from 'gsap'
 import { useRoute, useRouter } from 'vue-router'
 import DynamicLegalGlobe from '../../components/DynamicLegalGlobe.vue'
 import { RequestError } from '../../api/client'
-import baijianLogo from '../../assets/logo-header.jpeg'
+import bairongMark from '../../assets/bairong-intelligence-mark.png'
 import { useAuthStore } from '../../stores/auth'
 import { HOME_BY_ROLE, type Role } from '../../types'
 
@@ -311,10 +311,9 @@ onBeforeUnmount(() => animationContext?.revert())
 
 .brand-logo-frame img {
   display: block;
-  width: 48px;
-  height: 48px;
-  max-width: none;
-  object-fit: cover;
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
 }
 
 .product-brand strong {

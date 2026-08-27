@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import baijianLogo from '../assets/logo-header.jpeg'
+import bairongMark from '../assets/bairong-intelligence-mark.png'
 import { useAuthStore } from '../stores/auth'
 
 const props = defineProps<{
@@ -49,8 +49,8 @@ async function handleLogout() {
       >
         <span class="workspace-logo">
           <img
-            :src="baijianLogo"
-            alt="百鉴"
+            :src="bairongMark"
+            alt="百融智能"
           >
         </span>
         <span class="workspace-brand-copy">
@@ -196,10 +196,9 @@ async function handleLogout() {
 
 .workspace-logo img {
   display: block;
-  width: 62px;
-  height: 62px;
-  max-width: none;
-  object-fit: cover;
+  width: 46px;
+  height: 46px;
+  object-fit: contain;
 }
 
 .workspace-brand-copy {
