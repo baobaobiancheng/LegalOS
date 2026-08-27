@@ -39,7 +39,7 @@ describe('ResearchTraceV1', () => {
     expect(trace.limitations[0]).toContain('未检索到可核验法规正文');
   });
 
-  it('与 Agent 的 8 次工具预算保持一致', () => {
+  it('与 Agent 的 5 次工具预算保持一致', () => {
     const trace = buildResearchTrace('law_search', {
       text: 'answer',
       dshSessionId: 'session-8-calls',
@@ -64,8 +64,8 @@ describe('ResearchTraceV1', () => {
       })),
     });
 
-    expect(trace.calls).toHaveLength(8);
-    expect(trace.calls.at(-1)?.query).toBe('劳动合同-7');
+    expect(trace.calls).toHaveLength(5);
+    expect(trace.calls.at(-1)?.query).toBe('劳动合同-4');
   });
 
   it('自然语言语义查询在业务 trace 中只保存哈希', () => {
@@ -80,5 +80,35 @@ describe('ResearchTraceV1', () => {
     });
     expect(trace.calls[0].query).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(trace.calls[0].query).not.toContain('张三');
+  });
+
+  it('结构化搜法报告加入后仍严格限制在64KB内', () => {
+    const repeated = '法律分析'.repeat(2_000);
+    const report: any = {
+      schemaVersion: 1,
+      query: repeated,
+      title: repeated,
+      scope: repeated,
+      summary: repeated,
+      generatedAt: new Date().toISOString(),
+      sections: Array.from({ length: 8 }, (_, index) => ({
+        id: `section-${index}`, title: repeated, content: repeated,
+        sourceIds: Array.from({ length: 10 }, (__, sourceIndex) => `law-${sourceIndex}`),
+      })),
+      sources: Array.from({ length: 10 }, (_, index) => ({
+        recordId: `law-${index}`, lawName: repeated, issuingOrgan: repeated,
+        issuingNo: repeated, releaseDate: repeated, implementDate: repeated,
+        timeliness: repeated,
+        articles: Array.from({ length: 3 }, (__, articleIndex) => ({ article: `第${articleIndex}条`, text: repeated })),
+      })),
+      limitations: Array.from({ length: 8 }, () => repeated),
+      metrics: { candidateCount: 10, verifiedSourceCount: 10, citedSourceCount: 10 },
+    };
+    const trace = buildResearchTrace('law_search', {
+      text: 'answer', dshSessionId: 'oversized', toolCalls: [], toolResults: [],
+    }, report);
+
+    expect(Buffer.byteLength(JSON.stringify(trace), 'utf8')).toBeLessThanOrEqual(64 * 1024);
+    expect(trace.report?.sources).toHaveLength(10);
   });
 });

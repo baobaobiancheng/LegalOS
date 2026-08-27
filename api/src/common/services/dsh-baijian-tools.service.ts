@@ -7,6 +7,7 @@ import {
 } from '../baijian/baijian.types';
 import {
   DSH_LAW_ADVANCED_SEARCH_TOOL,
+  DSH_LAW_BATCH_DETAIL_TOOL,
   DSH_LAW_DETAIL_TOOL,
   DSH_LAW_SEMANTIC_SEARCH_TOOL,
   DSH_CASE_SEARCH_TOOL,
@@ -99,6 +100,34 @@ export class DshBaijianToolsService {
           return result as any;
         },
       }), defineTool({
+        name: DSH_LAW_BATCH_DETAIL_TOOL,
+        description: '批量读取最多10部候选法规的权威正文，并分别定位与本案相关条文。lawIds 必须全部来自本轮搜索结果；一次调用完成批量核验，避免逐部法规反复调用。',
+        parameters: {
+          lawIds: { type: 'array', required: true, items: { type: 'string' }, description: '搜索结果返回的法规ID数组，去重后最多10个。' },
+          query: { type: 'string', required: true, description: '需要在各部法规正文中定位的法律问题或制度关键词。' },
+        },
+        output: this.outputDefinition(),
+        timeoutMs: 90_000,
+        async execute(args, exec) {
+          const lawIds = [...new Set((Array.isArray(args.lawIds) ? args.lawIds : [])
+            .map((value: unknown) => String(value ?? '').trim())
+            .filter(Boolean))].slice(0, 10);
+          if (!lawIds.length) throw new Error('批量法规详情至少需要一个候选法规ID');
+          const unknown = lawIds.find((lawId) => !candidates.has(lawId.toLowerCase()));
+          if (unknown) throw new Error(`法规详情 ID 必须来自本轮搜索结果：${unknown}`);
+          const sharedQuery = boundedText(args.query, 300);
+          if (!sharedQuery) throw new Error('批量法规详情必须提供 query 以定位目标正文');
+          const details = await mapWithConcurrency(lawIds, 3, async (lawId) => {
+            const candidate = candidates.get(lawId.toLowerCase())!;
+            const detail = await baijian.getLawDetail({ lawId }, exec.signal);
+            return projectLawDetail(detail, {
+              articleHint: candidate.articleNumber || undefined,
+              query: candidate.matchedContent || sharedQuery,
+            }, { maxBytes: 14 * 1024, maxBlocks: 24, maxRankedBlocks: 4, radius: 1 });
+          });
+          return { toolName: DSH_LAW_BATCH_DETAIL_TOOL, details } as any;
+        },
+      }), defineTool({
         name: DSH_LAW_DETAIL_TOOL,
         description: '读取候选法规的权威正文，并从完整法规中定位目标条文。lawId 必须来自本轮搜索结果；传 articleHint（如第八十七条）或 query（如违法解除赔偿金），不要通读无关正文。',
         parameters: {
@@ -175,6 +204,7 @@ function rememberCandidates(
 export function projectLawDetail(
   detail: BaijianLawDetail,
   target: { articleHint?: string; query?: string },
+  budget: { maxBytes?: number; maxBlocks?: number; maxRankedBlocks?: number; radius?: number } = {},
 ): BaijianLawDetail & { selection: { articleHint: string | null; query: string | null; matched: boolean } } {
   const articleHint = target.articleHint?.trim() || null;
   const query = target.query?.trim() || null;
@@ -185,11 +215,15 @@ export function projectLawDetail(
   const rankedIndexes = exactIndexes.length
     ? exactIndexes
     : rankRelevantBlocks(detail.contentBlocks, query ?? '');
-  const selectedIndexes = expandIndexes(rankedIndexes.slice(0, 8), detail.contentBlocks.length, 2);
+  const selectedIndexes = expandIndexes(
+    rankedIndexes.slice(0, budget.maxRankedBlocks ?? 8),
+    detail.contentBlocks.length,
+    budget.radius ?? 2,
+  );
   const contentBlocks = takeWithinBudget(
     selectedIndexes.map((index) => detail.contentBlocks[index]),
-    80 * 1024,
-    120,
+    budget.maxBytes ?? 80 * 1024,
+    budget.maxBlocks ?? 120,
   );
   return {
     ...detail,
@@ -259,4 +293,22 @@ function boundedText(value: unknown, maxLength: number): string | undefined {
 function clamp(value: number | undefined, min: number, max: number, fallback: number): number {
   if (!Number.isInteger(value)) return fallback;
   return Math.min(max, Math.max(min, value!));
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const output = new Array<R>(items.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      output[index] = await mapper(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return output;
 }

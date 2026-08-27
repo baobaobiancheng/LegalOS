@@ -53,3 +53,21 @@ export class LawDetailParamsDto {
 }
 
 export class LawDetailQueryDto extends RefreshableResearchDto {}
+
+export class AiLawResearchDto {
+  @IsString()
+  @MinLength(2)
+  @MaxLength(1000)
+  query: string;
+}
+
+export class AiLawReportDownloadDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(128)
+  reportId: string;
+
+  @IsString()
+  @Matches(/^(md|docx)$/)
+  format: 'md' | 'docx';
+}

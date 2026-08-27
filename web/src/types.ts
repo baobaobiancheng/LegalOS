@@ -99,7 +99,43 @@ export type ResearchTraceV1 = {
   status: 'success_hit' | 'success_empty'
   dshSessionId: string
   calls: Array<{ tool: string; query: string; recordIds: string[]; records: Array<Record<string, unknown>> }>
+  report?: AiLawResearchReportV1
   limitations: string[]
+}
+
+export type AiLawResearchSectionV1 = {
+  id: string
+  title: string
+  content: string
+  sourceIds: string[]
+}
+
+export type AiLawResearchSourceV1 = {
+  recordId: string
+  lawName: string
+  issuingOrgan: string | null
+  issuingNo: string | null
+  releaseDate: string | null
+  implementDate: string | null
+  timeliness: string | null
+  articles: Array<{ article: string; text: string }>
+}
+
+export type AiLawResearchReportV1 = {
+  schemaVersion: 1
+  query: string
+  title: string
+  scope: string
+  summary: string
+  sections: AiLawResearchSectionV1[]
+  sources: AiLawResearchSourceV1[]
+  limitations: string[]
+  generatedAt: string
+  metrics: {
+    candidateCount: number
+    verifiedSourceCount: number
+    citedSourceCount: number
+  }
 }
 
 export type EventDto = {

@@ -15,10 +15,13 @@ import {
   DshToolCallEvent,
   DshToolResultEvent,
   DSH_CASE_SEARCH_TOOL,
+  DSH_LAW_BATCH_DETAIL_TOOL,
   DSH_LAW_DETAIL_TOOL,
+  DshToolResultValue,
   toolNamesForCapability,
 } from './dsh-agent.types';
 import { BaijianNormalizedToolResult } from '../baijian/baijian.types';
+import { verifiedLawDetails } from './ai-law-research-report';
 
 /** dsh 侧类型（ESM-only，运行时按需 import；这里只声明调用方需要的最小结构方便类型检查）。 */
 interface DshContext {
@@ -103,7 +106,7 @@ export class DshService implements OnModuleDestroy {
       || this.config.get('LLM_MODEL', 'glm-5-2');
     this.modelContextWindow = positiveInteger(this.config.get('DSH_MODEL_CONTEXT_WINDOW'), 131_072);
     this.maxOutputTokens = positiveInteger(this.config.get('DSH_MODEL_MAX_OUTPUT_TOKENS'), 16_000);
-    this.toolCallLimit = positiveInteger(this.config.get('DSH_AGENT_TOOL_CALL_MAX'), 8);
+    this.toolCallLimit = positiveInteger(this.config.get('DSH_AGENT_TOOL_CALL_MAX'), 5);
     this.logger.log(`dsh 库嵌入：DSH_HOME=${this.dshHome} provider=${this.providerId} base=${this.modelBaseUrl} 模型=${this.defaultModel}`);
   }
 
@@ -443,9 +446,13 @@ function parseToolArguments(value: unknown): unknown {
   }
 }
 
-function readBaijianResultMeta(value: unknown): BaijianNormalizedToolResult | undefined {
+function readBaijianResultMeta(value: unknown): DshToolResultValue | undefined {
   if (!isRecord(value) || value.kind !== DSH_BAIJIAN_RESULT_META_KIND) return undefined;
-  return isRecord(value.result) ? value.result as unknown as BaijianNormalizedToolResult : undefined;
+  if (!isRecord(value.result)) return undefined;
+  if (value.result.toolName === DSH_LAW_BATCH_DETAIL_TOOL && Array.isArray(value.result.details)) {
+    return value.result as unknown as DshToolResultValue;
+  }
+  return value.result as unknown as BaijianNormalizedToolResult;
 }
 
 export function validateResearchEvidence(
@@ -466,26 +473,24 @@ export function validateResearchEvidence(
   }
 
   const searches = toolResults.filter((result) =>
-    result.name !== DSH_LAW_DETAIL_TOOL && !result.isError && result.result && 'records' in result.result);
+    result.name !== DSH_LAW_DETAIL_TOOL
+      && result.name !== DSH_LAW_BATCH_DETAIL_TOOL
+      && !result.isError
+      && result.result
+      && 'records' in result.result);
   if (!searches.length) throw new Error('dsh Agent 未产生成功的法规检索结果');
   const candidateIds = new Set(searches.flatMap((result) =>
     'records' in result.result! ? result.result.records.map((record) => record.recordId.toLowerCase()) : []));
   if (!candidateIds.size) {
-    if (!text.trim().startsWith('未检索到可核验来源')) {
+    if (!evidenceTextForValidation(text).trim().startsWith('未检索到可核验来源')) {
       throw new Error('dsh Agent 零结果时未声明无可核验来源');
     }
     return;
   }
 
-  const details = toolResults.filter((result) =>
-    result.name === DSH_LAW_DETAIL_TOOL
-      && !result.isError
-      && result.result
-      && 'contentBlocks' in result.result
-      && result.result.contentBlocks.length > 0);
+  const details = verifiedLawDetails(toolResults);
   if (!details.length) throw new Error('dsh Agent 命中法规后未读取权威正文');
-  const detailedIds = new Set(details.map((result) =>
-    'recordId' in result.result! ? result.result.recordId.toLowerCase() : ''));
+  const detailedIds = new Set(details.map((detail) => detail.recordId.toLowerCase()));
   const outsideCandidate = [...detailedIds].find((id) => !candidateIds.has(id));
   if (outsideCandidate) throw new Error(`dsh Agent 读取了非候选法规：${outsideCandidate}`);
 
@@ -497,14 +502,10 @@ export function validateResearchEvidence(
 
   const evidenceQuotes = extractEvidenceQuotes(answerText);
   if (!evidenceQuotes.length) throw new Error('dsh Agent 最终回答未提供可核验的法规原文引用');
-  const contentById = new Map(details.map((result) => {
-    const detail = result.result!;
-    const id = 'recordId' in detail ? detail.recordId.toLowerCase() : '';
-    const content = 'contentBlocks' in detail
-      ? normalizeEvidenceText(detail.contentBlocks.map((block) => block.text).join('\n'))
-      : '';
-    return [id, content] as const;
-  }));
+  const contentById = new Map(details.map((detail) => [
+    detail.recordId.toLowerCase(),
+    normalizeEvidenceText(detail.contentBlocks.map((block) => block.text).join('\n')),
+  ] as const));
   for (const quote of evidenceQuotes) {
     const sourceText = contentById.get(quote.recordId);
     if (!sourceText) throw new Error(`dsh Agent 原文引用了未核验法规 ID：${quote.recordId}`);

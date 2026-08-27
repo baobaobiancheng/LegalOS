@@ -3,6 +3,7 @@ import { DshBaijianToolsService, DSH_BAIJIAN_RESULT_META_KIND } from '../src/com
 import {
   DSH_CASE_SEARCH_TOOL,
   DSH_LAW_ADVANCED_SEARCH_TOOL,
+  DSH_LAW_BATCH_DETAIL_TOOL,
   DSH_LAW_DETAIL_TOOL,
   DSH_LAW_SEARCH_TOOL,
   DSH_LAW_SEMANTIC_SEARCH_TOOL,
@@ -55,6 +56,7 @@ describe('DshBaijianToolsService', () => {
       DSH_LAW_SEARCH_TOOL,
       DSH_LAW_ADVANCED_SEARCH_TOOL,
       DSH_LAW_SEMANTIC_SEARCH_TOOL,
+      DSH_LAW_BATCH_DETAIL_TOOL,
       DSH_LAW_DETAIL_TOOL,
     ]);
     const quick = definitions.find((item) => item.name === DSH_LAW_SEARCH_TOOL);
@@ -68,6 +70,47 @@ describe('DshBaijianToolsService', () => {
     expect(result.contentBlocks.length).toBeLessThan(contentBlocks.length);
     expect(result.contentBlocks.some((block: any) => block.text.includes('第八十七条'))).toBe(true);
     expect(result.contentBlocks.some((block: any) => block.text.includes('第1条'))).toBe(false);
+  });
+
+  it('批量详情一次核验最多10部本轮候选法规，并限制并发与正文体积', async () => {
+    const lawIds = Array.from({ length: 12 }, (_, index) => index.toString(16).padStart(32, '0').toUpperCase());
+    let active = 0;
+    let maxActive = 0;
+    const baijian = {
+      searchLaws: vi.fn().mockResolvedValue({
+        records: lawIds.map((recordId) => ({ recordId, matchedContent: '经济补偿' })),
+      }),
+      searchLawsAdvanced: vi.fn(),
+      searchLawsSemantic: vi.fn(),
+      getLawDetail: vi.fn().mockImplementation(async ({ lawId }: { lawId: string }) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        active -= 1;
+        return {
+          toolName: 'lawstar_data_professional_detail',
+          recordId: lawId,
+          lawName: `法规-${lawId}`,
+          toc: [],
+          contentBlocks: Array.from({ length: 80 }, (_, index) => ({
+            id: null,
+            kind: 'paragraph',
+            text: index === 40 ? '第四十七条 经济补偿按劳动者工作年限计算。' : `第${index}条 ${'法'.repeat(300)}`,
+          })),
+        };
+      }),
+    };
+    const definitions = await new DshBaijianToolsService(baijian as any).createDefinitions('law_search');
+    const signal = new AbortController().signal;
+    await definitions.find((item) => item.name === DSH_LAW_SEARCH_TOOL)
+      .execute({ keyword: '经济补偿' }, { signal } as any);
+    const batch = definitions.find((item) => item.name === DSH_LAW_BATCH_DETAIL_TOOL);
+    const result = await batch.execute({ lawIds, query: '经济补偿' }, { signal } as any);
+
+    expect(result.details).toHaveLength(10);
+    expect(baijian.getLawDetail).toHaveBeenCalledTimes(10);
+    expect(maxActive).toBeLessThanOrEqual(3);
+    expect(result.details.every((detail: any) => Buffer.byteLength(JSON.stringify(detail.contentBlocks), 'utf8') < 15 * 1024)).toBe(true);
   });
 
   it('详情工具在未提供定位信息时拒绝通读整部法规', async () => {

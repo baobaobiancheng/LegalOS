@@ -365,7 +365,16 @@ export class ConsultationReplyOrchestrator {
                 })
                 .catch(() => undefined);
             }
-            await this.recordAiOutcome('ai.run.failed', 'failed', projectId, runId, capability, modelVersion, publicMessage);
+            await this.recordAiOutcome(
+              'ai.run.failed',
+              'failed',
+              projectId,
+              runId,
+              capability,
+              modelVersion,
+              publicMessage,
+              child.__errorCode ?? 'AI_EXECUTION_FAILED',
+            );
           } catch (err) {
             this.logger.error(`失败状态更新失败：${err}`);
           }
@@ -440,6 +449,7 @@ export class ConsultationReplyOrchestrator {
     capability: ConsultationCapability,
     modelVersion: string,
     reason: string,
+    reasonCode = 'AI_EXECUTION_FAILED',
   ) {
     if (!runId || !this.audit) return;
     await this.audit.record({
@@ -450,7 +460,7 @@ export class ConsultationReplyOrchestrator {
       projectId,
       source: capability === 'general' ? 'api' : 'dsh',
       outcome,
-      reasonCode: outcome === 'failed' ? 'AI_EXECUTION_FAILED' : null,
+      reasonCode: outcome === 'failed' ? reasonCode : null,
       correlationId: runId,
       metadata: {
         capability,
@@ -501,7 +511,7 @@ export class ConsultationReplyOrchestrator {
 
 function buildToolSummary(trace: any): Array<{ tool: string; recordCount: number }> {
   if (!trace?.calls || !Array.isArray(trace.calls)) return [];
-  return trace.calls.slice(0, 8).map((call: any) => ({
+  return trace.calls.slice(0, 5).map((call: any) => ({
     tool: String(call?.tool ?? '').slice(0, 80),
     recordCount: Array.isArray(call?.recordIds) ? call.recordIds.length : 0,
   }));

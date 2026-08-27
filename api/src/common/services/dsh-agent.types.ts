@@ -1,9 +1,10 @@
-import { BaijianNormalizedToolResult } from '../baijian/baijian.types';
+import { BaijianLawDetail, BaijianNormalizedToolResult } from '../baijian/baijian.types';
 
 export const DSH_LAW_SEARCH_TOOL = 'search_laws' as const;
 export const DSH_LAW_ADVANCED_SEARCH_TOOL = 'search_laws_advanced' as const;
 export const DSH_LAW_SEMANTIC_SEARCH_TOOL = 'search_laws_semantic' as const;
 export const DSH_LAW_DETAIL_TOOL = 'get_law_detail' as const;
+export const DSH_LAW_BATCH_DETAIL_TOOL = 'get_law_details' as const;
 export const DSH_CASE_SEARCH_TOOL = 'search_similar_cases' as const;
 
 export type DshResearchCapability = 'law_search' | 'similar_case';
@@ -11,7 +12,15 @@ export type DshResearchToolName = typeof DSH_LAW_SEARCH_TOOL
   | typeof DSH_LAW_ADVANCED_SEARCH_TOOL
   | typeof DSH_LAW_SEMANTIC_SEARCH_TOOL
   | typeof DSH_LAW_DETAIL_TOOL
+  | typeof DSH_LAW_BATCH_DETAIL_TOOL
   | typeof DSH_CASE_SEARCH_TOOL;
+
+export interface DshLawBatchDetailResult {
+  toolName: typeof DSH_LAW_BATCH_DETAIL_TOOL;
+  details: BaijianLawDetail[];
+}
+
+export type DshToolResultValue = BaijianNormalizedToolResult | DshLawBatchDetailResult;
 
 export interface DshToolCallEvent {
   callId: string;
@@ -23,7 +32,7 @@ export interface DshToolResultEvent {
   callId: string;
   name: string;
   isError: boolean;
-  result?: BaijianNormalizedToolResult;
+  result?: DshToolResultValue;
   error?: { name: string; code: string };
 }
 
@@ -56,6 +65,12 @@ export function toolNameForCapability(capability: DshResearchCapability): DshRes
 
 export function toolNamesForCapability(capability: DshResearchCapability): DshResearchToolName[] {
   return capability === 'law_search'
-    ? [DSH_LAW_SEARCH_TOOL, DSH_LAW_ADVANCED_SEARCH_TOOL, DSH_LAW_SEMANTIC_SEARCH_TOOL, DSH_LAW_DETAIL_TOOL]
+    ? [
+        DSH_LAW_SEARCH_TOOL,
+        DSH_LAW_ADVANCED_SEARCH_TOOL,
+        DSH_LAW_SEMANTIC_SEARCH_TOOL,
+        DSH_LAW_DETAIL_TOOL,
+        DSH_LAW_BATCH_DETAIL_TOOL,
+      ]
     : [DSH_CASE_SEARCH_TOOL];
 }

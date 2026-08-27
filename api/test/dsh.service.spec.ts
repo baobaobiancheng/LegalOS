@@ -85,6 +85,26 @@ describe('DshService 法律检索执行契约', () => {
       .toThrow('零结果时未声明无可核验来源');
     expect(() => validateResearchEvidence('law_search', '未检索到可核验来源。请补充信息。', calls, results))
       .not.toThrow();
+    expect(() => validateResearchEvidence('law_search', JSON.stringify({
+      answer: '未检索到可核验来源。请补充信息。',
+      evidenceQuotes: [],
+    }), calls, results)).not.toThrow();
+  });
+
+  it('批量详情与单条详情使用同一法规原文校验规则', () => {
+    const lawId = 'D6592443DA000EF8D692CE667E947A69';
+    const original = '经济补偿按劳动者在本单位工作的年限，每满一年支付一个月工资。';
+    const text = JSON.stringify({
+      answer: `结论 ID: ${lawId}`,
+      evidenceQuotes: [{ recordId: lawId, article: '第四十七条', text: original }],
+    });
+    expect(() => validateResearchEvidence('law_search', text, [
+      { callId: '1', name: 'search_laws_semantic', arguments: { query: '经济补偿' } },
+      { callId: '2', name: 'get_law_details', arguments: { lawIds: [lawId], query: '经济补偿' } },
+    ] as any[], [
+      { name: 'search_laws_semantic', isError: false, result: { records: [{ recordId: lawId }] } },
+      { name: 'get_law_details', isError: false, result: { toolName: 'get_law_details', details: [{ recordId: lawId, contentBlocks: [{ text: original }] }] } },
+    ] as any[])).not.toThrow();
   });
 
   it('转发原生工具事件，并把本轮标准化结果放入权威 completion', async () => {
@@ -174,7 +194,7 @@ describe('DshService 法律检索执行契约', () => {
 
   it('工具调用超过单轮硬上限时取消 Agent 并返回错误', async () => {
     const harness = makeHarness(({ publish }) => {
-      for (let index = 1; index <= 9; index += 1) {
+      for (let index = 1; index <= 6; index += 1) {
         publish({
           type: 'tool/call',
           data: { callId: `call-${index}`, name: 'search_laws', arguments: '{}' },
@@ -186,10 +206,10 @@ describe('DshService 法律检索执行契约', () => {
       requireResearchTool: true,
     });
 
-    await expect(completionOf(handle)).rejects.toThrow('工具调用超过上限（8）');
+    await expect(completionOf(handle)).rejects.toThrow('工具调用超过上限（5）');
     expect(harness.cancel).toHaveBeenCalledWith({
       kind: 'hook',
-      reason: 'dsh Agent 工具调用超过上限（8）',
+      reason: 'dsh Agent 工具调用超过上限（5）',
     });
     expect(harness.dispose).toHaveBeenCalledOnce();
   });

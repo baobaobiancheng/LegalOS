@@ -4,9 +4,10 @@ import { ArrowLeft, ArrowRight, Close, CopyDocument, Document } from '@element-p
 import { gsap } from 'gsap'
 import { request, RequestError } from '../../api/client'
 import LegalWorkspaceLayout from '../../components/LegalWorkspaceLayout.vue'
+import AiLegalResearchPanel from '../../components/AiLegalResearchPanel.vue'
 import { buildPagination } from '../../domain/legal-research'
 
-type Mode = 'laws' | 'cases'
+type Mode = 'laws' | 'cases' | 'ai'
 interface CacheInfo { status:'hit'|'miss'|'refresh'|'shared'; fetchedAt:string; lastVerifiedAt:string }
 interface LawRecord { source:'lawstar'; recordId:string; lawName:string; issuingOrgan:string|null; issuingNo:string|null; releaseDate:string|null; implementDate:string|null; timeliness:string|null }
 interface CaseRecord { source:'ldh'; recordId:string; title:string; court:string|null; caseNumber:string|null; date:string|null; country:string|null; snippet:string|null; url:string|null }
@@ -16,14 +17,15 @@ interface LawTocItem { id:string; text:string; level:number; children:LawTocItem
 interface LawContentBlock { id:string|null; kind:'heading'|'paragraph'|'signature'; text:string }
 interface LawDetail { recordId:string; lawName:string; issuingOrgan:string|null; issuingNo:string|null; releaseDate:string|null; implementDate:string|null; timeliness:string|null; hasCompare:boolean; historyCount:number; enclosureCount:number; basisCount:number; toc:LawTocItem[]; contentBlocks:LawContentBlock[]; cache:CacheInfo }
 type ResearchResult = LawSearchResult | CaseSearchResult
-type SearchState = { query:string; submittedQuery:string; page:number; loading:boolean; result:ResearchResult|null; previous:ResearchResult|null; error:RequestError|null }
+type SearchState = { query:string; submittedQuery:string; activeQuery:string; page:number; loading:boolean; result:ResearchResult|null; previous:ResearchResult|null; error:RequestError|null }
 
 const RECOMMENDED_QUERIES = ['竞业限制', '经济补偿', '劳务派遣', '工伤认定']
 const pageRoot = ref<HTMLElement | null>(null)
 const mode = ref<Mode>('laws')
 const state = reactive<Record<Mode, SearchState>>({
-  laws: { query:'', submittedQuery:'', page:1, loading:false, result:null, previous:null, error:null },
-  cases: { query:'', submittedQuery:'', page:1, loading:false, result:null, previous:null, error:null },
+  laws: { query:'', submittedQuery:'', activeQuery:'', page:1, loading:false, result:null, previous:null, error:null },
+  cases: { query:'', submittedQuery:'', activeQuery:'', page:1, loading:false, result:null, previous:null, error:null },
+  ai: { query:'', submittedQuery:'', activeQuery:'', page:1, loading:false, result:null, previous:null, error:null },
 })
 const lawFilters = reactive({ timeliness: 'all', issuer: 'all', releasePeriod: 'all' })
 const detailDialog = ref<HTMLDialogElement|null>(null)
@@ -35,7 +37,7 @@ const visibleBlockCount = ref(400)
 const copied = ref(false)
 let animationContext: gsap.Context | null = null
 
-const currentResult = computed(() => state[mode.value].result)
+const currentResult = computed(() => mode.value === 'ai' ? null : state[mode.value].result)
 const lawResult = computed(() => currentResult.value?.toolName === 'lawstar_data_professional_query' ? currentResult.value : null)
 const caseResult = computed(() => currentResult.value?.toolName === 'ldh_search' ? currentResult.value : null)
 const pagination = computed(() => lawResult.value ? buildPagination(lawResult.value.page, lawResult.value.totalPages) : [])
@@ -69,6 +71,7 @@ async function animateResults() {
 }
 async function search(page = 1, refresh = false) {
   const searchMode = mode.value
+  if (searchMode === 'ai') return
   const current = state[searchMode]
   const query = page === 1 ? current.query.trim() : current.submittedQuery
   if (!query || current.loading) return
@@ -79,6 +82,7 @@ async function search(page = 1, refresh = false) {
   current.result = null
   current.error = null
   current.page = page
+  current.activeQuery = query
   current.loading = true
   let succeeded = false
   try {
@@ -170,9 +174,14 @@ onBeforeUnmount(() => animationContext?.revert())
     >
       <header class="research-heading">
         <p class="breadcrumb">
-          法务工作台 <span>/</span> 法规与类案检索
+          法务工作台 <span>/</span> 法规与类案检索 <template v-if="mode === 'ai'">
+            <span>/</span> AI 搜法
+          </template>
         </p>
-        <div class="heading-copy">
+        <div
+          v-if="mode !== 'ai'"
+          class="heading-copy"
+        >
           <h1>法规与类案检索</h1><span class="heading-divider" /><p>检索权威法规与裁判案例，保留可核验的依据链</p>
         </div>
       </header>
@@ -198,8 +207,17 @@ onBeforeUnmount(() => animationContext?.revert())
           >
             类案检索
           </button>
+          <button
+            :class="{ active:mode === 'ai' }"
+            role="tab"
+            :aria-selected="mode === 'ai'"
+            @click="changeMode('ai')"
+          >
+            AI 搜法
+          </button>
         </div>
         <form
+          v-if="mode !== 'ai'"
           class="search-form"
           @submit.prevent="search(1)"
         >
@@ -230,7 +248,10 @@ onBeforeUnmount(() => animationContext?.revert())
             {{ state[mode].loading ? '检索中…' : '检索' }}
           </button>
         </form>
-        <div class="recommended-queries">
+        <div
+          v-if="mode !== 'ai'"
+          class="recommended-queries"
+        >
           <strong>推荐检索：</strong><button
             v-for="query in RECOMMENDED_QUERIES"
             :key="query"
@@ -242,13 +263,15 @@ onBeforeUnmount(() => animationContext?.revert())
         </div>
       </section>
 
+      <AiLegalResearchPanel v-if="mode === 'ai'" />
+
       <section
-        v-if="state[mode].loading"
+        v-else-if="state[mode].loading"
         class="results-section"
         aria-live="polite"
       >
         <div class="results-heading">
-          <div><h2>检索结果</h2><span>正在检索“{{ state[mode].submittedQuery || state[mode].query }}”</span></div>
+          <div><h2>检索结果</h2><span>正在检索“{{ state[mode].activeQuery }}”</span></div>
         </div>
         <div
           class="result-table loading-table"
@@ -557,7 +580,7 @@ onBeforeUnmount(() => animationContext?.revert())
 .heading-copy h1 { margin: 0; color: #0B1222; font-size: clamp(34px, 3.2vw, 46px); font-weight: 680; letter-spacing: -0.045em; line-height: 1; white-space: nowrap; }
 .heading-divider { width: 1px; height: 36px; flex: 0 0 auto; background: #CBD5E1; }
 .heading-copy p { margin: 0; color: #526174; font-size: 15px; white-space: nowrap; }
-.mode-tabs { display: grid; width: min(100%, 488px); overflow: hidden; grid-template-columns: repeat(2, 1fr); margin-bottom: 24px; border: 1px solid #D4DCE8; border-radius: 7px; background: #FFFFFF; }
+.mode-tabs { display: grid; width: min(100%, 630px); overflow: hidden; grid-template-columns: repeat(3, 1fr); margin-bottom: 24px; border: 1px solid #D4DCE8; border-radius: 7px; background: #FFFFFF; }
 .mode-tabs button { position: relative; min-height: 50px; border: 0; border-left: 1px solid #E5EAF1; background: #FFFFFF; color: #41506A; font: inherit; font-size: 15px; font-weight: 600; }
 .mode-tabs button:first-child { border-left: 0; }
 .mode-tabs button::after { position: absolute; inset: auto 0 0; height: 3px; background: transparent; content: ""; }

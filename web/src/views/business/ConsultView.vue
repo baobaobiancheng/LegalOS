@@ -8,10 +8,11 @@ import type { AttachedFile } from '../../composables/useFileUpload'
 import { useSmoothStream } from '../../composables/useSmoothStream'
 import MarkdownContent from '../../components/MarkdownContent.vue'
 import DownloadMenu from '../../components/DownloadMenu.vue'
+import AiLawReport from '../../components/AiLawReport.vue'
 import ChatInputBar from '../../components/ChatInputBar.vue'
 import BusinessSidebarLayout from '../../components/BusinessSidebarLayout.vue'
 import ErrorState from '../../components/ErrorState.vue'
-import type { ProjectDetail } from '../../types'
+import type { AiLawResearchReportV1, ProjectDetail } from '../../types'
 
 const { buildFullInput, buildDisplayText, formatSize } = useFileUpload()
 const pageRoot = ref<HTMLElement | null>(null)
@@ -49,7 +50,28 @@ const thinkingTail = computed(() => {
 const lastError = ref<RequestError | null>(null)
 type ConsultationCapability = 'general' | 'law_search' | 'similar_case'
 const selectedCapability = ref<ConsultationCapability>('general')
+const runningCapability = ref<ConsultationCapability>('general')
+const expandedReportIds = ref<string[]>([])
 const lastSubmission = ref<{ text: string; files: AttachedFile[]; capability: ConsultationCapability } | null>(null)
+
+function reportKey(message: any) {
+  return String(message.id ?? message._key ?? '')
+}
+
+function reportOf(message: any): AiLawResearchReportV1 | null {
+  return message?.research?.trace?.report ?? null
+}
+
+function isReportExpanded(message: any) {
+  return expandedReportIds.value.includes(reportKey(message))
+}
+
+function toggleReport(message: any) {
+  const key = reportKey(message)
+  expandedReportIds.value = isReportExpanded(message)
+    ? expandedReportIds.value.filter(item => item !== key)
+    : [...expandedReportIds.value, key]
+}
 
 // ── 会话持久化（2026-08-11）：切页/刷新保留当前咨询，「新建会话」才清空 ──
 const SESSION_KEY = 'legalos:consult-session'
@@ -208,6 +230,7 @@ const handleSend = async (text: string, files: AttachedFile[], capability = sele
   if (sending.value || expectingAI.value || restoring.value) return
   const gen = sessionGen // 新建会话后丢弃过期响应
   lastSubmission.value = { text, files, capability }
+  runningCapability.value = capability
   const fullInput = buildFullInput(text, files)
   const displayText = buildDisplayText(text, files)
   // 首条消息：建单已落库,后续 /messages 只启动首轮回答(firstReply=true,不重复写消息/评估)
@@ -616,19 +639,27 @@ onUnmounted(() => {
                 </div>
                 <div class="msg-body">
                   <div class="msg-bubble">
+                    <AiLawReport
+                      v-if="m.role === 'assistant' && reportOf(m)"
+                      :report="m.research.trace.report"
+                      :compact="!isReportExpanded(m)"
+                      :anchor-prefix="`consult-report-${reportKey(m)}`"
+                      expandable
+                      @toggle-full="toggleReport(m)"
+                    />
                     <div
-                      v-if="m.role === 'assistant' && m.research"
+                      v-else-if="m.role === 'assistant' && m.research"
                       class="evidence-status"
                     >
                       <span>✓ {{ m.research.trace.status === 'success_hit' ? '已完成来源检索' : '未检索到可核验来源' }}</span>
                     </div>
                     <MarkdownContent
-                      v-if="m.role === 'assistant'"
+                      v-if="m.role === 'assistant' && !reportOf(m)"
                       :text="m.text"
                       :streaming="m.status === 'streaming'"
                       :done="m.status === 'completed'"
                     />
-                    <template v-else>
+                    <template v-else-if="m.role !== 'assistant'">
                       {{ m.text }}
                     </template>
                     <!-- P0-3：流式错误/不完整附着在回答内，不再全局 ErrorState 双重显示 -->
@@ -639,7 +670,7 @@ onUnmounted(() => {
                       {{ m.errorText || (m.status === 'incomplete' ? '回答可能不完整' : 'AI 答复生成失败') }}
                     </div>
                     <details
-                      v-if="m.role === 'assistant' && m.research?.trace?.calls?.some((call: any) => call.records?.length)"
+                      v-if="m.role === 'assistant' && !reportOf(m) && m.research?.trace?.calls?.some((call: any) => call.records?.length)"
                       class="research-sources"
                       open
                     >
@@ -745,7 +776,7 @@ onUnmounted(() => {
                   class="thinking-toggle"
                   @click="showThinking = !showThinking"
                 >
-                  {{ showThinking ? '▾' : '▸' }} {{ thinkingDone ? '分析完成' : '思考过程' }}
+                  {{ showThinking ? '▾' : '▸' }} {{ runningCapability === 'law_search' ? (thinkingDone ? '检索完成' : '检索过程') : (thinkingDone ? '分析完成' : '思考过程') }}
                 </button>
                 <div
                   v-if="showThinking"

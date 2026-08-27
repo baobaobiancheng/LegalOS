@@ -11,6 +11,8 @@ const props = defineProps<{
   auditProjectId?: string
   auditResourceType?: 'contract' | 'consultation_record'
   auditResourceId?: string
+  auditEndpoint?: string
+  auditPayload?: Record<string, unknown>
 }>()
 
 const open = ref(false)
@@ -67,6 +69,13 @@ const triggerDownload = (blob: Blob, filename: string) => {
 }
 
 const recordDownload = async (format: 'md' | 'docx') => {
+  if (props.auditEndpoint) {
+    await request<void>(props.auditEndpoint, {
+      method: 'POST',
+      body: { ...(props.auditPayload ?? {}), format },
+    })
+    return
+  }
   if (!props.auditProjectId || !props.auditResourceType) return
   await request<void>(`/projects/${props.auditProjectId}/downloads`, {
     method: 'POST',
