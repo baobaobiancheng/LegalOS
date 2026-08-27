@@ -88,4 +88,35 @@ describe('HttpExceptionFilter requestId', () => {
     expect(res.json.mock.calls[0][0]).not.toHaveProperty('supplierCode');
     expect(res.json.mock.calls[0][0]).not.toHaveProperty('cause');
   });
+
+  it('权限拒绝写 authorization.denied，且只保存登录账号哈希', async () => {
+    const res: any = { status: vi.fn().mockReturnThis(), json: vi.fn(), setHeader: vi.fn() };
+    const req: any = {
+      requestId: 'rid-login-denied',
+      method: 'POST',
+      path: '/api/auth/cas-login',
+      originalUrl: '/api/auth/cas-login',
+      headers: { 'user-agent': 'Edge/Test' },
+      body: { username: 'zhenghe.bao', password: 'must-not-log' },
+      params: {},
+      ip: '192.168.1.8',
+    };
+    const audit = {
+      fingerprint: vi.fn().mockReturnValue('hashed-user'),
+      record: vi.fn().mockResolvedValue({}),
+    };
+    const filter = new HttpExceptionFilter(audit as any);
+    await filter.catch(
+      new HttpException({ code: 'INVALID_CAS_CREDENTIALS', error: '登录失败' }, HttpStatus.UNAUTHORIZED),
+      makeCtx(req, res),
+    );
+
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'auth.login.failed',
+      outcome: 'denied',
+      reasonCode: 'INVALID_CAS_CREDENTIALS',
+      metadata: expect.objectContaining({ loginIdentityHash: 'hashed-user' }),
+    }));
+    expect(JSON.stringify(audit.record.mock.calls[0][0])).not.toContain('must-not-log');
+  });
 });

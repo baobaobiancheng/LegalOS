@@ -380,6 +380,9 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
                     :content="(m as MessageDto).text"
                     :filename="'法律咨询答复'"
                     :docx-style="templateStyle"
+                    :audit-project-id="id"
+                    :audit-resource-type="project?.kind === 'contract' ? 'contract' : 'consultation_record'"
+                    :audit-resource-id="String((m as MessageDto).id ?? '') || undefined"
                   />
                 </div>
               </div>

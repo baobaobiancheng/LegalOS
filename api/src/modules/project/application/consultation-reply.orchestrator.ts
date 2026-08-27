@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ConsultationAttachmentService } from '../../../common/services/consultation-attachment.service';
@@ -10,6 +10,8 @@ import {
   ConsultationCapability,
   normalizeConsultationCapability,
 } from '../domain/consultation-capability';
+import { AuditService } from '../../../common/audit/audit.service';
+import { createHash } from 'node:crypto';
 
 /**
  * 咨询 AI 答复编排器（从 ProjectService 抽出，2026-08-20 上帝类拆分）。
@@ -34,6 +36,7 @@ export class ConsultationReplyOrchestrator {
     private readonly contextBuilder: ConsultationContextBuilder,
     private readonly config: ConfigService,
     private readonly attachmentService: ConsultationAttachmentService,
+    @Optional() private readonly audit?: AuditService,
   ) {}
 
   /**
@@ -139,6 +142,10 @@ export class ConsultationReplyOrchestrator {
       rejectCompletion = rej;
     });
     let child: any;
+    let capability: ConsultationCapability = requestedCapability;
+    let modelVersion = capability === 'general'
+      ? String(this.config.get('LLM_MODEL', 'glm-5-2'))
+      : String(this.config.get('DSH_LLM_MODEL') || this.config.get('LLM_MODEL', 'glm-5-2'));
     try {
       const project = await this.prisma.project
         .findUnique({
@@ -149,23 +156,13 @@ export class ConsultationReplyOrchestrator {
       const skillPrompt = (project?.extra as any)?.skillPrompt ?? null;
       const skillName = project?.skillName ?? null;
 
-      let context;
-      try {
-        context = await this.contextBuilder.build({
-          projectId,
-          currentUserMessageId,
-          // 技能段复用共享 util：剥边界标记 + 硬边界模板（防 prompt 注入）
-          skillPrompt: skillName && skillPrompt ? buildSkillSection(skillName, skillPrompt) : undefined,
-        });
-      } catch (e) {
-        this.logger.error(`咨询上下文构建失败（${projectId}/${currentUserMessageId}）：${e}`);
-        throw new BadRequestException('咨询上下文构建失败，请重试');
-      }
-
       const run = runId
         ? await this.prisma.consultationRun.findUnique({ where: { id: runId } })
         : null;
-      const capability = normalizeConsultationCapability(run?.capability ?? requestedCapability);
+      capability = normalizeConsultationCapability(run?.capability ?? requestedCapability);
+      modelVersion = capability === 'general'
+        ? String(this.config.get('LLM_MODEL', 'glm-5-2'))
+        : String(this.config.get('DSH_LLM_MODEL') || this.config.get('LLM_MODEL', 'glm-5-2'));
       const previous = capability === 'general'
         ? null
         : await this.prisma.consultationRun.findFirst({
@@ -179,6 +176,32 @@ export class ConsultationReplyOrchestrator {
             orderBy: { completedAt: 'desc' },
             select: { dshSessionId: true },
           });
+      if (runId && this.audit) {
+        await this.audit.record({
+          actor: { type: 'system' },
+          action: 'ai.run.started',
+          resourceType: 'consultation_run',
+          resourceId: runId,
+          projectId,
+          source: capability === 'general' ? 'api' : 'dsh',
+          outcome: 'success',
+          correlationId: runId,
+          metadata: { capability, modelVersion, userMessageId: currentUserMessageId },
+          retentionClass: 'ai',
+        });
+      }
+      let context;
+      try {
+        context = await this.contextBuilder.build({
+          projectId,
+          currentUserMessageId,
+          // 技能段复用共享 util：剥边界标记 + 硬边界模板（防 prompt 注入）
+          skillPrompt: skillName && skillPrompt ? buildSkillSection(skillName, skillPrompt) : undefined,
+        });
+      } catch (e) {
+        this.logger.error(`咨询上下文构建失败（${projectId}/${currentUserMessageId}）：${e}`);
+        throw new BadRequestException('咨询上下文构建失败，请重试');
+      }
       child = await this.executionRouter.execute({
         capability,
         messages: context.messages,
@@ -188,6 +211,13 @@ export class ConsultationReplyOrchestrator {
         resumeDshSessionId: previous?.dshSessionId ?? undefined,
       });
     } catch (e) {
+      await this.failRunBeforeStream(
+        projectId,
+        runId,
+        capability,
+        modelVersion,
+        e instanceof Error ? e.message : String(e),
+      );
       finishTurn();
       throw e;
     }
@@ -196,6 +226,12 @@ export class ConsultationReplyOrchestrator {
     if (runId) child.__runId = runId;
 
     let fullText = '';
+    let finalized = false;
+    const beginFinalize = () => {
+      if (finalized) return false;
+      finalized = true;
+      return true;
+    };
 
     child.stdout?.on('data', (chunk: Buffer) => {
       fullText += chunk.toString();
@@ -204,13 +240,28 @@ export class ConsultationReplyOrchestrator {
     // P0（review 2026-08-12）：单个结束处理器——先落库/更新 Run，最后才释放同 Project 串行锁，
     // 否则下一轮上下文构建可能发生在上一轮答案入库之前。
     child.once('close', async (code) => {
+      if (!beginFinalize()) return;
       try {
         // 连接断开主动取消 → 不写失败状态（刷新 ≠ 生成失败）；run 标记 cancelled 以便重试
         if ((child as any).__cancelled) {
           if (runId) {
-            await this.prisma.consultationRun
-              .update({ where: { id: runId }, data: { status: 'cancelled', completedAt: new Date() } })
-              .catch(() => undefined);
+            await this.prisma.$transaction(async (tx) => {
+              await tx.consultationRun.update({ where: { id: runId }, data: { status: 'cancelled', completedAt: new Date() } });
+              if (this.audit) {
+                await this.audit.record({
+                  actor: { type: 'system' },
+                  action: 'ai.run.cancelled',
+                  resourceType: 'consultation_run',
+                  resourceId: runId,
+                  projectId,
+                  source: capability === 'general' ? 'api' : 'dsh',
+                  outcome: 'success',
+                  correlationId: runId,
+                  metadata: { capability, modelVersion },
+                  retentionClass: 'ai',
+                }, tx);
+              }
+            }).catch((error) => this.logger.error(`AI 取消状态/审计写入失败：${error}`));
           }
           rejectCompletion(new Error('cancelled'));
           return;
@@ -220,6 +271,9 @@ export class ConsultationReplyOrchestrator {
         if (code === 0 && finalText) {
           try {
             const answerMessageId = crypto.randomUUID();
+            const outputHash = this.audit?.digestCanonical(finalText)
+              ?? createHash('sha256').update(finalText).digest('hex');
+            const toolSummary = buildToolSummary(child.__researchTrace);
             const msg = await this.prisma.$transaction(async (tx) => {
               const created = await tx.projectMessage.create({
                 data: { id: answerMessageId, projectId, role: 'assistant', text: finalText },
@@ -235,12 +289,37 @@ export class ConsultationReplyOrchestrator {
                     status: 'succeeded',
                     answerMessageId,
                     completedAt: new Date(),
+                    modelVersion,
+                    toolSummary,
+                    outputHash,
                     ...(child.__researchTrace ? {
                       dshSessionId: child.__researchTrace.dshSessionId,
                       researchTrace: child.__researchTrace,
                     } : {}),
                   },
                 });
+              }
+              if (runId && this.audit) {
+                await this.audit.record({
+                  actor: { type: 'system' },
+                  action: 'ai.run.succeeded',
+                  resourceType: 'consultation_run',
+                  resourceId: runId,
+                  projectId,
+                  source: capability === 'general' ? 'api' : 'dsh',
+                  outcome: 'success',
+                  correlationId: child.__researchTrace?.dshSessionId ?? runId,
+                  after: { status: 'succeeded', answerMessageId, modelVersion, toolSummary, outputHash },
+                  metadata: {
+                    capability,
+                    modelVersion,
+                    toolSummary,
+                    outputHash,
+                    answerMessageId,
+                    dshSessionId: child.__researchTrace?.dshSessionId ?? null,
+                  },
+                  retentionClass: 'ai',
+                }, tx);
               }
               return created;
             });
@@ -262,6 +341,7 @@ export class ConsultationReplyOrchestrator {
                 })
                 .catch(() => undefined);
             }
+            await this.recordAiOutcome('ai.run.failed', 'failed', projectId, runId, capability, modelVersion, String(err));
           }
         } else {
           const publicMessage = child.__errorMessage ?? `AI 答复生成失败（code=${code}）`;
@@ -285,6 +365,7 @@ export class ConsultationReplyOrchestrator {
                 })
                 .catch(() => undefined);
             }
+            await this.recordAiOutcome('ai.run.failed', 'failed', projectId, runId, capability, modelVersion, publicMessage);
           } catch (err) {
             this.logger.error(`失败状态更新失败：${err}`);
           }
@@ -296,6 +377,7 @@ export class ConsultationReplyOrchestrator {
     });
 
     child.once('error', async (err) => {
+      if (!beginFinalize()) return;
       this.logger.error(`咨询网关流错误：${err.message}`);
       rejectCompletion(err);
       try {
@@ -312,6 +394,7 @@ export class ConsultationReplyOrchestrator {
             })
             .catch(() => undefined);
         }
+        await this.recordAiOutcome('ai.run.failed', 'failed', projectId, runId, capability, modelVersion, err.message);
       } catch (dbErr) {
         this.logger.error(`失败状态更新失败：${dbErr}`);
       } finally {
@@ -349,4 +432,77 @@ export class ConsultationReplyOrchestrator {
     });
   }
 
+  private async recordAiOutcome(
+    action: string,
+    outcome: 'failed' | 'success',
+    projectId: string,
+    runId: string | undefined,
+    capability: ConsultationCapability,
+    modelVersion: string,
+    reason: string,
+  ) {
+    if (!runId || !this.audit) return;
+    await this.audit.record({
+      actor: { type: 'system' },
+      action,
+      resourceType: 'consultation_run',
+      resourceId: runId,
+      projectId,
+      source: capability === 'general' ? 'api' : 'dsh',
+      outcome,
+      reasonCode: outcome === 'failed' ? 'AI_EXECUTION_FAILED' : null,
+      correlationId: runId,
+      metadata: {
+        capability,
+        modelVersion,
+        errorHash: this.audit.digestCanonical(reason),
+      },
+      retentionClass: 'ai',
+    });
+  }
+
+  private async failRunBeforeStream(
+    projectId: string,
+    runId: string | undefined,
+    capability: ConsultationCapability,
+    modelVersion: string,
+    reason: string,
+  ) {
+    if (!runId) return;
+    await this.prisma.$transaction(async (tx) => {
+      await tx.consultationRun.update({
+        where: { id: runId },
+        data: { status: 'failed', errorMessage: reason.slice(0, 500), completedAt: new Date(), modelVersion },
+      });
+      if (this.audit) {
+        await this.audit.record({
+          actor: { type: 'system' },
+          action: 'ai.run.failed',
+          resourceType: 'consultation_run',
+          resourceId: runId,
+          projectId,
+          source: capability === 'general' ? 'api' : 'dsh',
+          outcome: 'failed',
+          reasonCode: 'AI_START_FAILED',
+          correlationId: runId,
+          metadata: {
+            capability,
+            modelVersion,
+            errorHash: this.audit.digestCanonical(reason),
+            phase: 'startup',
+          },
+          retentionClass: 'ai',
+        }, tx);
+      }
+    }).catch((error) => this.logger.error(`AI 启动失败终态/审计写入失败：${error}`));
+  }
+
+}
+
+function buildToolSummary(trace: any): Array<{ tool: string; recordCount: number }> {
+  if (!trace?.calls || !Array.isArray(trace.calls)) return [];
+  return trace.calls.slice(0, 8).map((call: any) => ({
+    tool: String(call?.tool ?? '').slice(0, 80),
+    recordCount: Array.isArray(call?.recordIds) ? call.recordIds.length : 0,
+  }));
 }

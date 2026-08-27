@@ -452,6 +452,8 @@ const submitReview = async () => {
             :content="draftText"
             :filename="'合同草稿'"
             :docx-style="selected?.style"
+            :audit-project-id="projectId || undefined"
+            audit-resource-type="contract"
           />
           <button
             class="btn-secondary"

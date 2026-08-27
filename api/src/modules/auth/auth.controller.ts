@@ -5,6 +5,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Logger,
   Post,
   Req,
   Res,
@@ -17,12 +18,19 @@ import { AuthService } from './auth.service';
 import { CasLoginDto } from './dto/cas-login.dto';
 import { LoginDto } from './dto/login.dto';
 import { PublicUserDto } from './dto/token-response.dto';
+import { AuditService } from '../../common/audit/audit.service';
+import { auditRequestContext } from '../../common/audit/audit-request';
 
 const REFRESH_COOKIE = 'legal_refresh_token';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  private readonly logger = new Logger(AuthController.name);
+
+  constructor(
+    private readonly auth: AuthService,
+    private readonly audit: AuditService,
+  ) {}
 
   /** refreshToken 存 httpOnly cookie，防 XSS（设计文档「Token 传输策略」） */
   private setRefreshCookie(res: Response, token: string) {
@@ -51,6 +59,7 @@ export class AuthController {
       });
     }
     const { accessToken, refreshToken, user } = await this.auth.login(dto, req.ip);
+    await this.recordLoginSuccess(user, 'password', req);
     this.setRefreshCookie(res, refreshToken);
     return res.json({ accessToken, user });
   }
@@ -61,6 +70,7 @@ export class AuthController {
   @Post('cas-login')
   async casLogin(@Body() dto: CasLoginDto, @Req() req: Request, @Res() res: Response) {
     const { accessToken, refreshToken, user } = await this.auth.casLogin(dto, req.ip);
+    await this.recordLoginSuccess(user, 'cas', req);
     this.setRefreshCookie(res, refreshToken);
     return res.json({ accessToken, user });
   }
@@ -94,5 +104,24 @@ export class AuthController {
     await this.auth.logout(req.cookies?.[REFRESH_COOKIE]);
     this.clearRefreshCookie(res);
     return res.status(HttpStatus.NO_CONTENT).end();
+  }
+
+  private async recordLoginSuccess(user: PublicUserDto, authMethod: string, request: Request) {
+    try {
+      await this.audit.record({
+        actor: { id: user.id, role: user.role },
+        action: 'auth.login.success',
+        resourceType: 'auth_session',
+        resourceId: user.id,
+        source: 'web',
+        outcome: 'success',
+        request: auditRequestContext(request),
+        metadata: { authMethod },
+        retentionClass: 'security',
+      });
+    } catch (error) {
+      // 旧 LoginAudit 仍是登录成功的最小兜底，统一审计写入失败必须显式告警但不签发重复会话。
+      this.logger.error(`登录成功审计写入失败 user=${user.id}: ${error}`);
+    }
   }
 }

@@ -16,12 +16,14 @@ import { ConsultationChatModule } from './common/services/consultation-chat.modu
 import { BaijianModule } from './common/baijian/baijian.module';
 import { AiExecutionModule } from './common/services/ai-execution.module';
 import { LegalResearchModule } from './modules/legal-research/legal-research.module';
+import { AuditModule } from './common/audit/audit.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     PrismaModule,
+    AuditModule,
     AiExecutionModule,
     CodexModule,
     DshModule,

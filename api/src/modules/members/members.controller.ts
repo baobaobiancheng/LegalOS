@@ -1,8 +1,11 @@
-import { Controller, Get, Post, Put, Query, Body } from '@nestjs/common';
+import { Controller, Get, Post, Put, Query, Body, Req } from '@nestjs/common';
+import { Request } from 'express';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '@prisma/client';
 import { MembersService } from './members.service';
 import { BindContactDto, SetBpDomainDto } from './dto/members.dto';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { auditRequestContext } from '../../common/audit/audit-request';
 
 /**
  * 管理端成员管理（2026-08-05 钉钉拉群模块）：
@@ -16,8 +19,15 @@ export class MembersController {
 
   /** 一键同步钉钉通讯录（拉全量 → 快照 → 姓名自动匹配绑定） */
   @Post('sync')
-  async sync() {
-    return this.membersService.syncContacts();
+  async sync(
+    @CurrentUser('id') actorId: string,
+    @CurrentUser('role') actorRole: Role,
+    @Req() request: Request,
+  ) {
+    return this.membersService.syncContacts(
+      { id: actorId, role: actorRole },
+      auditRequestContext(request),
+    );
   }
 
   /** 最近一次成功同步统计（切页/刷新后恢复统计卡） */
@@ -40,14 +50,33 @@ export class MembersController {
 
   /** 手动绑定系统用户 ↔ 钉钉成员 */
   @Post('bind')
-  async bind(@Body() dto: BindContactDto) {
-    return this.membersService.bind(dto.userId, dto.dingtalkUserId);
+  async bind(
+    @Body() dto: BindContactDto,
+    @CurrentUser('id') actorId: string,
+    @CurrentUser('role') actorRole: Role,
+    @Req() request: Request,
+  ) {
+    return this.membersService.bind(
+      dto.userId,
+      dto.dingtalkUserId,
+      { id: actorId, role: actorRole },
+      auditRequestContext(request),
+    );
   }
 
   /** 解绑 */
   @Post('unbind')
-  async unbind(@Body('userId') userId: string) {
-    return this.membersService.unbind(userId);
+  async unbind(
+    @Body('userId') userId: string,
+    @CurrentUser('id') actorId: string,
+    @CurrentUser('role') actorRole: Role,
+    @Req() request: Request,
+  ) {
+    return this.membersService.unbind(
+      userId,
+      { id: actorId, role: actorRole },
+      auditRequestContext(request),
+    );
   }
 
   /** BP 领域映射列表（法务角色 + 现有映射） */
@@ -58,8 +87,19 @@ export class MembersController {
 
   /** 设置 BP 领域映射 */
   @Put('bp-domains')
-  async setBpDomain(@Body() dto: SetBpDomainDto) {
-    return this.membersService.setBpDomain(dto.userId, dto.domain, dto.enabled);
+  async setBpDomain(
+    @Body() dto: SetBpDomainDto,
+    @CurrentUser('id') actorId: string,
+    @CurrentUser('role') actorRole: Role,
+    @Req() request: Request,
+  ) {
+    return this.membersService.setBpDomain(
+      dto.userId,
+      dto.domain,
+      dto.enabled,
+      { id: actorId, role: actorRole },
+      auditRequestContext(request),
+    );
   }
 
   /** 拉群失败工单计数 */

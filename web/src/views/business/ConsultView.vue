@@ -689,6 +689,9 @@ onUnmounted(() => {
                       <DownloadMenu
                         :content="m.text"
                         :filename="'法律咨询答复'"
+                        :audit-project-id="projectId || undefined"
+                        audit-resource-type="consultation_record"
+                        :audit-resource-id="String(m.id ?? '') || undefined"
                       />
                       <button
                         v-if="projectId && projectRoute === 'llm' && !upgraded && m === messages[messages.length - 1]"

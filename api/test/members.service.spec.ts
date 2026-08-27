@@ -29,7 +29,7 @@ describe('MembersService', () => {
       },
       dingTalkSyncBatch: { create: vi.fn().mockResolvedValue({ id: 'batch-1' }), update: vi.fn().mockResolvedValue({}) },
       user: { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn().mockResolvedValue({ id: 'u' }), findFirst: vi.fn() },
-      bpDomainMap: { upsert: vi.fn(), deleteMany: vi.fn() },
+      bpDomainMap: { findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn(), deleteMany: vi.fn() },
       project: { count: vi.fn() },
       $transaction: vi.fn(async (arg: any) => {
         if (typeof arg === 'function') return arg(prisma);
@@ -92,6 +92,56 @@ describe('MembersService', () => {
     );
   });
 
+  it('syncContacts：记录触发管理员、自动绑定前后值和同步批次', async () => {
+    dingtalk.syncContacts.mockResolvedValue({
+      contacts: [{ userId: 'U-1', name: '彭宇欣', mobile: '138', department: '法务部' }],
+      complete: true,
+      departmentCount: 1,
+      pageCount: 1,
+      warnings: [],
+    });
+    prisma.dingTalkContactStaging.findMany.mockResolvedValue([
+      { userId: 'U-1', name: '彭宇欣', mobile: '138', department: '法务部' },
+    ]);
+    prisma.user.findMany
+      .mockResolvedValueOnce([{
+        id: 'u-bp', username: 'staff', displayName: '彭宇欣', casUsername: 'staff',
+        role: 'business', department: null,
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    const audit = {
+      record: vi.fn().mockResolvedValue({}),
+      fingerprint: vi.fn().mockReturnValue('ding-hash'),
+      digestCanonical: vi.fn().mockReturnValue('error-hash'),
+    };
+    const audited = new MembersService(
+      prisma as any,
+      dingtalk as any,
+      { get: (key: string) => key === 'CAS_DEPT_MAP' ? '法务部:legal_bp' : '' } as any,
+      audit as any,
+    );
+
+    await audited.syncContacts(
+      { id: 'admin-1', role: 'admin' },
+      { requestId: 'request-sync-1' },
+    );
+
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'member.bind',
+      actor: { id: 'admin-1', role: 'admin' },
+      source: 'dingtalk',
+      before: expect.objectContaining({ dingtalkBound: false, role: 'business' }),
+      after: expect.objectContaining({ dingtalkBound: true, role: 'legal_bp' }),
+      metadata: expect.objectContaining({ automatic: true, batchId: 'batch-1' }),
+    }), prisma);
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'member.directory.sync',
+      resourceId: 'batch-1',
+      outcome: 'success',
+    }), prisma);
+  });
+
   it('bind：快照不存在拒绝', async () => {
     prisma.dingTalkContact.findUnique.mockResolvedValue(null);
     await expect(service.bind('u-1', 'U-nope')).rejects.toThrow('请先同步');
@@ -126,6 +176,45 @@ describe('MembersService', () => {
 
     await expect(service.bind('u-1', 'U-1')).rejects.toThrow('已绑定其他系统用户');
     expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('bind：管理员、前后状态与请求标识在同一事务写入统一审计', async () => {
+    prisma.dingTalkContact.findUnique.mockResolvedValue({
+      userId: 'U-1', mobile: '138', department: '法务部', isActive: true,
+    });
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'u-1', username: 'staff', displayName: '成员', role: 'business',
+      department: null, dingtalkUserId: null, casUsername: 'staff',
+    });
+    prisma.user.findFirst.mockResolvedValue(null);
+    prisma.user.update.mockResolvedValue({
+      id: 'u-1', displayName: '成员', role: 'legal_bp', department: '法务部', dingtalkUserId: 'U-1',
+    });
+    const audit = { record: vi.fn().mockResolvedValue({}), fingerprint: vi.fn().mockReturnValue('ding-hash') };
+    const audited = new MembersService(
+      prisma as any,
+      dingtalk as any,
+      { get: (key: string) => key === 'CAS_DEPT_MAP' ? '法务部:legal_bp' : '' } as any,
+      audit as any,
+    );
+
+    await audited.bind(
+      'u-1',
+      'U-1',
+      { id: 'admin-1', role: 'admin' },
+      { requestId: 'request-bind-1', ip: '10.0.0.1' },
+    );
+
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'member.bind',
+      actor: { id: 'admin-1', role: 'admin' },
+      resourceId: 'u-1',
+      changes: expect.objectContaining({
+        dingtalkBound: { from: false, to: true },
+        role: { from: 'business', to: 'legal_bp' },
+      }),
+      metadata: { dingtalkIdentityHash: 'ding-hash' },
+    }), prisma);
   });
 
   it('setBpDomain：非白名单领域拒绝', async () => {

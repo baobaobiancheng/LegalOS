@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import type { ContractDocStyle } from '../types/contract-export'
+import { request } from '../api/client'
 
 const props = defineProps<{
   content: string
   filename?: string
   /** 每模板独立的导出样式（字体/字号/页边距），缺省用默认样式 */
   docxStyle?: ContractDocStyle
+  auditProjectId?: string
+  auditResourceType?: 'contract' | 'consultation_record'
+  auditResourceId?: string
 }>()
 
 const open = ref(false)
@@ -16,10 +20,17 @@ const docxError = ref('')
 const toggle = () => { open.value = !open.value }
 
 // ── .md 下载（轻量同步,不触发 DOCX 依赖） ──
-const downloadMD = () => {
-  const blob = new Blob([props.content], { type: 'text/markdown;charset=utf-8' })
-  triggerDownload(blob, `${props.filename || '法律咨询答复'}.md`)
-  open.value = false
+const downloadMD = async () => {
+  docxError.value = ''
+  try {
+    await recordDownload('md')
+    const blob = new Blob([props.content], { type: 'text/markdown;charset=utf-8' })
+    triggerDownload(blob, `${props.filename || '法律咨询答复'}.md`)
+    open.value = false
+  } catch (error) {
+    docxError.value = '审计记录写入失败，未执行下载'
+    console.error('Download audit failed:', error)
+  }
 }
 
 // ── .docx 下载（P2-04：点击后才动态加载 docx/marked,首屏不下载该 chunk） ──
@@ -27,13 +38,16 @@ const downloadDOCX = async () => {
   if (converting.value) return // 双击保护
   converting.value = true
   docxError.value = ''
+  let documentReady = false
   try {
     const { markdownToDocxBlob } = await import('../utils/markdown-to-docx')
     const blob = await markdownToDocxBlob(props.content, props.filename || '法律咨询答复', props.docxStyle)
+    documentReady = true
+    await recordDownload('docx')
     triggerDownload(blob, `${props.filename || '法律咨询答复'}.docx`)
   } catch (e) {
-    docxError.value = 'Word 文档生成失败,请重试'
-    console.error('DOCX generation failed:', e)
+    docxError.value = documentReady ? '审计记录写入失败，未执行下载' : 'Word 文档生成失败，请重试'
+    console.error(documentReady ? 'Download audit failed:' : 'DOCX generation failed:', e)
     open.value = true // P2-04 失败保留下拉菜单,用户可看到错误并重试
     return
   } finally {
@@ -50,6 +64,18 @@ const triggerDownload = (blob: Blob, filename: string) => {
   document.body.appendChild(a); a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
+}
+
+const recordDownload = async (format: 'md' | 'docx') => {
+  if (!props.auditProjectId || !props.auditResourceType) return
+  await request<void>(`/projects/${props.auditProjectId}/downloads`, {
+    method: 'POST',
+    body: {
+      resourceType: props.auditResourceType,
+      resourceId: props.auditResourceId,
+      format,
+    },
+  })
 }
 </script>
 

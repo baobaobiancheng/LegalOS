@@ -7,8 +7,9 @@ import {
   Res,
   UseInterceptors,
   UploadedFile,
+  Req,
 } from '@nestjs/common';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import * as multer from 'multer';
 import { join, extname } from 'path';
@@ -23,6 +24,7 @@ import { ContractTemplateService } from './contract-template.service';
 import { CreateContractDto } from './dto/create-contract.dto';
 import { Role } from '@prisma/client';
 import { ProjectActor } from '../project/domain/project-access.types';
+import { auditRequestContext } from '../../common/audit/audit-request';
 
 /**
  * multer diskStorage：先落盘到 storage/contracts/.staging/，不占内存。
@@ -166,8 +168,9 @@ export class ContractController {
     @CurrentUser('id') userId: string,
     @CurrentUser('role') role: Role,
     @Res() res: Response,
+    @Req() request: Request,
   ) {
     const actor: ProjectActor = { id: userId, role };
-    await this.fileService.downloadFile(id, fileId, actor, res);
+    await this.fileService.downloadFile(id, fileId, actor, res, auditRequestContext(request));
   }
 }

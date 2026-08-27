@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { Response } from 'express';
 import {
   closeSync,
@@ -19,6 +19,8 @@ import { formatEventTime } from '../../common/utils/event-time';
 import { ProjectAccessPolicy } from '../project/domain/project-access.policy';
 import { ProjectAction, ProjectActor } from '../project/domain/project-access.types';
 import { ContractDocumentWriter } from './application/contract-document.writer';
+import { AuditService } from '../../common/audit/audit.service';
+import { AuditRequestContext } from '../../common/audit/audit.types';
 
 /**
  * 合同文件服务（从 ContractService 抽出，2026-08-20 上帝类拆分）。
@@ -36,6 +38,7 @@ export class ContractFileService {
     private readonly prisma: PrismaService,
     private readonly accessPolicy: ProjectAccessPolicy,
     private readonly documentWriter: ContractDocumentWriter,
+    @Optional() private readonly audit?: AuditService,
   ) {
     this.storageDir = process.env.CONTRACT_STORAGE_DIR
       || join(process.cwd(), 'storage', 'contracts');
@@ -176,6 +179,7 @@ export class ContractFileService {
     fileId: string,
     actor: ProjectActor,
     res: Response,
+    request?: AuditRequestContext,
   ) {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('工单不存在');
@@ -190,6 +194,19 @@ export class ContractFileService {
     if (!existsSync(targetPath)) throw new NotFoundException('文件已丢失');
 
     const stat = statSync(targetPath);
+    if (!this.audit) throw new InternalServerErrorException('审计服务不可用，暂不能下载附件');
+    await this.audit.record({
+      actor,
+      action: 'attachment.download',
+      resourceType: 'attachment',
+      resourceId: fileId,
+      projectId,
+      source: 'web',
+      outcome: 'success',
+      request,
+      metadata: { kind: file.kind, size: stat.size, mimeType: file.mimeType ?? null },
+      retentionClass: 'business',
+    });
     res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
     res.setHeader(
       'Content-Disposition',

@@ -356,6 +356,9 @@ onBeforeUnmount(() => {
                       :content="item.text"
                       filename="法律咨询答复"
                       :docx-style="templateStyle"
+                      :audit-project-id="id"
+                      audit-resource-type="consultation_record"
+                      :audit-resource-id="item.id"
                     />
                     <button
                       v-if="item.role === 'assistant' && item.id === lastAssistantId && canEscalate"

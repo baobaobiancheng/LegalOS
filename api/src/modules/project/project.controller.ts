@@ -9,8 +9,9 @@ import {
   Res,
   HttpCode,
   BadRequestException,
+  Req,
 } from '@nestjs/common';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { sendConsultSSE } from '../../common/utils/sse';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -25,6 +26,8 @@ import { UpdateProjectDto } from './dto/update-project.dto';
 import { Role } from '@prisma/client';
 import { ProjectActor } from './domain/project-access.types';
 import { isBusinessStatusGroupKey, isProjectGroupKey, isProjectKind } from './queries/project-query.service';
+import { auditRequestContext } from '../../common/audit/audit-request';
+import { RecordDownloadDto } from './dto/record-download.dto';
 
 @Controller('projects')
 export class ProjectController {
@@ -112,9 +115,10 @@ export class ProjectController {
     @Body() dto: UpdateProjectDto,
     @CurrentUser('id') userId: string,
     @CurrentUser('role') role: Role,
+    @Req() request: Request,
   ) {
     const actor: ProjectActor = { id: userId, role };
-    return this.projectService.update(id, dto, actor);
+    return this.projectService.update(id, dto, actor, auditRequestContext(request));
   }
 
   /** 认领未分配工单（P1-01：legal_bp 原子条件认领；legal_lead/admin 可认领） */
@@ -160,9 +164,10 @@ export class ProjectController {
     @Param('id') id: string,
     @CurrentUser('id') userId: string,
     @CurrentUser('role') role: Role,
+    @Req() request: Request,
   ) {
     const actor: ProjectActor = { id: userId, role };
-    return this.projectService.escalate(id, actor);
+    return this.projectService.escalate(id, actor, auditRequestContext(request));
   }
 
   /** 法务 BP 正式回传 */
@@ -173,9 +178,10 @@ export class ProjectController {
     @Body() dto: ReplyProjectDto,
     @CurrentUser('id') userId: string,
     @CurrentUser('role') role: Role,
+    @Req() request: Request,
   ) {
     const actor: ProjectActor = { id: userId, role };
-    return this.projectService.reply(id, dto, actor);
+    return this.projectService.reply(id, dto, actor, auditRequestContext(request));
   }
 
   /** 取消工单 */
@@ -186,9 +192,10 @@ export class ProjectController {
     @Param('id') id: string,
     @CurrentUser('id') userId: string,
     @CurrentUser('role') role: Role,
+    @Req() request: Request,
   ) {
     const actor: ProjectActor = { id: userId, role };
-    return this.projectService.cancel(id, actor);
+    return this.projectService.cancel(id, actor, auditRequestContext(request));
   }
 
   /** 转派（仅 legal_lead/admin，P1-01） */
@@ -199,8 +206,24 @@ export class ProjectController {
     @Body() dto: TransferProjectDto,
     @CurrentUser('id') userId: string,
     @CurrentUser('role') role: Role,
+    @Req() request: Request,
   ) {
     const actor: ProjectActor = { id: userId, role };
-    return this.projectService.transfer(id, dto.legalBpId, actor);
+    return this.projectService.transfer(id, dto.legalBpId, actor, auditRequestContext(request));
+  }
+
+  /** 浏览器本地生成的合同/咨询记录下载：下载前先写权威审计，审计写入失败则不返回成功。 */
+  @Post(':id/downloads')
+  @HttpCode(204)
+  @Roles(Role.admin, Role.legal_bp, Role.legal_lead, Role.business)
+  async recordDownload(
+    @Param('id') id: string,
+    @Body() dto: RecordDownloadDto,
+    @CurrentUser('id') userId: string,
+    @CurrentUser('role') role: Role,
+    @Req() request: Request,
+  ) {
+    const actor: ProjectActor = { id: userId, role };
+    await this.projectService.recordDownload(id, dto, actor, auditRequestContext(request));
   }
 }

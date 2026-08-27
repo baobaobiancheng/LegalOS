@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor';
+import { AuditService } from './common/audit/audit.service';
 
 /**
  * CAS 启动强校验（T4）：生产/预发(CAS_ENFORCED)配置错误 → 拒绝启动,不在登录时 500。
@@ -39,7 +40,7 @@ async function bootstrap() {
   );
   // P2-03：请求 ID(响应头 X-Request-ID + 错误体 requestId);先于过滤器,异常路径也能拿到 ID
   app.useGlobalInterceptors(new RequestIdInterceptor());
-  app.useGlobalFilters(new HttpExceptionFilter());
+  app.useGlobalFilters(new HttpExceptionFilter(app.get(AuditService)));
 
   // 前端 Vite dev server 需携带 cookie
   app.enableCors({

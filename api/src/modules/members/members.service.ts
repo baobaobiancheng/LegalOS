@@ -4,6 +4,7 @@ import {
   BadRequestException,
   NotFoundException,
   ConflictException,
+  Optional,
 } from '@nestjs/common';
 import { Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -16,6 +17,8 @@ import {
   ContactInfo,
 } from '../project/adapters/adapter.interfaces';
 import { isBpDomain, BP_DOMAINS } from './dto/members.dto';
+import { AuditService } from '../../common/audit/audit.service';
+import { AuditActor, AuditRequestContext } from '../../common/audit/audit.types';
 
 /** P1-08：通讯录 staging 批大小（createMany 每批条数） */
 /** 种子测试账号（三端测试固定角色）：不参与组织同步(自动绑定/重算),角色固定 admin/legal_bp/business */
@@ -37,6 +40,7 @@ export class MembersService {
     private readonly prisma: PrismaService,
     @Inject(DINGTALK_ADAPTER) private readonly dingtalk: DingTalkAdapter,
     private readonly config: ConfigService,
+    @Optional() private readonly audit?: AuditService,
   ) {}
 
   /** 组织架构角色（admin 不降级；个人映射 > 钉钉部门映射 > business，共用解析器） */
@@ -49,7 +53,7 @@ export class MembersService {
    * 批次 staging → 短事务 merge → 软失效对账 → 双向姓名唯一自动绑定 → 批次 complete。
    * 任何不完整/异常：批次标记 failed，不动上一成功快照与绑定。
    */
-  async syncContacts() {
+  async syncContacts(actor?: AuditActor, request?: AuditRequestContext) {
     const batch = await this.prisma.dingTalkSyncBatch.create({ data: {} });
     try {
       const result = await this.dingtalk.syncContacts();
@@ -126,9 +130,9 @@ export class MembersService {
           }
         }
 
-        const binding = await this.autoBind(tx, stagedContacts);
+        const binding = await this.autoBind(tx, stagedContacts, actor, request, batch.id);
         // review 2026-08-11 P1：已绑定员工调岗后,每次同步重算部门+角色,防旧部门权限残留
-        await this.refreshBoundRoles(tx, stagedContacts);
+        const refreshed = await this.refreshBoundRoles(tx, stagedContacts, actor, request, batch.id);
         await tx.dingTalkSyncBatch.update({
           where: { id: batch.id },
           data: {
@@ -139,6 +143,24 @@ export class MembersService {
             completedAt: new Date(),
           },
         });
+        if (this.audit) {
+          await this.audit.record({
+            actor,
+            action: 'member.directory.sync',
+            resourceType: 'dingtalk_sync_batch',
+            resourceId: batch.id,
+            source: 'dingtalk',
+            outcome: 'success',
+            request,
+            metadata: {
+              contactCount: stagedContacts.length,
+              autoBoundCount: binding.autoBound,
+              refreshedMemberCount: refreshed,
+              departmentCount: result.departmentCount,
+            },
+            retentionClass: 'admin',
+          }, tx);
+        }
         return binding;
       });
 
@@ -172,6 +194,20 @@ export class MembersService {
       await this.prisma.dingTalkContactStaging
         .deleteMany({ where: { batchId: batch.id } })
         .catch(() => undefined);
+      if (this.audit) {
+        await this.audit.record({
+          actor,
+          action: 'member.directory.sync',
+          resourceType: 'dingtalk_sync_batch',
+          resourceId: batch.id,
+          source: 'dingtalk',
+          outcome: 'failed',
+          reasonCode: 'DINGTALK_SYNC_FAILED',
+          request,
+          metadata: { errorHash: this.audit.digestCanonical(String(e?.message ?? e)) },
+          retentionClass: 'admin',
+        }).catch((auditError) => this.logger.error(`通讯录同步失败审计写入失败：${auditError}`));
+      }
       this.logger.error(`通讯录同步失败（批次 ${batch.id}）：${e?.message ?? e}`);
       return { complete: false, batchId: batch.id, error: String(e?.message ?? e).slice(0, 200) };
     }
@@ -220,12 +256,25 @@ export class MembersService {
    * - 该联系人未被其他系统用户绑定。
    * 系统重名或联系人重名 → ambiguous，不自动绑定。
    */
-  private async autoBind(tx: any, contacts: ContactInfo[]): Promise<{ autoBound: number; ambiguous: string[] }> {
+  private async autoBind(
+    tx: any,
+    contacts: ContactInfo[],
+    actor?: AuditActor,
+    request?: AuditRequestContext,
+    batchId?: string,
+  ): Promise<{ autoBound: number; ambiguous: string[] }> {
     const unbound = await tx.user.findMany({
       where: { dingtalkUserId: null },
-      select: { id: true, username: true, displayName: true, casUsername: true, role: true },
+      select: { id: true, username: true, displayName: true, casUsername: true, role: true, department: true },
     });
-    const nameToUsers = new Map<string, { id: string; username: string; displayName: string; casUsername: string | null; role: Role }[]>();
+    const nameToUsers = new Map<string, {
+      id: string;
+      username: string;
+      displayName: string;
+      casUsername: string | null;
+      role: Role;
+      department: string | null;
+    }[]>();
     for (const u of unbound) {
       const list = nameToUsers.get(u.displayName) || [];
       list.push(u);
@@ -270,10 +319,44 @@ export class MembersService {
         data: {
           dingtalkUserId: contact.userId,
           dingtalkPhone: contact.mobile ?? null,
-          department: contact.department,
+          department: contact.department ?? null,
           role,
         },
       });
+      if (this.audit) {
+        await this.audit.record({
+          actor,
+          action: 'member.bind',
+          resourceType: 'member',
+          resourceId: users[0].id,
+          source: 'dingtalk',
+          outcome: 'success',
+          request,
+          before: {
+            id: users[0].id,
+            role: users[0].role,
+            department: users[0].department ?? null,
+            dingtalkBound: false,
+          },
+          after: {
+            id: users[0].id,
+            role,
+            department: contact.department ?? null,
+            dingtalkBound: true,
+          },
+          changes: {
+            dingtalkBound: { from: false, to: true },
+            department: { from: users[0].department ?? null, to: contact.department ?? null },
+            role: { from: users[0].role, to: role },
+          },
+          metadata: {
+            automatic: true,
+            batchId: batchId ?? null,
+            dingtalkIdentityHash: this.audit.fingerprint(contact.userId),
+          },
+          retentionClass: 'admin',
+        }, tx);
+      }
       autoBound++;
     }
     return { autoBound, ambiguous };
@@ -284,28 +367,71 @@ export class MembersService {
    * autoBind 只处理未绑定用户;已绑定员工调岗后,本方法按最新通讯录重算部门+角色;
    * 联系人已移出通讯录(软失效)的用户,同步时回收部门 + 重算角色,防旧权限残留。
    */
-  private async refreshBoundRoles(tx: any, stagedContacts: ContactInfo[]): Promise<void> {
+  private async refreshBoundRoles(
+    tx: any,
+    stagedContacts: ContactInfo[],
+    actor?: AuditActor,
+    request?: AuditRequestContext,
+    batchId?: string,
+  ): Promise<number> {
     const stagedById = new Map(stagedContacts.map((c) => [c.userId, c]));
     const bound = (await tx.user.findMany({
       where: { dingtalkUserId: { not: null } },
-      select: { id: true, username: true, dingtalkUserId: true, casUsername: true, role: true },
+      select: { id: true, username: true, dingtalkUserId: true, casUsername: true, role: true, department: true },
     })) ?? [];
+    let refreshed = 0;
     for (const u of bound) {
       if (SEED_USERNAMES.has(u.username)) continue; // 种子测试账号不重算角色
       const contact = u.dingtalkUserId ? stagedById.get(u.dingtalkUserId) : undefined;
       if (contact) {
         // 在岗/调岗：刷新部门 + 角色（admin 不降级）
         const role = this.orgRole(u.role, u.casUsername ?? contact.userId, contact.department);
-        await tx.user.update({
-          where: { id: u.id },
-          data: { department: contact.department, role },
-        });
+        const department = contact.department ?? null;
+        if (u.department !== department || u.role !== role) {
+          await tx.user.update({ where: { id: u.id }, data: { department, role } });
+          await this.recordDirectoryProfileChange(tx, u, role, department, actor, request, batchId);
+          refreshed++;
+        }
       } else {
         // 联系人已不在本批通讯录(软失效)：回收部门 + 重算角色(仅剩个人映射或 business),admin 不降级
         const role = this.orgRole(u.role, u.casUsername ?? undefined, undefined);
-        await tx.user.update({ where: { id: u.id }, data: { department: null, role } });
+        if (u.department !== null || u.role !== role) {
+          await tx.user.update({ where: { id: u.id }, data: { department: null, role } });
+          await this.recordDirectoryProfileChange(tx, u, role, null, actor, request, batchId);
+          refreshed++;
+        }
       }
     }
+    return refreshed;
+  }
+
+  private async recordDirectoryProfileChange(
+    tx: any,
+    user: any,
+    role: Role,
+    department: string | null,
+    actor?: AuditActor,
+    request?: AuditRequestContext,
+    batchId?: string,
+  ) {
+    if (!this.audit) return;
+    await this.audit.record({
+      actor,
+      action: 'member.directory_profile.change',
+      resourceType: 'member',
+      resourceId: user.id,
+      source: 'dingtalk',
+      outcome: 'success',
+      request,
+      before: { id: user.id, role: user.role, department: user.department ?? null, dingtalkBound: true },
+      after: { id: user.id, role, department, dingtalkBound: true },
+      changes: {
+        department: { from: user.department ?? null, to: department },
+        role: { from: user.role, to: role },
+      },
+      metadata: { automatic: true, batchId: batchId ?? null },
+      retentionClass: 'admin',
+    }, tx);
   }
 
   /**
@@ -359,7 +485,12 @@ export class MembersService {
   }
 
   /** 手动绑定（P1-07 1:1）：联系人须存在且 active；联系人未被其他用户绑定；唯一冲突返回 409，不覆盖原绑定 */
-  async bind(userId: string, dingtalkUserId: string) {
+  async bind(
+    userId: string,
+    dingtalkUserId: string,
+    actor?: AuditActor,
+    request?: AuditRequestContext,
+  ) {
     const contact = await this.prisma.dingTalkContact.findUnique({
       where: { userId: dingtalkUserId },
     });
@@ -383,14 +514,37 @@ export class MembersService {
       const role = SEED_USERNAMES.has(user.username)
         ? user.role
         : this.orgRole(user.role, user.casUsername ?? dingtalkUserId, contact.department ?? undefined);
-      const updated = await this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          dingtalkUserId,
-          dingtalkPhone: contact.mobile,
-          department: contact.department ?? undefined,
-          role,
-        },
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const result = await tx.user.update({
+          where: { id: userId },
+          data: {
+            dingtalkUserId,
+            dingtalkPhone: contact.mobile,
+            department: contact.department ?? undefined,
+            role,
+          },
+        });
+        if (this.audit) {
+          await this.audit.record({
+            actor,
+            action: 'member.bind',
+            resourceType: 'member',
+            resourceId: userId,
+            source: 'web',
+            outcome: 'success',
+            request,
+            before: memberAuditSnapshot(user),
+            after: memberAuditSnapshot(result),
+            changes: {
+              dingtalkBound: { from: Boolean(user.dingtalkUserId), to: true },
+              department: { from: user.department ?? null, to: result.department ?? null },
+              role: { from: user.role, to: result.role },
+            },
+            metadata: { dingtalkIdentityHash: this.audit.fingerprint(dingtalkUserId) },
+            retentionClass: 'admin',
+          }, tx);
+        }
+        return result;
       });
       return { id: updated.id, displayName: updated.displayName, dingtalkUserId: updated.dingtalkUserId };
     } catch (e: any) {
@@ -402,16 +556,37 @@ export class MembersService {
   }
 
   /** 解绑：清部门 + 角色重算（不再可信的钉钉部门不能继续给权限,review 2026-08-11 P1） */
-  async unbind(userId: string) {
+  async unbind(userId: string, actor?: AuditActor, request?: AuditRequestContext) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('系统用户不存在');
     // admin 不降级;其余只剩个人映射或 business;种子测试账号角色固定（review 2026-08-11）
     const role = SEED_USERNAMES.has(user.username)
       ? user.role
       : this.orgRole(user.role, user.casUsername ?? undefined, undefined);
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { dingtalkUserId: null, dingtalkPhone: null, department: null, role },
+    await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.user.update({
+        where: { id: userId },
+        data: { dingtalkUserId: null, dingtalkPhone: null, department: null, role },
+      });
+      if (this.audit) {
+        await this.audit.record({
+          actor,
+          action: 'member.unbind',
+          resourceType: 'member',
+          resourceId: userId,
+          source: 'web',
+          outcome: 'success',
+          request,
+          before: memberAuditSnapshot(user),
+          after: memberAuditSnapshot(updated),
+          changes: {
+            dingtalkBound: { from: Boolean(user.dingtalkUserId), to: false },
+            department: { from: user.department ?? null, to: null },
+            role: { from: user.role, to: updated.role },
+          },
+          retentionClass: 'admin',
+        }, tx);
+      }
     });
     return { ok: true };
   }
@@ -440,21 +615,49 @@ export class MembersService {
   }
 
   /** 设置 BP 领域映射（勾选/取消） */
-  async setBpDomain(userId: string, domain: string, enabled: boolean) {
+  async setBpDomain(
+    userId: string,
+    domain: string,
+    enabled: boolean,
+    actor?: AuditActor,
+    request?: AuditRequestContext,
+  ) {
     if (!isBpDomain(domain)) throw new BadRequestException(`领域不在白名单：${domain}`);
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user || (user.role !== 'legal_bp' && user.role !== 'legal_lead')) {
       throw new BadRequestException('仅法务 BP/负责人可配置领域');
     }
-    if (enabled) {
-      await this.prisma.bpDomainMap.upsert({
-        where: { userId_domain: { userId, domain } },
-        update: {},
-        create: { userId, domain },
-      });
-    } else {
-      await this.prisma.bpDomainMap.deleteMany({ where: { userId, domain } });
-    }
+    const existing = await this.prisma.bpDomainMap.findUnique({
+      where: { userId_domain: { userId, domain } },
+      select: { id: true },
+    });
+    const wasEnabled = Boolean(existing);
+    await this.prisma.$transaction(async (tx) => {
+      if (enabled) {
+        await tx.bpDomainMap.upsert({
+          where: { userId_domain: { userId, domain } },
+          update: {},
+          create: { userId, domain },
+        });
+      } else {
+        await tx.bpDomainMap.deleteMany({ where: { userId, domain } });
+      }
+      if (this.audit) {
+        await this.audit.record({
+          actor,
+          action: 'member.bp_scope.change',
+          resourceType: 'member',
+          resourceId: userId,
+          source: 'web',
+          outcome: 'success',
+          request,
+          before: { domain, enabled: wasEnabled },
+          after: { domain, enabled },
+          changes: { domain, enabled: { from: wasEnabled, to: enabled } },
+          retentionClass: 'admin',
+        }, tx);
+      }
+    });
     return { ok: true };
   }
 
@@ -468,4 +671,13 @@ export class MembersService {
     });
     return { noGroup };
   }
+}
+
+function memberAuditSnapshot(user: any) {
+  return {
+    id: user.id,
+    role: user.role,
+    department: user.department ?? null,
+    dingtalkBound: Boolean(user.dingtalkUserId),
+  };
 }

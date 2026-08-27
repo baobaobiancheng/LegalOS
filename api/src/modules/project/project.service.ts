@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Optional,
   NotFoundException,
   ForbiddenException,
   ConflictException,
@@ -33,6 +34,9 @@ import { ProjectStateMachine } from './domain/project-state-machine';
 import { ClaimProjectUseCase } from './application/claim-project.use-case';
 import { EscalateProjectToLegalUseCase } from './application/escalate-project-to-legal.use-case';
 import { normalizeConsultationCapability } from './domain/consultation-capability';
+import { AuditService } from '../../common/audit/audit.service';
+import { AuditRequestContext } from '../../common/audit/audit.types';
+import { RecordDownloadDto } from './dto/record-download.dto';
 
 // 用户选择器，避免暴露密码哈希
 const userSelect = { id: true, username: true, displayName: true, role: true };
@@ -54,6 +58,7 @@ export class ProjectService {
     private readonly escalateToLegal: EscalateProjectToLegalUseCase,
     private readonly replyOrchestrator: ConsultationReplyOrchestrator,
     private readonly attachmentService: ConsultationAttachmentService,
+    @Optional() private readonly audit?: AuditService,
   ) {}
 
   // ═══════════════════════════════════════════
@@ -194,7 +199,7 @@ export class ProjectService {
   }
 
   /** 更新工单（状态/风险/结果）— 法务 BP 仅可改已指派给自己工单的状态/风险/结果字段 */
-  async update(id: string, dto: UpdateProjectDto, actor: ProjectActor) {
+  async update(id: string, dto: UpdateProjectDto, actor: ProjectActor, request?: AuditRequestContext) {
     const project = await this.prisma.project.findUnique({ where: { id } });
     if (!project) throw new NotFoundException('工单不存在');
     this.accessPolicy.assertCan(actor, ProjectAction.Update, project);
@@ -244,6 +249,22 @@ export class ProjectService {
         },
       });
       if (!escalated) throw new NotFoundException('工单不存在');
+      if (this.audit) {
+        await this.audit.record({
+          actor,
+          action: 'project.escalate',
+          resourceType: 'project',
+          resourceId: id,
+          projectId: id,
+          source: 'web',
+          outcome: 'success',
+          request,
+          before: projectAuditSnapshot(project),
+          after: projectAuditSnapshot(escalated),
+          changes: projectChanges(project, escalated, this.audit) as Prisma.InputJsonValue,
+          retentionClass: 'business',
+        });
+      }
       return escalated;
     }
 
@@ -255,37 +276,59 @@ export class ProjectService {
       ...(dto.route && { route: dto.route }),
       ...(dto.result && { result: dto.result }),
     };
-    const guardedWhere: Prisma.ProjectWhereInput = {
-      id,
-      // 如果本次更新带状态，必须仍从刚读到的状态开始，避免覆盖并发迁移。
-      ...(dto.status && { status: project.status }),
-    };
-    if (actor.role === 'legal_bp') {
-      guardedWhere.OR = [{ legalBpId: actor.id }, { ownerId: actor.id }];
-    }
-    const updatedCount = await this.prisma.project.updateMany({
-      where: guardedWhere,
-      data: updateData,
+    const { result: updated, previousLegalBpId } = await this.prisma.$transaction(async (tx) => {
+      const before = await this.lockProjectForAudit(tx, id, project);
+      this.accessPolicy.assertCan(actor, ProjectAction.Update, before);
+      if (dto.status && dto.status !== before.status && !this.stateMachine.canTransition(before.status, dto.status)) {
+        throw new ConflictException(`非法状态迁移: ${before.status} → ${dto.status}`);
+      }
+      const guardedWhere: Prisma.ProjectWhereInput = {
+        id,
+        // 锁定后的状态是审计 before 和并发更新的共同基准。
+        ...(dto.status && { status: before.status }),
+      };
+      if (actor.role === 'legal_bp') {
+        guardedWhere.OR = [{ legalBpId: actor.id }, { ownerId: actor.id }];
+      }
+      const updatedCount = await tx.project.updateMany({ where: guardedWhere, data: updateData });
+      if (updatedCount.count === 0) {
+        throw actor.role === 'legal_bp'
+          ? new ForbiddenException('工单指派已变化，无法更新')
+          : new ConflictException('工单状态已变化，请刷新后重试');
+      }
+      const result = await tx.project.findUnique({
+        where: { id },
+        include: {
+          creator: { select: userSelect },
+          owner: { select: userSelect },
+          legalBp: { select: userSelect },
+        },
+      });
+      if (!result) throw new NotFoundException('工单不存在');
+      if (this.audit) {
+        const assignmentChanged = before.legalBpId !== result.legalBpId || before.ownerId !== result.ownerId;
+        await this.audit.record({
+          actor,
+          action: assignmentChanged ? 'project.transfer' : 'project.update',
+          resourceType: 'project',
+          resourceId: id,
+          projectId: id,
+          source: 'web',
+          outcome: 'success',
+          request,
+          before: projectAuditSnapshot(before),
+          after: projectAuditSnapshot(result),
+          changes: projectChanges(before, result, this.audit) as Prisma.InputJsonValue,
+          retentionClass: 'business',
+        }, tx);
+      }
+      return { result, previousLegalBpId: before.legalBpId };
     });
-    if (updatedCount.count === 0) {
-      throw actor.role === 'legal_bp'
-        ? new ForbiddenException('工单指派已变化，无法更新')
-        : new ConflictException('工单状态已变化，请刷新后重试');
-    }
-    const updated = await this.prisma.project.findUnique({
-      where: { id },
-      include: {
-        creator: { select: userSelect },
-        owner: { select: userSelect },
-        legalBp: { select: userSelect },
-      },
-    });
-    if (!updated) throw new NotFoundException('工单不存在');
 
     // 钉钉联动：
     // - legalBpId 变更 → 新 BP 进群（异步，不阻塞 PATCH 响应）
-    if (dto.legalBpId && dto.legalBpId !== project.legalBpId) {
-      void this.onLegalBpChanged(id, dto.legalBpId, project.legalBpId).catch((e) =>
+    if (dto.legalBpId && dto.legalBpId !== previousLegalBpId) {
+      void this.onLegalBpChanged(id, dto.legalBpId, previousLegalBpId).catch((e) =>
         this.logger.error(`转派加群失败（${id}）：${e}`),
       );
     }
@@ -299,7 +342,7 @@ export class ProjectService {
   }
 
   /** 取消工单 — 原子条件更新 + 对象级授权（business 仅创建者且未完成；legal_bp 禁止） */
-  async cancel(id: string, actor: ProjectActor) {
+  async cancel(id: string, actor: ProjectActor, request?: AuditRequestContext) {
     const project = await this.prisma.project.findUnique({ where: { id } });
     if (!project) throw new NotFoundException('工单不存在');
     this.accessPolicy.assertCan(actor, ProjectAction.Cancel, project);
@@ -307,20 +350,37 @@ export class ProjectService {
     const where: Prisma.ProjectWhereInput = { id, status: { notIn: ['已取消', '已回传'] } };
     if (actor.role === 'business') where.creatorId = actor.id;
 
-    const updated = await this.prisma.project.updateMany({
-      where,
-      data: { status: '已取消' },
+    await this.prisma.$transaction(async (tx) => {
+      const before = await this.lockProjectForAudit(tx, id, project);
+      this.accessPolicy.assertCan(actor, ProjectAction.Cancel, before);
+      const updated = await tx.project.updateMany({ where, data: { status: '已取消' } });
+      if (updated.count === 0) {
+        throw new ForbiddenException('只能取消自己创建的、未完成或未取消的工单');
+      }
+      await tx.projectEvent.create({ data: { projectId: id, text: formatEventTime() + ' · 工单已取消' } });
+      if (this.audit) {
+        await this.audit.record({
+          actor,
+          action: 'project.cancel',
+          resourceType: 'project',
+          resourceId: id,
+          projectId: id,
+          source: 'web',
+          outcome: 'success',
+          request,
+          before: projectAuditSnapshot(before),
+          after: { ...projectAuditSnapshot(before), status: '已取消' },
+          changes: { status: { from: before.status, to: '已取消' } },
+          retentionClass: 'business',
+        }, tx);
+      }
     });
-    if (updated.count === 0) {
-      throw new ForbiddenException('只能取消自己创建的、未完成或未取消的工单');
-    }
-    await this.addEvent(id, formatEventTime() + ' · 工单已取消');
 
     return { status: '已取消' };
   }
 
   /** 转派给另一个法务 BP（仅 legal_lead/admin，P1-01 5.2；新 BP 自动进群，旧 BP 留群） */
-  async transfer(id: string, legalBpId: string, actor: ProjectActor) {
+  async transfer(id: string, legalBpId: string, actor: ProjectActor, request?: AuditRequestContext) {
     const project = await this.prisma.project.findUnique({ where: { id } });
     if (!project) throw new NotFoundException('工单不存在');
     this.accessPolicy.assertCan(actor, ProjectAction.Transfer, project);
@@ -330,23 +390,47 @@ export class ProjectService {
       throw new ForbiddenException('目标用户不是法务 BP');
     }
 
-    const updated = await this.prisma.project.update({
-      where: { id },
-      data: { legalBpId, ownerId: legalBpId },
-      include: {
-        creator: { select: userSelect },
-        owner: { select: userSelect },
-        legalBp: { select: userSelect },
-      },
+    const { result: updated, before } = await this.prisma.$transaction(async (tx) => {
+      const before = await this.lockProjectForAudit(tx, id, project);
+      this.accessPolicy.assertCan(actor, ProjectAction.Transfer, before);
+      const result = await tx.project.update({
+        where: { id },
+        data: { legalBpId, ownerId: legalBpId },
+        include: {
+          creator: { select: userSelect },
+          owner: { select: userSelect },
+          legalBp: { select: userSelect },
+        },
+      });
+      await tx.projectEvent.create({ data: { projectId: id, text: formatEventTime() + ` · 工单已转派给 ${bp.displayName}` } });
+      if (this.audit) {
+        await this.audit.record({
+          actor,
+          action: 'project.transfer',
+          resourceType: 'project',
+          resourceId: id,
+          projectId: id,
+          source: 'web',
+          outcome: 'success',
+          request,
+          before: projectAuditSnapshot(before),
+          after: projectAuditSnapshot(result),
+          changes: {
+            legalBpId: { from: before.legalBpId, to: legalBpId },
+            ownerId: { from: before.ownerId, to: legalBpId },
+          },
+          retentionClass: 'business',
+        }, tx);
+      }
+      return { result, before };
     });
-    await this.addEvent(id, formatEventTime() + ` · 工单已转派给 ${bp.displayName}`);
 
     // 钉钉：新 BP 加群改由 Outbox Worker 执行，HTTP 请求只提交本地事件。
-    await this.onLegalBpChanged(id, legalBpId, project.legalBpId);
+    await this.onLegalBpChanged(id, legalBpId, before.legalBpId);
     try {
-      if (project.dingtalkChatId) {
+      if (before.dingtalkChatId) {
         await this.dingtalk.sendNotification(
-          project.dingtalkChatId,
+          before.dingtalkChatId,
           `工单已转派给 ${bp.displayName}`,
         );
       }
@@ -360,7 +444,7 @@ export class ProjectService {
   /** 用户申请升级人工处理（2026-08-12 review P0）：独立接口，复用 EscalateProjectToLegalUseCase。
    *   business 仅能升级自己创建且未取消的工单；lead/admin 全部。
    *   不启动模型、不新增用户消息、不创建 ConsultationRun；重复点击幂等返回 200。 */
-  async escalate(projectId: string, actor: ProjectActor) {
+  async escalate(projectId: string, actor: ProjectActor, request?: AuditRequestContext) {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('工单不存在');
     this.accessPolicy.assertCan(actor, ProjectAction.Escalate, project);
@@ -368,6 +452,22 @@ export class ProjectService {
 
     // 已是法务流程：幂等返回 200，不重复写事件/建群
     if (project.route === 'legalbp') {
+      if (this.audit) {
+        await this.audit.record({
+          actor,
+          action: 'project.escalate',
+          resourceType: 'project',
+          resourceId: projectId,
+          projectId,
+          source: 'web',
+          outcome: 'success',
+          request,
+          before: projectAuditSnapshot(project),
+          after: projectAuditSnapshot(project),
+          metadata: { idempotent: true },
+          retentionClass: 'business',
+        });
+      }
       return { upgraded: false, route: 'legalbp', status: project.status };
     }
 
@@ -378,6 +478,24 @@ export class ProjectService {
       domain: null,
       eventTexts: [formatEventTime() + ' · 用户申请升级为人工处理，已通知法务 BP'],
     });
+
+    if (this.audit) {
+      const updated = await this.prisma.project.findUnique({ where: { id: projectId } });
+      await this.audit.record({
+        actor,
+        action: 'project.escalate',
+        resourceType: 'project',
+        resourceId: projectId,
+        projectId,
+        source: 'web',
+        outcome: 'success',
+        request,
+        before: projectAuditSnapshot(project),
+        after: updated ? projectAuditSnapshot(updated) : { route: 'legalbp', status: '待复核' },
+        changes: { route: { from: project.route, to: 'legalbp' }, status: { from: project.status, to: '待复核' } },
+        retentionClass: 'business',
+      });
+    }
 
     return { upgraded: true, route: 'legalbp', status: '待复核' };
   }
@@ -556,7 +674,7 @@ export class ProjectService {
    * 法务 BP 正式回传 — "有权回传"与"状态允许回传"同时放进条件更新（P1-01 5.3.7），
    * 防止检查后状态或指派发生变化。
    */
-  async reply(projectId: string, dto: ReplyProjectDto, actor: ProjectActor) {
+  async reply(projectId: string, dto: ReplyProjectDto, actor: ProjectActor, request?: AuditRequestContext) {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('工单不存在');
     this.accessPolicy.assertCan(actor, ProjectAction.Reply, project);
@@ -566,30 +684,66 @@ export class ProjectService {
     if (actor.role === 'legal_bp') {
       where.OR = [{ legalBpId: actor.id }, { ownerId: actor.id }];
     }
-    const updated = await this.prisma.project.updateMany({
-      where,
-      data: { status: '已回传', result: dto.text, legalBpId: actor.id },
+    const { result: fresh, before } = await this.prisma.$transaction(async (tx) => {
+      const before = await this.lockProjectForAudit(tx, projectId, project);
+      this.accessPolicy.assertCan(actor, ProjectAction.Reply, before);
+      const updated = await tx.project.updateMany({
+        where,
+        data: { status: '已回传', result: dto.text, legalBpId: actor.id },
+      });
+      if (updated.count === 0) {
+        throw new ForbiddenException('只有待复核状态、且已指派给您的工单才能回传');
+      }
+      const result = await tx.project.findUnique({ where: { id: projectId } });
+      if (!result) throw new NotFoundException('工单不存在');
+      await tx.projectMessage.create({
+        data: { projectId, role: 'legal', text: dto.text, label: '法务BP 正式回复' },
+      });
+      await tx.projectEvent.create({ data: { projectId, text: formatEventTime() + ' · 已回传业务端' } });
+      await tx.projectEvent.create({ data: { projectId, text: formatEventTime() + ' · 通知业务端 + 钉钉群同步' } });
+      if (this.audit) {
+        const latestRun = await tx.consultationRun.findFirst({
+          where: { projectId, status: 'succeeded' },
+          orderBy: { completedAt: 'desc' },
+        });
+        const auditEvent = await this.audit.record({
+          actor,
+          action: 'project.reply',
+          resourceType: 'project',
+          resourceId: projectId,
+          projectId,
+          source: 'web',
+          outcome: 'success',
+          request,
+          correlationId: latestRun?.id ?? null,
+          before: projectAuditSnapshot(before),
+          after: projectAuditSnapshot(result),
+          changes: {
+            status: { from: before.status, to: '已回传' },
+            legalBpId: { from: before.legalBpId, to: actor.id },
+            resultHash: { from: before.result ? this.audit.digestCanonical(before.result) : null, to: this.audit.digestCanonical(dto.text) },
+          },
+          metadata: latestRun ? {
+            consultationRunId: latestRun.id,
+            dshSessionId: latestRun.dshSessionId,
+            modelVersion: latestRun.modelVersion,
+            aiOutputHash: latestRun.outputHash,
+          } : { consultationRunId: null },
+          retentionClass: 'business',
+        }, tx) as any;
+        if (latestRun) {
+          await tx.consultationRun.update({
+            where: { id: latestRun.id },
+            data: { humanAuditEventId: auditEvent.eventId },
+          });
+        }
+      }
+      return { result, before };
     });
-    if (updated.count === 0) {
-      throw new ForbiddenException('只有待复核状态、且已指派给您的工单才能回传');
-    }
-
-    // 重新读取 project 用于后续操作
-    const fresh = await this.prisma.project.findUnique({ where: { id: projectId } });
-    if (!fresh) throw new NotFoundException('工单不存在');
-
-    // 存入法务回复
-    await this.prisma.projectMessage.create({
-      data: { projectId, role: 'legal', text: dto.text, label: '法务BP 正式回复' },
-    });
-
-    // 事件
-    await this.addEvent(projectId, formatEventTime() + ' · 已回传业务端');
-    await this.addEvent(projectId, formatEventTime() + ' · 通知业务端 + 钉钉群同步');
 
     // 钉钉：若此前不在群则加人（.catch 防崩溃）
-    if (actor.id !== project.legalBpId) {
-      void this.onLegalBpChanged(projectId, actor.id, project.legalBpId).catch((e) =>
+    if (actor.id !== before.legalBpId) {
+      void this.onLegalBpChanged(projectId, actor.id, before.legalBpId).catch((e) =>
         this.logger.error(`认领加群失败（${projectId}）：${e}`),
       );
     }
@@ -613,9 +767,49 @@ export class ProjectService {
     return { status: '已回传' };
   }
 
+  async recordDownload(
+    projectId: string,
+    dto: RecordDownloadDto,
+    actor: ProjectActor,
+    request?: AuditRequestContext,
+  ) {
+    const project = await this.prisma.project.findUnique({ where: { id: projectId } });
+    if (!project) throw new NotFoundException('工单不存在');
+    this.accessPolicy.assertCan(actor, ProjectAction.Read, project);
+    if (dto.resourceId) {
+      const message = await this.prisma.projectMessage.findFirst({
+        where: { id: dto.resourceId, projectId, role: { in: ['assistant', 'legal'] } },
+        select: { id: true },
+      });
+      if (!message) throw new NotFoundException('下载记录不存在');
+    }
+    if (!this.audit) throw new ConflictException('审计服务不可用，暂不能下载敏感记录');
+    await this.audit.record({
+      actor,
+      action: dto.resourceType === 'contract' ? 'contract.download' : 'consultation_record.download',
+      resourceType: dto.resourceType,
+      resourceId: dto.resourceId ?? projectId,
+      projectId,
+      source: 'web',
+      outcome: 'success',
+      request,
+      metadata: { format: dto.format },
+      retentionClass: 'business',
+    });
+  }
+
   // ═══════════════════════════════════════════
   // 内部方法
   // ═══════════════════════════════════════════
+
+  /** MySQL 生产路径锁定工单后再采集 before，避免并发转派/状态变更使审计快照失真。 */
+  private async lockProjectForAudit(tx: Prisma.TransactionClient, projectId: string, testFallback: any) {
+    if (typeof (tx as any).$queryRaw !== 'function') return testFallback;
+    await tx.$queryRaw`SELECT id FROM projects WHERE id = ${projectId} FOR UPDATE`;
+    const project = await tx.project.findUnique({ where: { id: projectId } });
+    if (!project) throw new NotFoundException('工单不存在');
+    return project;
+  }
 
 
   // ═══════════════════════════════════════════
@@ -678,4 +872,31 @@ export class ProjectService {
     });
   }
 
+}
+
+function projectAuditSnapshot(project: any) {
+  return {
+    id: project.id,
+    status: project.status,
+    risk: project.risk,
+    route: project.route,
+    ownerId: project.ownerId,
+    legalBpId: project.legalBpId ?? null,
+    resultPresent: Boolean(project.result),
+  };
+}
+
+function projectChanges(before: any, after: any, audit: AuditService) {
+  const fields = ['status', 'risk', 'route', 'ownerId', 'legalBpId'] as const;
+  const changes: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (before[field] !== after[field]) changes[field] = { from: before[field] ?? null, to: after[field] ?? null };
+  }
+  if (before.result !== after.result) {
+    changes.resultHash = {
+      from: before.result ? audit.digestCanonical(before.result) : null,
+      to: after.result ? audit.digestCanonical(after.result) : null,
+    };
+  }
+  return changes;
 }
