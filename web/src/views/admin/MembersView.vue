@@ -1,393 +1,125 @@
-<template>
-  <div class="app-shell">
-    <div class="aurora">
-      <div class="orb orb-1" /><div class="orb orb-2" /><div class="orb orb-3" />
-    </div>
-
-    <aside class="app-sidebar sidebar-glass">
-      <button
-        class="app-brand"
-        @click="router.push('/admin/dashboard')"
-      >
-        <span class="brand-icon">⚙</span>
-        <span class="brand-text"><b>管理端</b><small>系统管理</small></span>
-      </button>
-
-      <div class="nav-section">
-        <span class="nav-label">管理工具</span>
-        <button
-          class="nav-btn"
-          @click="router.push('/admin/dashboard')"
-        >
-          <span class="nav-ico"><svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-          ><line
-            x1="12"
-            y1="20"
-            x2="12"
-            y2="10"
-          /><line
-            x1="18"
-            y1="20"
-            x2="18"
-            y2="4"
-          /><line
-            x1="6"
-            y1="20"
-            x2="6"
-            y2="16"
-          /></svg></span>
-          数据看板
-        </button>
-        <button class="nav-btn active">
-          <span class="nav-ico"><svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-          ><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle
-            cx="9"
-            cy="7"
-            r="4"
-          /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg></span>
-          成员管理
-        </button>
-        <button
-          class="nav-btn"
-          disabled
-        >
-          定时任务
-        </button>
-        <button
-          class="nav-btn"
-          disabled
-        >
-          审计日志
-        </button>
-      </div>
-
-      <div class="sidebar-footer">
-        <div class="user-avatar">
-          {{ auth.user?.displayName?.[0] || '管' }}
-        </div>
-        <div class="user-info">
-          <span class="user-name">{{ auth.user?.displayName || '用户' }}</span>
-          <span class="user-role">系统管理员</span>
-        </div>
-        <button
-          class="logout-link"
-          title="退出登录"
-          @click="handleLogout"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-          ><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line
-            x1="21"
-            y1="12"
-            x2="9"
-            y2="12"
-          /></svg>
-        </button>
-      </div>
-    </aside>
-
-    <div class="app-main">
-      <header class="app-topbar topbar-glass">
-        <div class="tb-left">
-          <small class="tb-path">管理端</small>
-          <strong class="tb-title">成员管理</strong>
-        </div>
-        <button
-          class="btn-primary sync-btn"
-          :disabled="syncing"
-          @click="doSync"
-        >
-          {{ syncing ? '同步中…' : '⇪ 一键同步钉钉通讯录' }}
-        </button>
-      </header>
-
-      <div class="app-content animate-in">
-        <ErrorState
-          v-if="loadError"
-          :message="loadError.payload.error"
-          :request-id="loadError.payload.requestId"
-          :on-retry="loadAll"
-        />
-        <ErrorState
-          v-if="actionError"
-          :message="actionError.payload.error"
-          :request-id="actionError.payload.requestId"
-        />
-        <!-- 同步结果 + 失败计数 -->
-        <div
-          v-if="!loadError"
-          class="stats-row"
-        >
-          <div class="stat-card glass-card">
-            <span class="stat-value">{{ syncResult?.total ?? '—' }}</span>
-            <span class="stat-label">通讯录成员</span>
-          </div>
-          <div class="stat-card glass-card">
-            <span class="stat-value">{{ syncResult?.autoBound ?? '—' }}</span>
-            <span class="stat-label">自动绑定</span>
-          </div>
-          <div class="stat-card glass-card warn">
-            <span class="stat-value">{{ failures ?? '—' }}</span>
-            <span class="stat-label">拉群失败工单</span>
-          </div>
-          <div class="stat-card glass-card">
-            <span class="stat-value">{{ boundCount }}</span>
-            <span class="stat-label">已绑定用户</span>
-          </div>
-        </div>
-        <p
-          v-if="!loadError && syncResult?.ambiguous?.length"
-          class="warn-line"
-        >
-          ⚠️ 重名未自动绑定（请在下方手动绑定）：{{ syncResult.ambiguous.join('、') }}
-        </p>
-
-        <!-- 系统用户绑定表 -->
-        <div
-          v-if="!loadError"
-          class="panel glass-card"
-        >
-          <div class="panel-head">
-            <h3 class="panel-title">
-              系统用户 × 钉钉绑定
-            </h3>
-            <input
-              v-model="userKeyword"
-              class="search-input"
-              placeholder="搜索姓名 / 角色"
-            >
-          </div>
-          <table class="member-table">
-            <thead>
-              <tr><th>姓名</th><th>角色</th><th>部门</th><th>钉钉绑定</th><th>操作</th></tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="u in filteredUsers"
-                :key="u.id"
-              >
-                <td>{{ u.displayName }}</td>
-                <td><span class="role-chip">{{ roleLabel(u.role) }}</span></td>
-                <td>{{ u.department || '—' }}</td>
-                <td>
-                  <span
-                    v-if="u.dingtalkUserId"
-                    class="bound-ok"
-                  >✓ {{ u.dingtalkUserId }}</span>
-                  <span
-                    v-else
-                    class="bound-no"
-                  >未绑定</span>
-                </td>
-                <td>
-                  <button
-                    v-if="!u.dingtalkUserId"
-                    class="btn-sm"
-                    @click="openBind(u)"
-                  >
-                    绑定
-                  </button>
-                  <button
-                    v-else
-                    class="btn-sm danger"
-                    @click="unbind(u)"
-                  >
-                    解绑
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <!-- BP 领域映射 -->
-        <div
-          v-if="!loadError"
-          class="panel glass-card"
-        >
-          <div class="panel-head">
-            <h3 class="panel-title">
-              法务 BP 工作范围（领域 → 拉群匹配）
-            </h3>
-            <span class="panel-hint">意图识别/技能领域 → 匹配此处勾选的 BP → 指派并拉群</span>
-          </div>
-          <table class="member-table">
-            <thead>
-              <tr>
-                <th>法务 BP</th><th>钉钉</th><th
-                  v-for="d in bpDomains"
-                  :key="d"
-                  class="domain-col"
-                >
-                  {{ d }}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="u in bpUsers"
-                :key="u.id"
-              >
-                <td>{{ u.displayName }}</td>
-                <td><span :class="u.bound ? 'bound-ok' : 'bound-no'">{{ u.bound ? '已绑定' : '未绑定' }}</span></td>
-                <td
-                  v-for="d in bpDomains"
-                  :key="d"
-                  class="domain-col"
-                >
-                  <input
-                    type="checkbox"
-                    :checked="u.domains.includes(d)"
-                    @change="toggleDomain(u, d, ($event.target as HTMLInputElement).checked)"
-                  >
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <!-- 手动绑定弹窗 -->
-        <div
-          v-if="bindTarget"
-          class="modal-mask"
-          @click.self="bindTarget = null"
-        >
-          <div class="modal-card">
-            <h3 class="modal-title">
-              绑定钉钉成员 · {{ bindTarget.displayName }}
-            </h3>
-            <label class="field-label">搜索钉钉通讯录</label>
-            <input
-              v-model="contactKeyword"
-              class="field-input"
-              placeholder="输入姓名或手机号"
-              @input="searchContacts"
-            >
-            <div class="contact-list">
-              <ErrorState
-                v-if="contactError"
-                :message="contactError.payload.error"
-                :request-id="contactError.payload.requestId"
-                :on-retry="searchContacts"
-              />
-              <button
-                v-for="c in contacts"
-                :key="c.userId"
-                class="contact-item"
-                @click="doBind(c)"
-              >
-                <span class="contact-name">{{ c.name }}</span>
-                <span class="contact-mobile">{{ c.mobile || '—' }}</span>
-                <span class="contact-id">{{ c.userId }}</span>
-              </button>
-              <p
-                v-if="!contacts.length && contactKeyword"
-                class="empty-hint"
-              >
-                未找到匹配成员（可先点右上角同步通讯录）
-              </p>
-            </div>
-            <div class="modal-actions">
-              <button
-                class="btn-sm"
-                @click="bindTarget = null"
-              >
-                取消
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { gsap } from 'gsap'
 import { useRouter } from 'vue-router'
-import { useAuthStore } from '../../stores/auth'
+import baijianLogo from '../../assets/logo-header.jpeg'
 import { RequestError, request } from '../../api/client'
 import ErrorState from '../../components/ErrorState.vue'
+import { buildPagination } from '../../domain/legal-research'
+import { useAuthStore } from '../../stores/auth'
 
-/**
- * 管理端成员管理（2026-08-05 钉钉拉群模块）：
- * 一键同步钉钉通讯录 → 姓名自动匹配绑定（重名落手动）→ BP 领域映射配置。
- */
+type Member = {
+  id: string
+  displayName: string
+  role: string
+  dingtalkUserId: string | null
+  department: string | null
+}
+type BpMember = { id: string; displayName: string; bound: boolean; domains: string[] }
+type Contact = { userId: string; name: string; mobile?: string }
+type SyncSummary = {
+  total: number
+  autoBound: number
+  ambiguous: string[]
+  departmentCount?: number
+  completedAt?: string
+  complete?: boolean
+  error?: string
+}
+type TabKey = 'users' | 'bp' | 'sync'
+type BindingFilter = 'all' | 'bound' | 'unbound'
+
+const PAGE_SIZE = 10
 const router = useRouter()
 const auth = useAuthStore()
-
+const pageRoot = ref<HTMLElement | null>(null)
 const syncing = ref(false)
+const actingUserId = ref('')
+const togglingKey = ref('')
 const loadError = ref<RequestError | null>(null)
 const actionError = ref<RequestError | null>(null)
-const syncResult = ref<{ total: number; autoBound: number; ambiguous: string[] } | null>(null)
+const syncResult = ref<SyncSummary | null>(null)
 const failures = ref<number | null>(null)
-
-const users = ref<Array<{ id: string; displayName: string; role: string; dingtalkUserId: string | null; department: string | null }>>([])
-const userKeyword = ref('')
-
-const bpUsers = ref<Array<{ id: string; displayName: string; bound: boolean; domains: string[] }>>([])
+const users = ref<Member[]>([])
+const bpUsers = ref<BpMember[]>([])
 const bpDomains = ref<string[]>([])
+const userKeyword = ref('')
+const activeTab = ref<TabKey>('users')
+const bindingFilter = ref<BindingFilter>('all')
+const currentPage = ref(1)
+let animationContext: gsap.Context | null = null
+
+const roleLabel = (role: string) => ({ legal_bp: '法务 BP', legal_lead: '法务负责人', business: '业务人员', admin: '管理员' })[role] || role
+const roleClass = (role: string) => ({ legal_bp: 'bp', legal_lead: 'bp', admin: 'admin' })[role] || ''
+const boundCount = computed(() => users.value.filter(user => user.dingtalkUserId).length)
+const unboundCount = computed(() => users.value.length - boundCount.value)
+const bpCount = computed(() => users.value.filter(user => user.role === 'legal_bp' || user.role === 'legal_lead').length)
+const filteredUsers = computed(() => {
+  const keyword = userKeyword.value.trim().toLocaleLowerCase()
+  return users.value.filter((user) => {
+    const matchesKeyword = !keyword || [user.displayName, user.department ?? '', roleLabel(user.role)]
+      .some(value => value.toLocaleLowerCase().includes(keyword))
+    const matchesBinding = bindingFilter.value === 'all'
+      || (bindingFilter.value === 'bound' ? Boolean(user.dingtalkUserId) : !user.dingtalkUserId)
+    return matchesKeyword && matchesBinding
+  })
+})
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredUsers.value.length / PAGE_SIZE)))
+const pagination = computed(() => buildPagination(currentPage.value, totalPages.value))
+const pagedUsers = computed(() => filteredUsers.value.slice((currentPage.value - 1) * PAGE_SIZE, currentPage.value * PAGE_SIZE))
+const lastSyncTime = computed(() => syncResult.value?.completedAt ? formatDateTime(syncResult.value.completedAt) : '尚未同步')
+
+const formatDateTime = (value: string) => {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  const pad = (number: number) => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+const animatePage = async () => {
+  await nextTick()
+  if (!pageRoot.value || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  animationContext?.revert()
+  animationContext = gsap.context(() => {
+    gsap.from('.members-heading > *', { autoAlpha: 0, y: 14, duration: .5, stagger: .07, ease: 'power2.out' })
+    gsap.from('.member-stat', { autoAlpha: 0, y: 12, duration: .42, stagger: .055, delay: .08, ease: 'power2.out' })
+    gsap.from('.member-row', { autoAlpha: 0, y: 8, duration: .32, stagger: .035, delay: .16, ease: 'power2.out' })
+  }, pageRoot.value)
+}
 
 const loadAll = async () => {
   try {
     const [userData, bpData, failData, syncData] = await Promise.all([
-      request<any>('/admin/members/users'),
-      request<any>('/admin/members/bp-domains'),
-      request<any>('/admin/members/failures'),
-      request<any>('/admin/members/last-sync'),
+      request<{ items: Member[] } | Member[]>('/admin/members/users'),
+      request<{ users: BpMember[]; domains: string[] }>('/admin/members/bp-domains'),
+      request<{ noGroup: number }>('/admin/members/failures'),
+      request<Omit<SyncSummary, 'ambiguous'> | null>('/admin/members/last-sync'),
     ])
-    users.value = userData.items || userData || []
-    bpUsers.value = bpData.users || []
-    bpDomains.value = bpData.domains || []
+    users.value = Array.isArray(userData) ? userData : userData.items ?? []
+    bpUsers.value = bpData.users ?? []
+    bpDomains.value = bpData.domains ?? []
     failures.value = failData.noGroup ?? null
-    // 切页回来组件重建,syncResult 归 null → 从持久化批次恢复统计卡;
-    // 刚同步完(syncResult 已由 POST 结果填充,含 ambiguous)则不改,避免覆盖。
-    if (syncResult.value == null && syncData) {
-      syncResult.value = { total: syncData.total, autoBound: syncData.autoBound, ambiguous: [] }
-    }
+    if (syncResult.value === null && syncData) syncResult.value = { ...syncData, ambiguous: [] }
     loadError.value = null
   } catch (error) {
     loadError.value = error instanceof RequestError
       ? error
       : new RequestError({ error: '成员数据加载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
   }
+  if (currentPage.value > totalPages.value) currentPage.value = totalPages.value
+  await animatePage()
 }
 
-onMounted(loadAll)
-
-const filteredUsers = computed(() => {
-  const kw = userKeyword.value.trim()
-  if (!kw) return users.value
-  return users.value.filter((u) => u.displayName.includes(kw) || u.role.includes(kw))
-})
-
-const boundCount = computed(() => users.value.filter((u) => u.dingtalkUserId).length)
-
-const roleLabel = (r: string) => ({ legal_bp: '法务 BP', legal_lead: '法务负责人', business: '业务', admin: '管理员' })[r] || r
-
 const doSync = async () => {
+  if (syncing.value) return
   syncing.value = true
   actionError.value = null
   try {
-    syncResult.value = await request<any>('/admin/members/sync', { method: 'POST' })
+    const result = await request<SyncSummary>('/admin/members/sync', { method: 'POST' })
+    if (result.complete === false) {
+      throw new RequestError({ error: result.error || '通讯录同步未完成，请重试', code: 'SYNC_INCOMPLETE', statusCode: 502 })
+    }
+    syncResult.value = { ...result, completedAt: result.completedAt ?? new Date().toISOString() }
     await loadAll()
   } catch (error) {
     actionError.value = error instanceof RequestError
@@ -398,132 +130,538 @@ const doSync = async () => {
   }
 }
 
-// ── 手动绑定 ──
-const bindTarget = ref<{ id: string; displayName: string } | null>(null)
+const bindTarget = ref<Pick<Member, 'id' | 'displayName'> | null>(null)
 const contactKeyword = ref('')
-const contacts = ref<Array<{ userId: string; name: string; mobile?: string }>>([])
+const contacts = ref<Contact[]>([])
 const contactError = ref<RequestError | null>(null)
+let contactSearchSequence = 0
 
-const openBind = (u: { id: string; displayName: string }) => {
-  bindTarget.value = u
+const openBind = (user: Member) => {
+  bindTarget.value = { id: user.id, displayName: user.displayName }
   contactKeyword.value = ''
   contacts.value = []
+  contactError.value = null
 }
-
+const closeBind = () => {
+  bindTarget.value = null
+  contacts.value = []
+  contactKeyword.value = ''
+  contactError.value = null
+}
 const searchContacts = async () => {
-  if (!contactKeyword.value.trim()) { contacts.value = []; contactError.value = null; return }
+  const keyword = contactKeyword.value.trim()
+  const sequence = ++contactSearchSequence
+  if (!keyword) {
+    contacts.value = []
+    contactError.value = null
+    return
+  }
   try {
-    contacts.value = await request<any>(`/admin/members/contacts?keyword=${encodeURIComponent(contactKeyword.value.trim())}`)
+    const result = await request<Contact[]>(`/admin/members/contacts?keyword=${encodeURIComponent(keyword)}`)
+    if (sequence !== contactSearchSequence) return
+    contacts.value = result
     contactError.value = null
   } catch (error) {
+    if (sequence !== contactSearchSequence) return
     contacts.value = []
     contactError.value = error instanceof RequestError
       ? error
       : new RequestError({ error: '通讯录搜索失败，请重试', code: 'UNKNOWN', statusCode: 0 })
   }
 }
-
-const doBind = async (c: { userId: string }) => {
-  if (!bindTarget.value) return
+const doBind = async (contact: Contact) => {
+  if (!bindTarget.value || actingUserId.value) return
+  actingUserId.value = bindTarget.value.id
+  actionError.value = null
   try {
-    await request('/admin/members/bind', {
-      method: 'POST',
-      body: { userId: bindTarget.value.id, dingtalkUserId: c.userId },
-    })
-    bindTarget.value = null
+    await request('/admin/members/bind', { method: 'POST', body: { userId: bindTarget.value.id, dingtalkUserId: contact.userId } })
+    closeBind()
     await loadAll()
   } catch (error) {
     actionError.value = error instanceof RequestError
       ? error
       : new RequestError({ error: '绑定失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  } finally {
+    actingUserId.value = ''
   }
 }
-
-const unbind = async (u: { id: string; displayName: string }) => {
-  if (!confirm(`确认解绑 ${u.displayName} 的钉钉绑定？`)) return
+const unbind = async (user: Member) => {
+  if (actingUserId.value || !window.confirm(`确认解绑 ${user.displayName} 的钉钉绑定？`)) return
+  actingUserId.value = user.id
+  actionError.value = null
   try {
-    await request('/admin/members/unbind', { method: 'POST', body: { userId: u.id } })
+    await request('/admin/members/unbind', { method: 'POST', body: { userId: user.id } })
     await loadAll()
   } catch (error) {
     actionError.value = error instanceof RequestError
       ? error
       : new RequestError({ error: '解绑失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  } finally {
+    actingUserId.value = ''
   }
 }
-
-// ── BP 领域映射 ──
-const toggling = ref(false)
-const toggleDomain = async (u: { id: string }, d: string, enabled: boolean) => {
-  if (toggling.value) return
-  toggling.value = true
+const toggleDomain = async (user: BpMember, domain: string, enabled: boolean) => {
+  const key = `${user.id}:${domain}`
+  if (togglingKey.value) return
+  togglingKey.value = key
   actionError.value = null
   try {
-    await request('/admin/members/bp-domains', {
-      method: 'PUT',
-      body: { userId: u.id, domain: d, enabled },
-    })
-    await loadAll()
+    await request('/admin/members/bp-domains', { method: 'PUT', body: { userId: user.id, domain, enabled } })
+    const target = bpUsers.value.find(item => item.id === user.id)
+    if (target) target.domains = enabled ? [...new Set([...target.domains, domain])] : target.domains.filter(item => item !== domain)
   } catch (error) {
     actionError.value = error instanceof RequestError
       ? error
-      : new RequestError({ error: '配置失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+      : new RequestError({ error: '工作范围配置失败，请重试', code: 'UNKNOWN', statusCode: 0 })
   } finally {
-    toggling.value = false
+    togglingKey.value = ''
   }
 }
-
+const selectTab = (tab: TabKey) => { activeTab.value = tab }
+const selectFilter = (filter: BindingFilter) => { bindingFilter.value = filter }
+const goToPage = (page: number) => {
+  if (page < 1 || page > totalPages.value || page === currentPage.value) return
+  currentPage.value = page
+}
 const handleLogout = async () => { await auth.logout(); await router.replace('/login') }
+
+watch([userKeyword, bindingFilter], () => { currentPage.value = 1 })
+watch([activeTab, currentPage], async () => {
+  await nextTick()
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  gsap.fromTo('.member-row', { autoAlpha: 0, y: 7 }, { autoAlpha: 1, y: 0, duration: .3, stagger: .03, ease: 'power2.out', overwrite: true })
+})
+onMounted(loadAll)
+onBeforeUnmount(() => animationContext?.revert())
 </script>
+
+<template>
+  <div class="admin-shell">
+    <aside class="admin-sidebar">
+      <button
+        class="admin-brand"
+        aria-label="返回数据看板"
+        @click="router.push('/admin/dashboard')"
+      >
+        <span class="admin-logo"><img
+          :src="baijianLogo"
+          alt="百鉴"
+        ></span>
+        <span class="admin-brand-copy"><strong>LegalOS</strong><small>专业法务智能操作系统</small></span>
+      </button>
+      <span class="admin-nav-label">管理工具</span>
+      <nav
+        class="admin-nav"
+        aria-label="管理工作台导航"
+      >
+        <button @click="router.push('/admin/dashboard')">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            aria-hidden="true"
+          ><path d="M4 13h6V3H4v10Zm10 8h6V11h-6v10ZM4 21h6v-4H4v4Zm10-14h6V3h-6v4Z" /></svg>数据看板
+        </button>
+        <button
+          class="active"
+          aria-current="page"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            aria-hidden="true"
+          ><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle
+            cx="8.5"
+            cy="7"
+            r="4"
+          /><path d="M20 8v6M23 11h-6" /></svg>成员管理
+        </button>
+        <button disabled>
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            aria-hidden="true"
+          ><circle
+            cx="12"
+            cy="12"
+            r="9"
+          /><path d="M12 7v5l3 2" /></svg>定时任务
+        </button>
+        <button disabled>
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            aria-hidden="true"
+          ><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M8 13h8M8 17h6" /></svg>审计日志
+        </button>
+      </nav>
+      <div class="admin-user">
+        <span class="admin-avatar">{{ auth.user?.displayName?.[0] || '管' }}</span>
+        <span class="admin-user-copy"><strong>{{ auth.user?.displayName || '系统管理员' }}</strong><small>管理员</small></span>
+        <button
+          class="admin-logout"
+          aria-label="退出登录"
+          title="退出登录"
+          @click="handleLogout"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            aria-hidden="true"
+          ><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5M21 12H9" /></svg>
+        </button>
+      </div>
+    </aside>
+
+    <main
+      ref="pageRoot"
+      class="members-page"
+    >
+      <p class="members-breadcrumb">
+        管理工作台 <span>/</span> 成员管理
+      </p>
+      <header class="members-heading">
+        <div><h1>成员管理</h1><p>统一管理系统账号、钉钉身份绑定与法务 BP 工作范围</p></div>
+        <button
+          class="sync-button"
+          type="button"
+          :disabled="syncing"
+          @click="doSync"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            aria-hidden="true"
+          ><path d="M20 11a8 8 0 0 0-15-3M4 4v4h4M4 13a8 8 0 0 0 15 3M20 20v-4h-4" /></svg>
+          {{ syncing ? '正在同步' : '同步钉钉通讯录' }}
+        </button>
+      </header>
+
+      <ErrorState
+        v-if="loadError"
+        class="members-error"
+        :message="loadError.payload.error"
+        :request-id="loadError.payload.requestId"
+        :on-retry="loadAll"
+      />
+      <template v-else>
+        <section
+          class="members-stats"
+          aria-label="成员统计"
+        >
+          <div class="member-stat">
+            <span>通讯录成员</span><strong>{{ syncResult?.total ?? '—' }}</strong>
+          </div>
+          <div class="member-stat">
+            <span>已绑定系统用户</span><strong>{{ boundCount }}</strong>
+          </div>
+          <div class="member-stat">
+            <span>法务 BP</span><strong>{{ bpCount }}</strong>
+          </div>
+          <div class="member-stat attention">
+            <span>需要处理</span><strong>{{ unboundCount }}</strong>
+          </div>
+        </section>
+
+        <nav
+          class="member-tabs"
+          aria-label="成员管理分类"
+        >
+          <button
+            :class="{ active: activeTab === 'users' }"
+            @click="selectTab('users')"
+          >
+            系统用户
+          </button>
+          <button
+            :class="{ active: activeTab === 'bp' }"
+            @click="selectTab('bp')"
+          >
+            法务 BP 工作范围
+          </button>
+          <button
+            :class="{ active: activeTab === 'sync' }"
+            @click="selectTab('sync')"
+          >
+            同步记录
+          </button>
+        </nav>
+
+        <ErrorState
+          v-if="actionError"
+          class="action-error"
+          :message="actionError.payload.error"
+          :request-id="actionError.payload.requestId"
+        />
+
+        <template v-if="activeTab === 'users'">
+          <div class="member-toolbar">
+            <label class="member-search">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                aria-hidden="true"
+              ><circle
+                cx="11"
+                cy="11"
+                r="7"
+              /><path d="m20 20-4-4" /></svg>
+              <input
+                v-model="userKeyword"
+                type="search"
+                placeholder="搜索姓名、部门或角色"
+              >
+            </label>
+            <div
+              class="binding-filters"
+              aria-label="绑定状态"
+            >
+              <button
+                :class="{ active: bindingFilter === 'all' }"
+                @click="selectFilter('all')"
+              >
+                全部 {{ users.length }}
+              </button>
+              <button
+                :class="{ active: bindingFilter === 'bound' }"
+                @click="selectFilter('bound')"
+              >
+                已绑定 {{ boundCount }}
+              </button>
+              <button
+                :class="{ active: bindingFilter === 'unbound' }"
+                @click="selectFilter('unbound')"
+              >
+                未绑定 {{ unboundCount }}
+              </button>
+            </div>
+            <span class="last-sync">最近同步：{{ lastSyncTime }}</span>
+          </div>
+
+          <section class="member-table-shell">
+            <div class="member-table-head">
+              <span>成员</span><span>角色</span><span>部门</span><span>钉钉绑定</span><span>操作</span>
+            </div>
+            <div
+              v-for="user in pagedUsers"
+              :key="user.id"
+              class="member-row"
+            >
+              <span class="member-identity"><i>{{ user.displayName[0] }}</i><strong>{{ user.displayName }}</strong></span>
+              <span><em :class="['role-badge', roleClass(user.role)]">{{ roleLabel(user.role) }}</em></span>
+              <span>{{ user.department || '—' }}</span>
+              <span class="binding-state"><i :class="{ off: !user.dingtalkUserId }" /><span>{{ user.dingtalkUserId ? '已绑定' : '未绑定' }} <small v-if="user.dingtalkUserId">{{ user.dingtalkUserId }}</small></span></span>
+              <span class="row-operation">
+                <button
+                  v-if="user.dingtalkUserId"
+                  type="button"
+                  :disabled="actingUserId === user.id"
+                  @click.stop="unbind(user)"
+                >{{ actingUserId === user.id ? '处理中' : '解绑' }}</button>
+                <button
+                  v-else
+                  class="bind"
+                  type="button"
+                  @click.stop="openBind(user)"
+                >绑定</button>
+              </span>
+            </div>
+            <div
+              v-if="!pagedUsers.length"
+              class="empty-table"
+            >
+              没有符合条件的系统用户
+            </div>
+          </section>
+          <footer class="member-pagination">
+            <span>共 {{ filteredUsers.length }} 名系统用户，每页 {{ PAGE_SIZE }} 条</span>
+            <nav aria-label="系统用户分页">
+              <button
+                aria-label="上一页"
+                :disabled="currentPage <= 1"
+                @click="goToPage(currentPage - 1)"
+              >
+                ‹
+              </button>
+              <template
+                v-for="item in pagination"
+                :key="item.key"
+              >
+                <span v-if="item.type === 'ellipsis'">…</span>
+                <button
+                  v-else
+                  :class="{ active: item.page === currentPage }"
+                  :aria-current="item.page === currentPage ? 'page' : undefined"
+                  @click="goToPage(item.page)"
+                >
+                  {{ item.page }}
+                </button>
+              </template>
+              <button
+                aria-label="下一页"
+                :disabled="currentPage >= totalPages"
+                @click="goToPage(currentPage + 1)"
+              >
+                ›
+              </button>
+            </nav>
+          </footer>
+        </template>
+
+        <template v-else-if="activeTab === 'bp'">
+          <div class="section-intro">
+            <div><strong>法务 BP 工作范围</strong><span>咨询领域命中后，系统会从已绑定且配置对应范围的法务成员中选择负责人。</span></div><small>共 {{ bpUsers.length }} 名法务成员</small>
+          </div>
+          <section class="domain-table-shell">
+            <div
+              class="domain-table-head"
+              :style="{ '--domain-count': bpDomains.length }"
+            >
+              <span>法务成员</span><span>钉钉状态</span><span
+                v-for="domain in bpDomains"
+                :key="domain"
+              >{{ domain }}</span>
+            </div>
+            <div
+              v-for="user in bpUsers"
+              :key="user.id"
+              class="domain-row member-row"
+              :style="{ '--domain-count': bpDomains.length }"
+            >
+              <span class="member-identity"><i>{{ user.displayName[0] }}</i><strong>{{ user.displayName }}</strong></span>
+              <span class="binding-state"><i :class="{ off: !user.bound }" /><span>{{ user.bound ? '已绑定' : '未绑定' }}</span></span>
+              <label
+                v-for="domain in bpDomains"
+                :key="domain"
+                class="domain-check"
+              >
+                <input
+                  type="checkbox"
+                  :checked="user.domains.includes(domain)"
+                  :disabled="Boolean(togglingKey)"
+                  @change="toggleDomain(user, domain, ($event.target as HTMLInputElement).checked)"
+                >
+                <span />
+              </label>
+            </div>
+            <div
+              v-if="!bpUsers.length"
+              class="empty-table"
+            >
+              暂无可配置的法务 BP
+            </div>
+          </section>
+        </template>
+
+        <template v-else>
+          <div class="section-intro">
+            <div><strong>最近一次通讯录同步</strong><span>同步失败不会覆盖上一份成功的通讯录快照和现有绑定。</span></div><button
+              type="button"
+              :disabled="syncing"
+              @click="doSync"
+            >
+              {{ syncing ? '正在同步' : '立即同步' }}
+            </button>
+          </div>
+          <section class="sync-summary-card member-row">
+            <div><span>完成时间</span><strong>{{ lastSyncTime }}</strong></div>
+            <div><span>同步成员</span><strong>{{ syncResult?.total ?? '—' }}</strong></div>
+            <div><span>自动绑定</span><strong>{{ syncResult?.autoBound ?? '—' }}</strong></div>
+            <div><span>部门数量</span><strong>{{ syncResult?.departmentCount ?? '—' }}</strong></div>
+            <div><span>拉群待处理</span><strong>{{ failures ?? '—' }}</strong></div>
+          </section>
+        </template>
+
+        <div
+          v-if="unboundCount || syncResult?.ambiguous.length"
+          class="member-notice"
+        >
+          发现 {{ unboundCount }} 名未绑定系统用户<template v-if="syncResult?.ambiguous.length">
+            ，其中 {{ syncResult.ambiguous.length }} 个姓名存在重名或无法唯一匹配
+          </template>。系统不会自动绑定重名账号，请人工确认。
+        </div>
+      </template>
+    </main>
+
+    <div
+      v-if="bindTarget"
+      class="bind-modal-mask"
+      @click.self="closeBind"
+    >
+      <section
+        class="bind-modal"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="`绑定钉钉成员：${bindTarget.displayName}`"
+      >
+        <header>
+          <div><h2>绑定钉钉成员</h2><p>为 {{ bindTarget.displayName }} 选择唯一的通讯录身份</p></div><button
+            aria-label="关闭"
+            @click="closeBind"
+          >
+            ×
+          </button>
+        </header>
+        <label class="bind-search"><span>搜索钉钉通讯录</span><input
+          v-model="contactKeyword"
+          placeholder="输入姓名或手机号"
+          @input="searchContacts"
+        ></label>
+        <ErrorState
+          v-if="contactError"
+          :message="contactError.payload.error"
+          :request-id="contactError.payload.requestId"
+          :on-retry="searchContacts"
+        />
+        <div class="contact-list">
+          <button
+            v-for="contact in contacts"
+            :key="contact.userId"
+            class="contact-item"
+            :disabled="Boolean(actingUserId)"
+            @click="doBind(contact)"
+          >
+            <span><strong>{{ contact.name }}</strong><small>{{ contact.mobile || '未提供手机号' }}</small></span><code>{{ contact.userId }}</code>
+          </button>
+          <p
+            v-if="!contacts.length && contactKeyword"
+            class="contact-empty"
+          >
+            未找到匹配成员，请先同步通讯录或调整关键词。
+          </p>
+          <p
+            v-else-if="!contactKeyword"
+            class="contact-empty"
+          >
+            输入姓名或手机号开始搜索。
+          </p>
+        </div>
+      </section>
+    </div>
+  </div>
+</template>
 
 <script lang="ts">export default { name: 'MembersView' }</script>
 
 <style scoped>
-.tb-left { display: flex; align-items: baseline; gap: 10px; }
-.tb-path { font-size: 11px; color: var(--text-tertiary); font-weight: 590; }
-.tb-title { font-size: 14px; font-weight: 650; color: var(--text); letter-spacing: -0.01em; }
-.sync-btn { flex-shrink: 0; }
-.btn-primary { background: var(--blue); color: #fff; border: none; padding: 8px 16px; border-radius: 999px; font-size: 13px; font-weight: 600; cursor: pointer; transition: transform .15s; }
-.btn-primary:hover { transform: scale(1.03); }
-.btn-primary:disabled { opacity: .6; cursor: default; }
-.btn-sm { background: rgba(0,113,227,.08); color: var(--blue); border: none; padding: 5px 12px; border-radius: 999px; font-size: 12px; cursor: pointer; font-weight: 500; }
-.btn-sm:hover { background: rgba(0,113,227,.15); }
-.btn-sm.danger { background: rgba(255,69,58,.08); color: #ff453a; }
-
-.stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 12px; }
-.stat-card { padding: 18px 20px; border-radius: var(--radius-sm); display: flex; flex-direction: column; gap: 4px; }
-.stat-card.warn .stat-value { color: #ff9500; }
-.stat-value { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; }
-.stat-label { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
-.warn-line { font-size: 12px; color: #ff9500; margin: 4px 0 14px; }
-
-.panel { padding: 18px 20px; border-radius: var(--radius-sm); margin-bottom: 16px; }
-.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
-.panel-title { font-size: 14px; font-weight: 650; color: var(--text); }
-.panel-hint { font-size: 11px; color: var(--text-tertiary); }
-.search-input { padding: 7px 12px; border-radius: 10px; border: 1px solid rgba(0,0,0,.08); background: #f5f5f7; font-size: 12px; outline: none; width: 180px; }
-.search-input:focus { border-color: var(--blue); background: #fff; }
-
-.member-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.member-table th { text-align: left; font-size: 11px; color: var(--text-tertiary); font-weight: 590; padding: 8px 10px; border-bottom: 1px solid rgba(0,0,0,.06); }
-.member-table td { padding: 10px; border-bottom: 1px solid rgba(0,0,0,.04); color: var(--text); }
-.member-table tr:last-child td { border-bottom: none; }
-.domain-col { text-align: center; font-size: 12px; }
-.role-chip { font-size: 10px; padding: 2px 8px; border-radius: 999px; background: rgba(0,113,227,.08); color: var(--blue); font-weight: 600; }
-.bound-ok { font-size: 11px; color: #34c759; font-weight: 550; }
-.bound-no { font-size: 11px; color: #8e8e93; }
-
-.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.35); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal-card { background: #fff; border-radius: 20px; padding: 24px; width: 460px; max-width: 92vw; max-height: 86vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,.2); }
-.modal-title { font-size: 17px; font-weight: 700; color: var(--text); margin-bottom: 16px; }
-.field-label { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin: 12px 0 6px; }
-.field-input { width: 100%; padding: 9px 12px; border-radius: 12px; border: 1px solid rgba(0,0,0,.08); background: #f5f5f7; font-size: 13px; color: var(--text); outline: none; box-sizing: border-box; }
-.field-input:focus { border-color: var(--blue); background: #fff; }
-.contact-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; max-height: 280px; overflow-y: auto; }
-.contact-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid rgba(0,0,0,.06); border-radius: 12px; background: #fafafa; font-family: inherit; font-size: 13px; cursor: pointer; text-align: left; transition: all .15s; }
-.contact-item:hover { border-color: var(--blue); background: rgba(0,113,227,.05); }
-.contact-name { font-weight: 600; color: var(--text); }
-.contact-mobile { font-size: 11px; color: var(--text-tertiary); }
-.contact-id { margin-left: auto; font-size: 10px; color: #8e8e93; }
-.empty-hint { font-size: 12px; color: var(--text-tertiary); padding: 12px 4px; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.admin-shell{min-height:100vh;background:#f7f8fa;color:#111827;font-family:Outfit,Geist,"Noto Sans SC","PingFang SC",-apple-system,BlinkMacSystemFont,sans-serif}.admin-sidebar{position:fixed;inset:0 auto 0 0;z-index:20;display:flex;width:254px;height:100vh;flex-direction:column;border-right:1px solid #e3e8ef;background:#fff}.admin-brand{display:flex;min-height:152px;padding:30px 27px;align-items:flex-start;gap:12px;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}.admin-logo{display:grid;width:47px;height:47px;overflow:hidden;place-items:center}.admin-logo img{display:block;width:64px;height:64px;max-width:none;object-fit:cover}.admin-brand-copy{display:grid;padding-top:3px;gap:10px}.admin-brand-copy strong{color:#0f172a;font-size:24px;font-weight:720;letter-spacing:-.04em}.admin-brand-copy small{width:150px;color:#526174;font-size:12px;letter-spacing:.12em;line-height:1.65}.admin-nav-label{margin:5px 35px 10px;color:#9aa4b2;font-size:10px;font-weight:650;letter-spacing:.12em}.admin-nav{display:grid}.admin-nav button{position:relative;display:flex;width:100%;height:64px;padding:0 35px;align-items:center;gap:15px;border:0;background:#fff;color:#26344d;font:inherit;font-size:14px;font-weight:580;text-align:left;cursor:pointer}.admin-nav button.active{background:#f1f6ff;color:#1260ee;font-weight:650}.admin-nav button.active::before{position:absolute;inset:0 auto 0 0;width:4px;background:#1b66f0;content:""}.admin-nav button:disabled{color:#99a4b4;cursor:default}.admin-nav svg{width:20px;height:20px}.admin-user{display:flex;min-height:108px;margin:auto 24px 0;padding:18px 7px;align-items:center;gap:11px;border-top:1px solid #e5e9ef}.admin-avatar{display:grid;width:44px;height:44px;border-radius:50%;place-items:center;background:#1764ef;color:#fff;font-weight:700}.admin-user-copy{display:grid;min-width:0;gap:3px}.admin-user-copy strong,.admin-user-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.admin-user-copy strong{font-size:13px}.admin-user-copy small{color:#6b7280;font-size:12px}.admin-logout{display:grid;width:36px;height:36px;margin-left:auto;padding:0;border:0;border-radius:6px;place-items:center;background:transparent;color:#60708a;cursor:pointer}.admin-logout:hover{background:#f1f5f9;color:#1764ef}.admin-logout svg{width:20px;height:20px}
+.members-page{height:100vh;margin-left:254px;padding:30px 38px 34px;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.members-breadcrumb{margin:0 0 24px;color:#5f6e84;font-size:13px}.members-breadcrumb span{margin:0 9px;color:#a4adba}.members-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px}.members-heading h1{margin:0 0 8px;color:#0b1222;font-size:38px;font-weight:690;letter-spacing:-.045em}.members-heading p{margin:0;color:#66758a;font-size:13px}.sync-button{display:flex;height:44px;padding:0 17px;align-items:center;gap:8px;border:1px solid #1764ef;border-radius:6px;background:#1764ef;color:#fff;font:inherit;font-size:13px;font-weight:650;cursor:pointer}.sync-button:hover:not(:disabled){background:#0755d8}.sync-button:disabled{opacity:.55;cursor:wait}.sync-button svg{width:17px;height:17px}.members-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:25px;border:1px solid #dce3ec;border-radius:8px;background:#fff}.member-stat{position:relative;display:grid;min-height:88px;padding:18px 27px;align-content:space-between}.member-stat+.member-stat::before{position:absolute;inset:17px auto 17px 0;width:1px;background:#e0e6ee;content:""}.member-stat span{color:#66758a;font-size:11px}.member-stat strong{font-size:27px;font-weight:650;letter-spacing:-.04em}.member-stat.attention strong{color:#db6b24}.member-tabs{display:flex;height:54px;margin-top:20px;border-bottom:1px solid #dce3ec;align-items:flex-end;gap:30px}.member-tabs button{position:relative;height:54px;padding:0 4px;border:0;background:transparent;color:#5d6b80;font:inherit;font-size:13px;font-weight:600;cursor:pointer}.member-tabs button.active{color:#1764ef}.member-tabs button.active::after{position:absolute;inset:auto 0 -1px;height:3px;background:#1764ef;content:""}.members-error,.action-error{margin-top:18px}.member-toolbar{display:flex;min-height:67px;align-items:center;gap:18px}.member-search{display:flex;width:310px;height:40px;padding:0 12px;align-items:center;gap:8px;border:1px solid #d5dde7;border-radius:6px;background:#fff}.member-search svg{width:17px;height:17px;color:#718096}.member-search input{min-width:0;flex:1;border:0;outline:0;color:#334155;font:inherit;font-size:12px}.binding-filters{display:flex;gap:9px}.binding-filters button,.section-intro>button{height:36px;padding:0 12px;border:1px solid #d5dde7;border-radius:5px;background:#fff;color:#59677b;font:inherit;font-size:11px;cursor:pointer}.binding-filters button.active{border-color:#9dbbf1;background:#f4f8ff;color:#1764ef}.last-sync{margin-left:auto;color:#8490a1;font-size:11px}
+.member-table-shell,.domain-table-shell{overflow:auto;border:1px solid #dce3ec;border-radius:7px 7px 0 0;background:#fff}.member-table-head,.member-row{display:grid;min-width:900px;grid-template-columns:1.15fr .9fr 1.35fr 1.4fr .75fr;align-items:center;column-gap:15px}.member-table-head{height:43px;padding:0 21px;border-bottom:1px solid #e4e9ef;background:#fafbfc;color:#6c788a;font-size:11px;font-weight:650}.member-table-shell>.member-row{width:100%;min-height:54px;padding:0 21px;border:0;border-bottom:1px solid #e8ecf2;background:#fff;color:#46556a;font:inherit;font-size:12px;text-align:left;cursor:default}.member-table-shell>.member-row:hover{background:#f8faff}.member-identity{display:flex;align-items:center;gap:10px;color:#1f2b3d}.member-identity i{display:grid;width:30px;height:30px;border-radius:50%;place-items:center;background:#edf3ff;color:#1764ef;font-style:normal;font-size:11px;font-weight:700}.member-identity strong{font-weight:620}.role-badge{display:inline-flex;width:max-content;height:24px;padding:0 8px;align-items:center;border-radius:4px;background:#eef3f9;color:#4d5e76;font-style:normal;font-size:10px;font-weight:650}.role-badge.bp{background:#eaf8ef;color:#15804a}.role-badge.admin{background:#f2edff;color:#6e50b5}.binding-state{display:flex;align-items:center;gap:7px}.binding-state>i{width:7px;height:7px;border-radius:50%;background:#16a05d}.binding-state>i.off{background:#c0c8d2}.binding-state small{color:#8792a2;font-size:10px}.row-operation button{height:29px;padding:0 10px;border:1px solid #b9c8dc;border-radius:5px;background:#fff;color:#315a91;font:inherit;font-size:10px;cursor:pointer}.row-operation button.bind{border-color:#8db2f3;color:#1764ef}.row-operation button:disabled{opacity:.5;cursor:wait}.empty-table{display:grid;min-height:180px;place-items:center;color:#7b8798;font-size:12px}.member-pagination{display:flex;min-height:51px;padding:9px 15px;align-items:center;justify-content:space-between;border:1px solid #dce3ec;border-top:0;border-radius:0 0 7px 7px;background:#fff;color:#7b8798;font-size:11px}.member-pagination nav{display:flex;gap:6px;align-items:center}.member-pagination button{display:grid;min-width:30px;height:30px;padding:0 8px;border:1px solid #d5dde7;border-radius:5px;place-items:center;background:#fff;color:#526174;font:inherit;font-size:11px;cursor:pointer}.member-pagination button.active{border-color:#1764ef;color:#1764ef;box-shadow:inset 0 0 0 1px #1764ef}.member-pagination button:disabled{opacity:.35;cursor:not-allowed}.member-pagination nav>span{min-width:20px;text-align:center}.member-notice{display:flex;min-height:38px;margin-top:14px;padding:9px 13px;align-items:center;border:1px solid #f1d9bd;border-radius:5px;background:#fffaf3;color:#9a672b;font-size:11px;line-height:1.5}
+.section-intro{display:flex;min-height:67px;align-items:center;justify-content:space-between;gap:20px}.section-intro>div{display:grid;gap:4px}.section-intro strong{color:#27364c;font-size:13px}.section-intro span{color:#7b8798;font-size:11px}.section-intro small{color:#8490a1;font-size:11px}.domain-table-shell{border-radius:7px}.domain-table-head,.domain-row{display:grid;min-width:1000px;grid-template-columns:220px 130px repeat(var(--domain-count),minmax(105px,1fr));align-items:center}.domain-table-head{min-height:43px;padding:0 20px;border-bottom:1px solid #e4e9ef;background:#fafbfc;color:#6c788a;font-size:11px;font-weight:650}.domain-table-head span:nth-child(n+3){text-align:center}.domain-row{min-height:56px;padding:0 20px;border-bottom:1px solid #e8ecf2;color:#46556a;font-size:12px}.domain-row:last-child{border-bottom:0}.domain-check{display:grid;place-items:center;cursor:pointer}.domain-check input{position:absolute;width:1px;height:1px;opacity:0}.domain-check span{display:grid;width:18px;height:18px;border:1px solid #c4ceda;border-radius:4px;place-items:center;background:#fff}.domain-check input:checked+span{border-color:#1764ef;background:#1764ef}.domain-check input:checked+span::after{width:8px;height:4px;border-bottom:2px solid #fff;border-left:2px solid #fff;content:"";transform:translateY(-1px) rotate(-45deg)}.domain-check input:focus-visible+span{outline:2px solid #8eb5f6;outline-offset:2px}.domain-check input:disabled+span{opacity:.55;cursor:wait}.sync-summary-card{display:grid;min-width:0;grid-template-columns:1.6fr repeat(4,1fr);overflow:hidden;border:1px solid #dce3ec;border-radius:7px;background:#fff}.sync-summary-card>div{position:relative;display:grid;min-height:112px;padding:22px;align-content:space-between;gap:14px}.sync-summary-card>div+div::before{position:absolute;inset:20px auto 20px 0;width:1px;background:#e3e8ef;content:""}.sync-summary-card span{color:#718096;font-size:11px}.sync-summary-card strong{color:#223047;font-size:18px;font-weight:650}
+.bind-modal-mask{position:fixed;inset:0;z-index:100;display:grid;padding:24px;place-items:center;background:rgba(15,23,42,.38);backdrop-filter:blur(5px)}.bind-modal{width:min(480px,100%);max-height:min(620px,88vh);overflow-y:auto;border:1px solid #dbe3ed;border-radius:10px;background:#fff;box-shadow:0 24px 70px rgba(15,23,42,.2)}.bind-modal>header{display:flex;padding:21px 22px 16px;align-items:flex-start;justify-content:space-between;border-bottom:1px solid #e7ebf0}.bind-modal h2{margin:0 0 5px;color:#172033;font-size:19px}.bind-modal header p{margin:0;color:#718096;font-size:12px}.bind-modal header button{display:grid;width:30px;height:30px;border:0;border-radius:5px;place-items:center;background:#f3f5f8;color:#526174;font-size:20px;cursor:pointer}.bind-search{display:grid;padding:18px 22px 10px;gap:7px;color:#526174;font-size:11px;font-weight:600}.bind-search input{height:40px;padding:0 12px;border:1px solid #d5dde7;border-radius:6px;outline:0;color:#27364c;font:inherit;font-size:13px}.bind-search input:focus{border-color:#8db2f3;box-shadow:0 0 0 3px rgba(23,100,239,.08)}.contact-list{display:grid;max-height:330px;padding:6px 22px 22px;gap:7px;overflow-y:auto}.contact-item{display:flex;min-height:54px;padding:8px 11px;align-items:center;justify-content:space-between;gap:16px;border:1px solid #dfe5ec;border-radius:6px;background:#fff;color:#26344d;text-align:left;cursor:pointer}.contact-item:hover{border-color:#8db2f3;background:#f7faff}.contact-item>span{display:grid;gap:3px}.contact-item strong{font-size:12px}.contact-item small{color:#8490a1;font-size:10px}.contact-item code{color:#60708a;font-size:10px}.contact-empty{margin:0;padding:28px 8px;color:#8490a1;font-size:12px;text-align:center}
+@media(max-width:1100px){.members-page{padding-right:26px;padding-left:26px}.last-sync{display:none}.member-search{width:260px}.sync-summary-card{grid-template-columns:repeat(2,1fr)}.sync-summary-card>div:first-child{grid-column:1/-1}.sync-summary-card>div:nth-child(2)::before{display:none}}
+@media(max-width:760px){.admin-sidebar{width:78px}.admin-brand{min-height:96px;padding:22px 16px}.admin-logo{width:46px}.admin-brand-copy,.admin-nav-label,.admin-nav button:not(.active),.admin-nav button.active{font-size:0}.admin-nav button{justify-content:center;padding:0}.admin-nav svg{width:21px;height:21px}.admin-user{justify-content:center;margin:0 12px;padding-right:0;padding-left:0}.admin-user-copy,.admin-logout{display:none}.members-page{margin-left:78px;padding:22px 18px 30px}.members-heading h1{font-size:32px}.members-heading p{display:none}.sync-button{width:44px;padding:0;justify-content:center;font-size:0}.members-stats{grid-template-columns:repeat(2,1fr)}.member-stat:nth-child(3)::before{display:none}.member-tabs{gap:16px;overflow-x:auto}.member-tabs button{white-space:nowrap}.member-toolbar{align-items:stretch;flex-direction:column;padding:14px 0}.member-search{width:100%}.last-sync{display:block}.member-pagination{align-items:flex-start;flex-direction:column;gap:10px}.sync-summary-card{grid-template-columns:1fr}.sync-summary-card>div:first-child{grid-column:auto}.sync-summary-card>div+div::before{display:none}}
 </style>

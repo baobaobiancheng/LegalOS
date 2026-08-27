@@ -797,30 +797,33 @@ onUnmounted(() => {
 <style scoped>
 .consult-page {
   width: min(100%, 1540px);
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
   margin: 0 auto;
-  padding: 34px 48px 38px;
+  padding: clamp(22px, 4vh, 34px) 48px clamp(24px, 4vh, 38px);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   color: #111827;
 }
 
 .consult-breadcrumb { margin: 0; color: #53627a; font-size: 13px; }
 .consult-breadcrumb span { margin: 0 10px; color: #a8b1bf; }
-.consult-welcome-header { min-height: 330px; }
-.consult-intro { display: grid; grid-template-columns: minmax(520px, 1.05fr) minmax(390px, .95fr); gap: 72px; margin-top: 96px; align-items: start; }
-.consult-intro h1 { max-width: 720px; margin: 0; color: #0b1222; font-size: clamp(38px, 3.35vw, 56px); font-weight: 680; letter-spacing: -.05em; line-height: 1.08; white-space: nowrap; }
-.consult-intro p { max-width: 520px; margin: 4px 0 0; color: #526174; font-size: 16px; line-height: 1.85; }
-.suggestions-section { margin-top: 16px; }
+.consult-welcome-header { min-height: 0; }
+.consult-intro { display: grid; grid-template-columns: minmax(500px, 1.05fr) minmax(360px, .95fr); gap: clamp(36px, 5vw, 72px); margin-top: clamp(38px, 7vh, 86px); align-items: start; }
+.consult-intro h1 { max-width: 720px; margin: 0; color: #0b1222; font-size: clamp(36px, 3vw, 50px); font-weight: 680; letter-spacing: -.05em; line-height: 1.08; white-space: nowrap; }
+.consult-intro p { max-width: 520px; margin: 2px 0 0; color: #526174; font-size: clamp(14px, 1.05vw, 16px); line-height: 1.75; }
+.suggestions-section { margin-top: clamp(24px, 4.5vh, 42px); }
 .suggestions-heading { display: flex; margin-bottom: 12px; align-items: center; justify-content: space-between; }
 .suggestions-heading h2 { margin: 0; color: #111827; font-size: 21px; font-weight: 680; letter-spacing: -.02em; }
 .suggestions-heading button { display: inline-flex; padding: 8px 0; align-items: center; gap: 8px; border: 0; background: transparent; color: #0f5fff; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
 .suggestions-heading button:hover { color: #004dcc; }
 .suggestions-heading svg { width: 18px; height: 18px; }
 .suggestions-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 54px; }
-.suggestion-item { display: flex; min-height: 74px; padding: 0 8px; align-items: center; justify-content: space-between; gap: 22px; border: 0; border-bottom: 1px solid #d7dee8; background: transparent; color: #0f5fff; font: inherit; font-size: 16px; font-weight: 580; text-align: left; cursor: pointer; transition: color 160ms ease, padding 160ms ease; }
+.suggestion-item { display: flex; min-height: clamp(54px, 8vh, 70px); padding: 0 8px; align-items: center; justify-content: space-between; gap: 22px; border: 0; border-bottom: 1px solid #d7dee8; background: transparent; color: #0f5fff; font: inherit; font-size: clamp(14px, 1.05vw, 16px); font-weight: 580; text-align: left; cursor: pointer; transition: color 160ms ease, padding 160ms ease; }
 .suggestion-item:hover { padding-right: 2px; padding-left: 14px; color: #004dcc; }
 .suggestion-item svg { width: 21px; height: 21px; flex: 0 0 auto; }
-.welcome-composer { margin-top: 44px; }
+.welcome-composer { margin-top: clamp(20px, 4vh, 38px); }
 .welcome-composer > p,
 .conversation-composer > p { margin: 12px 14px 0; color: #718096; font-size: 12px; }
 
@@ -880,14 +883,12 @@ onUnmounted(() => {
 
 @media (max-width: 1180px) {
   .consult-page { padding-right: 32px; padding-left: 32px; }
-  .consult-intro { grid-template-columns: 1fr; gap: 18px; margin-top: 72px; }
+  .consult-intro { grid-template-columns: 1fr; gap: 14px; margin-top: clamp(34px, 6vh, 64px); }
   .consult-intro h1 { white-space: normal; }
-  .consult-welcome-header { min-height: 320px; }
 }
 
 @media (max-width: 760px) {
   .consult-page { padding: 24px 18px 28px; }
-  .consult-welcome-header { min-height: 280px; }
   .consult-intro { margin-top: 54px; }
   .consult-intro h1 { font-size: 36px; }
   .consult-intro p br { display: none; }
@@ -898,5 +899,14 @@ onUnmounted(() => {
   .msg-row.out { max-width: 88%; }
   .source-row { grid-template-columns: 1fr; }
   .escalate-btn { min-width: 128px; }
+}
+
+@media (max-height: 760px) and (min-width: 761px) {
+  .suggestions-heading { margin-bottom: 6px; }
+  .suggestions-heading h2 { font-size: 18px; }
+  .welcome-composer > p { margin-top: 7px; }
+  .welcome-composer :deep(.appearance-welcome .composer-frame textarea) { min-height: 76px; padding-top: 16px; }
+  .welcome-composer :deep(.composer-toolbar) { min-height: 56px; padding-bottom: 9px; }
+  .welcome-composer :deep(.composer-submit.labeled) { height: 44px; }
 }
 </style>

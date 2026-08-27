@@ -437,7 +437,7 @@ onBeforeUnmount(() => animationContext?.revert())
 <script lang="ts">export default { name: 'RecordsView' }</script>
 
 <style scoped>
-.records-page { width: min(100%, 1540px); min-height: 100vh; margin: 0 auto; padding: 34px 38px 48px; overflow-y: auto; color: #111827; }
+.records-page { width: min(100%, 1540px); height: 100%; min-height: 0; margin: 0 auto; padding: 34px 38px 48px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; color: #111827; }
 .records-heading { margin-bottom: 28px; }
 .breadcrumb { margin: 0 0 30px; color: #53627a; font-size: 13px; }
 .breadcrumb span { margin: 0 10px; color: #a8b1bf; }
