@@ -7,8 +7,8 @@ import { Role } from '@prisma/client';
 import { ConsultationAttachmentService } from '../../common/services/consultation-attachment.service';
 
 /**
- * 咨询附件上传（2026-08-12 review）：multipart 单文件，内存缓冲 → 校验 → mammoth 提取 → 存库。
- * 只接受 .docx / .txt / .md；返回附件元数据（attachmentId 供消息引用）。
+ * 咨询附件上传：multipart 单文件，内存缓冲 → 校验 → Word/文本解析 → 存库。
+ * 只接受 .docx / .doc / .txt / .md；返回附件元数据（attachmentId 供消息引用）。
  */
 @Controller('consultation-attachments')
 export class ConsultationAttachmentsController {

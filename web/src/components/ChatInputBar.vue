@@ -33,6 +33,13 @@ const trigger = ref<HTMLButtonElement | null>(null)
 const optionRefs = ref<HTMLButtonElement[]>([])
 const selectedCapability = () => props.capability ?? 'general'
 const selected = () => capabilities.find(item => item.id === selectedCapability()) ?? capabilities[0]
+const fileFormatLabel = (file: AttachedFile) => {
+  const lower = file.name.toLowerCase()
+  if (lower.endsWith('.docx')) return 'DOCX'
+  if (lower.endsWith('.doc')) return 'DOC'
+  if (lower.endsWith('.md')) return 'MD'
+  return 'TXT'
+}
 
 const openMenu = async () => {
   if (props.disabled) return
@@ -95,7 +102,7 @@ const handleSend = () => {
         <span class="file-copy">
           <strong :title="file.name">{{ file.name }}</strong>
           <small>
-            {{ file.type.includes('word') || file.name.toLowerCase().endsWith('.docx') ? 'DOCX' : file.name.toLowerCase().endsWith('.md') ? 'MD' : 'TXT' }}
+            {{ fileFormatLabel(file) }}
             · {{ formatSize(file.size) }}
             <template v-if="file.warning"> · {{ file.warning }}</template>
             <template v-else-if="file.status === 'ready'"> · 已解析 {{ file.extractedChars?.toLocaleString() }} 字</template>
@@ -224,7 +231,7 @@ const handleSend = () => {
       type="file"
       multiple
       hidden
-      accept=".docx,.txt,.md"
+      accept=".docx,.doc,.txt,.md"
       @change="handleFiles"
     >
   </div>

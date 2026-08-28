@@ -5,7 +5,7 @@ import { request, RequestError } from '../api/client'
  * 附件上传（2026-08-12 review）：不再 Base64 塞进 JSON——
  * 选择文件 → multipart 上传 /consultation-attachments → 后端 mammoth 提取正文 →
  * 返回 attachmentId；发送消息只带 attachmentIds，正文由后端注入模型上下文。
- * 仅支持 .docx / .txt / .md。
+ * 支持 .docx / .doc / .txt / .md。
  */
 export interface AttachedFile {
   id: string              // 后端 attachmentId（上传成功）或本地临时 key

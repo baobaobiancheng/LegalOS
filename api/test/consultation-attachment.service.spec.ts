@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ConsultationAttachmentService } from '../src/common/services/consultation-attachment.service';
+import { DocumentExtractionService } from '../src/common/services/document-extraction.service';
 
 /**
  * 咨询附件（2026-08-12 review：DOCX 正文从未交给模型）：
- * - 上传：扩展名/大小/DOCX 签名/空正文校验；mammoth 提取；返回 metadata
+ * - 上传：扩展名/大小/Word 签名/空正文校验；正文提取；返回 metadata
  * - 使用校验：归属、状态、过期
  * - 绑定到工单；getTexts 拼文件名前缀
  */
@@ -80,6 +81,25 @@ describe('ConsultationAttachmentService', () => {
     ).rejects.toMatchObject({ response: { statusCode: 400 } });
   });
 
+  it('支持旧版 DOC，并校验 OLE 文件签名', async () => {
+    const signature = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    const docName = Buffer.from('合同.doc', 'utf8').toString('latin1');
+    const meta = await service.upload(makeFile({
+      originalname: docName,
+      mimetype: 'application/msword',
+      buffer: signature,
+    }), 'u-1');
+
+    expect(extractor.extract).toHaveBeenCalledWith(signature, '合同.doc');
+    expect(meta).toMatchObject({ name: '合同.doc', status: 'ready' });
+
+    await expect(service.upload(makeFile({
+      originalname: '伪造.doc',
+      mimetype: 'application/msword',
+      buffer: Buffer.from('not-an-ole-document'),
+    }), 'u-1')).rejects.toMatchObject({ response: { statusCode: 400 } });
+  });
+
   it('空正文拒绝', async () => {
     extractor.extract.mockResolvedValue({ text: '' });
     await expect(service.upload(makeFile(), 'u-1')).rejects.toMatchObject({
@@ -88,9 +108,13 @@ describe('ConsultationAttachmentService', () => {
   });
 
   it('正文超长截断并给出 warning', async () => {
-    extractor.extract.mockResolvedValue({ text: 'x'.repeat(60_000) });
+    extractor.extract.mockResolvedValue({
+      text: 'x'.repeat(60_000),
+      warning: '已提取旧版 Word 正文，图片、批注及修订痕迹未包含',
+    });
     const meta = await service.upload(makeFile(), 'u-1');
     expect(meta.extractedChars).toBeLessThanOrEqual(50_000);
+    expect(meta.warning).toContain('图片、批注及修订痕迹未包含');
     expect(meta.warning).toContain('截断');
   });
 
@@ -121,5 +145,14 @@ describe('ConsultationAttachmentService', () => {
     const texts = await service.getTexts(['att-1']);
     expect(texts[0]).toContain('【附件 答复.docx】');
     expect(texts[0]).toContain('法律答复正文');
+  });
+});
+
+describe('DocumentExtractionService', () => {
+  it('明显伪造或不完整的旧版 DOC 在进入解析器前被拒绝', async () => {
+    const service = new DocumentExtractionService();
+    const signatureOnly = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+
+    await expect(service.extract(signatureOnly, '材料.DOC')).rejects.toThrow('DOC 文件头不完整');
   });
 });
