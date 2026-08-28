@@ -113,6 +113,15 @@ export class AuthService {
     });
     const now = new Date();
 
+    // CAS 已绑定账号只能通过 CAS 认证。即使历史迁移保留了 passwordHash，
+    // 也不能再走本地密码通道，避免同一员工同时存在两套可用身份凭据。
+    if (user?.casUsername) {
+      throw new UnauthorizedException({
+        error: '该账号仅支持公司统一登录',
+        code: 'CAS_LOGIN_REQUIRED',
+      });
+    }
+
     if (user?.lockedUntil && user.lockedUntil > now) {
       throw new HttpException(
         {

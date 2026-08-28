@@ -22,8 +22,8 @@ import { AuditService } from '../../common/audit/audit.service';
 import { AuditActor, AuditRequestContext } from '../../common/audit/audit.types';
 
 /** P1-08：通讯录 staging 批大小（createMany 每批条数） */
-/** 种子测试账号（三端测试固定角色）：不参与组织同步(自动绑定/重算),角色固定 admin/legal_bp/business */
-const SEED_USERNAMES = new Set(['admin', 'legal_bp', 'business']);
+/** 本地应急/测试账号：不参与组织同步，法务人员只保留 CAS 身份。 */
+const SEED_USERNAMES = new Set(['admin', 'business']);
 const SYNC_BATCH_SIZE = 300;
 
 /**

@@ -104,9 +104,9 @@ cd ../web && npm install && npm run build
 | 账号 | 密码 | 角色 |
 |------|------|------|
 | `admin` | `.env` SEED_ADMIN_PASSWORD | 管理员（赵俊芳） |
-| `legal_bp` | SEED_LEGAL_BP_PASSWORD | 法务 BP（彭宇欣） |
-| `legal_lead` | SEED_LEGAL_LEAD_PASSWORD | 法务负责人 |
 | `business` | SEED_BUSINESS_PASSWORD | 业务（田强） |
+
+法务 BP、法务负责人统一使用 CAS 身份，不再提供本地密码账号。部署后通过成员管理预开通，或由员工首次 CAS 登录创建。
 
 ## 八、钉钉集成上线检查清单
 

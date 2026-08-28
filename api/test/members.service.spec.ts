@@ -480,15 +480,24 @@ describe('MembersService', () => {
     });
   });
 
-  it('bind：种子测试账号角色固定,不参与组织映射（review P2）', async () => {
-    prisma.dingTalkContact.findUnique.mockResolvedValue({ userId: 'U-1', mobile: '138', isActive: true });
-    prisma.user.findUnique.mockResolvedValue({ id: 'u-seed', username: 'legal_bp', displayName: '种子BP', role: 'legal_bp' });
+  it('bind：本地应急账号角色固定，法务账号不再走种子例外', async () => {
+    service = new MembersService(
+      prisma as any,
+      dingtalk as any,
+      { get: (key: string) => key === 'CAS_DEPT_MAP' ? '法务部:legal_bp' : '' } as any,
+    );
+    prisma.dingTalkContact.findUnique.mockResolvedValue({
+      userId: 'U-1', mobile: '138', department: '法务部', isActive: true,
+    });
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'u-seed', username: 'business', displayName: '种子业务', role: 'business',
+    });
     prisma.user.findFirst.mockResolvedValue(null);
 
     await service.bind('u-seed', 'U-1');
     expect(prisma.user.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ role: 'legal_bp' }), // 种子角色不被组织映射改掉
+        data: expect.objectContaining({ role: 'business' }),
       }),
     );
   });

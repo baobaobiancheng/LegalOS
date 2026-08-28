@@ -4,8 +4,8 @@ import * as bcrypt from 'bcrypt';
 const prisma = new PrismaClient();
 
 /**
- * 种子用户（设计文档「种子用户」表）
- * v0.0.1 密码从环境变量注入，生产部署前需改为强密码 + 首次登录强制改密
+ * 本地应急/测试账号。
+ * 法务人员统一由 CAS 预开通或首次登录创建，避免本地账号与 CAS 员工重复。
  */
 const seedUsers = [
   {
@@ -13,18 +13,6 @@ const seedUsers = [
     password: process.env.SEED_ADMIN_PASSWORD || 'admin123',
     role: Role.admin,
     displayName: '赵俊芳', // 2026-08-05 钉钉拉群：真实姓名（姓名匹配钉钉通讯录前提）
-  },
-  {
-    username: 'legal_bp',
-    password: process.env.SEED_LEGAL_BP_PASSWORD || 'legal123',
-    role: Role.legal_bp,
-    displayName: '彭宇欣', // 2026-08-05 钉钉拉群：真实姓名（姓名匹配钉钉通讯录前提）
-  },
-  {
-    username: 'legal_lead',
-    password: process.env.SEED_LEGAL_LEAD_PASSWORD || 'legal123',
-    role: Role.legal_lead,
-    displayName: '法务负责人-李四',
   },
   {
     username: 'business',
@@ -340,17 +328,6 @@ async function main() {
       },
     });
     console.log(`seeded: ${item.username} (${item.role})`);
-  }
-
-  // BP 领域映射（2026-08-05 钉钉拉群）：法务 BP 彭宇欣 → 合规法务（知识产权/数据合规归入该组）
-  const bpUser = await prisma.user.findUnique({ where: { username: 'legal_bp' } });
-  if (bpUser) {
-    await prisma.bpDomainMap.upsert({
-      where: { userId_domain: { userId: bpUser.id, domain: '合规法务' } },
-      update: {},
-      create: { userId: bpUser.id, domain: '合规法务' },
-    });
-    console.log('seeded: bp domain map (彭宇欣 → 合规法务)');
   }
 
   // 技能库种子（creatorId 绑定 admin，视为已审核直接 public）

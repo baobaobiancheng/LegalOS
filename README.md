@@ -73,9 +73,9 @@ npm run build && npm start
 | 用户名 | 密码 | 角色 | 首页 |
 |--------|------|------|------|
 | `admin` | 见 `api/.env` 的 `SEED_ADMIN_PASSWORD` | 管理员 | /admin/dashboard |
-| `legal_bp` | 见 `api/.env` 的 `SEED_LEGAL_BP_PASSWORD` | 法务 BP | /legal/projects |
-| `legal_lead` | 见 `api/.env` 的 `SEED_LEGAL_LEAD_PASSWORD` | 法务负责人 | /legal/projects |
 | `business` | 见 `api/.env` 的 `SEED_BUSINESS_PASSWORD` | 业务人员 | /business/consult |
+
+法务 BP、法务负责人不再创建本地种子账号，由管理员预开通或员工首次通过 CAS 登录创建。
 
 ## API 端点
 

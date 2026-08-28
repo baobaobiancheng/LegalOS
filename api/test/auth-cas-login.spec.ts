@@ -52,6 +52,26 @@ function makeService(over: { config?: ReturnType<typeof cfg> } = {}) {
   return { service, prisma, jwt, cas };
 }
 
+describe('AuthService.login（本地密码登录）', () => {
+  it('已绑定 CAS 的账号拒绝本地密码登录', async () => {
+    const ctx = makeService();
+    ctx.prisma.user.findUnique.mockResolvedValue(mockUser({
+      username: 'yuxin.peng',
+      casUsername: 'yuxin.peng',
+      displayName: '彭宇欣',
+      role: 'legal_bp',
+    }));
+
+    await expect(ctx.service.login({ username: 'yuxin.peng', password: 'legacy-password' }))
+      .rejects.toMatchObject({
+        status: 401,
+        response: { code: 'CAS_LOGIN_REQUIRED' },
+      });
+    expect(ctx.prisma.refreshToken.create).not.toHaveBeenCalled();
+    expect(ctx.prisma.loginAudit.create).not.toHaveBeenCalled();
+  });
+});
+
 describe('AuthService.casLogin（账号密码/方式一）', () => {
   let ctx: ReturnType<typeof makeService>;
 
