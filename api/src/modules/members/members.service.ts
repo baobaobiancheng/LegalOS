@@ -9,6 +9,7 @@ import {
 import { Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Role } from '@prisma/client';
+import * as crypto from 'node:crypto';
 import { applyOrgRole } from '../../common/org/org-role';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
@@ -463,25 +464,126 @@ export class MembersService {
     const users = await this.prisma.user.findMany({
       select: {
         id: true,
+        username: true,
         displayName: true,
         role: true,
+        casUsername: true,
         dingtalkUserId: true,
         department: true,
+        loginAudits: { select: { id: true }, take: 1 },
       },
       orderBy: { createdAt: 'asc' },
     });
-    return { items: users };
+    return {
+      items: users.map(({ loginAudits, ...user }) => ({
+        ...user,
+        loginStatus: user.casUsername && loginAudits.length === 0 ? 'pending' : 'active',
+      })),
+    };
   }
 
-  /** 通讯录快照列表（手动绑定搜索源） */
+  /** 通讯录快照列表（手动绑定/预开通搜索源，只返回在岗且尚未被占用的联系人） */
   async listContacts(keyword?: string) {
+    const occupied = await this.prisma.user.findMany({
+      where: { dingtalkUserId: { not: null } },
+      select: { dingtalkUserId: true },
+    });
+    const occupiedIds = occupied
+      .map((item) => item.dingtalkUserId)
+      .filter((item): item is string => Boolean(item));
     return this.prisma.dingTalkContact.findMany({
-      where: keyword
-        ? { OR: [{ name: { contains: keyword } }, { mobile: { contains: keyword } }] }
-        : undefined,
+      where: {
+        isActive: true,
+        ...(occupiedIds.length ? { userId: { notIn: occupiedIds } } : {}),
+        ...(keyword ? { OR: [{ name: { contains: keyword } }, { mobile: { contains: keyword } }] } : {}),
+      },
       orderBy: { name: 'asc' },
       take: 200,
     });
+  }
+
+  /**
+   * 管理员预开通：CAS 账号是登录身份键，钉钉联系人提供可信姓名、部门和通讯身份。
+   * 两个身份在同一事务内占用，避免并发重复开通；首次 CAS 登录会命中 casUsername 并仅更新资料、签发会话。
+   */
+  async provision(
+    rawCasUsername: string,
+    dingtalkUserId: string,
+    actor?: AuditActor,
+    request?: AuditRequestContext,
+  ) {
+    const casUsername = rawCasUsername.trim().toLowerCase();
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const contact = await tx.dingTalkContact.findUnique({ where: { userId: dingtalkUserId } });
+        if (!contact || !contact.isActive) {
+          throw new BadRequestException('钉钉通讯录中不存在该成员或已失效，请先同步');
+        }
+
+        const [existingIdentity, occupiedContact] = await Promise.all([
+          tx.user.findFirst({
+            where: { OR: [{ casUsername }, { username: casUsername }] },
+            select: { id: true },
+          }),
+          tx.user.findFirst({
+            where: { dingtalkUserId },
+            select: { id: true },
+          }),
+        ]);
+        if (existingIdentity) throw new ConflictException('该 CAS 账号已存在，请在系统用户列表中绑定钉钉身份');
+        if (occupiedContact) throw new ConflictException('该钉钉成员已绑定其他系统用户');
+
+        const role = this.orgRole(Role.business, casUsername, contact.department ?? undefined);
+        const created = await tx.user.create({
+          data: {
+            username: casUsername,
+            casUsername,
+            displayName: contact.name,
+            passwordHash: crypto.randomBytes(32).toString('hex'),
+            dingtalkUserId,
+            dingtalkPhone: contact.mobile ?? null,
+            department: contact.department ?? null,
+            role,
+          },
+        });
+        if (this.audit) {
+          await this.audit.record({
+            actor,
+            action: 'member.provision',
+            resourceType: 'member',
+            resourceId: created.id,
+            source: 'web',
+            outcome: 'success',
+            request,
+            before: null,
+            after: { ...memberAuditSnapshot(created), casBound: true, loginStatus: 'pending' },
+            changes: {
+              provisioned: { from: false, to: true },
+              role: { from: null, to: role },
+              department: { from: null, to: contact.department ?? null },
+              dingtalkBound: { from: false, to: true },
+            },
+            metadata: {
+              casIdentityHash: this.audit.fingerprint(casUsername),
+              dingtalkIdentityHash: this.audit.fingerprint(dingtalkUserId),
+            },
+            retentionClass: 'admin',
+          }, tx);
+        }
+        return {
+          id: created.id,
+          displayName: created.displayName,
+          role: created.role,
+          department: created.department,
+          dingtalkUserId: created.dingtalkUserId,
+          casUsername: created.casUsername,
+          loginStatus: 'pending' as const,
+        };
+      });
+    } catch (error: any) {
+      if (error?.code === 'P2002') throw new ConflictException('CAS 账号或钉钉身份已被占用');
+      throw error;
+    }
   }
 
   /** 手动绑定（P1-07 1:1）：联系人须存在且 active；联系人未被其他用户绑定；唯一冲突返回 409，不覆盖原绑定 */

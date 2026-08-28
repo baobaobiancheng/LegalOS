@@ -10,13 +10,16 @@ import { useAuthStore } from '../../stores/auth'
 
 type Member = {
   id: string
+  username: string
   displayName: string
   role: string
+  casUsername: string | null
   dingtalkUserId: string | null
   department: string | null
+  loginStatus: 'pending' | 'active'
 }
 type BpMember = { id: string; displayName: string; bound: boolean; domains: string[] }
-type Contact = { userId: string; name: string; mobile?: string }
+type Contact = { userId: string; name: string; mobile?: string; department?: string }
 type SyncSummary = {
   total: number
   autoBound: number
@@ -185,6 +188,86 @@ const doBind = async (contact: Contact) => {
     actingUserId.value = ''
   }
 }
+
+const provisionOpen = ref(false)
+const provisionCasUsername = ref('')
+const provisionContactKeyword = ref('')
+const provisionContacts = ref<Contact[]>([])
+const selectedProvisionContact = ref<Contact | null>(null)
+const provisionError = ref<RequestError | null>(null)
+const provisioning = ref(false)
+let provisionSearchSequence = 0
+const canProvision = computed(() => /^[A-Za-z0-9._-]+$/.test(provisionCasUsername.value.trim()) && Boolean(selectedProvisionContact.value))
+
+const openProvision = async () => {
+  provisionOpen.value = true
+  provisionCasUsername.value = ''
+  provisionContactKeyword.value = ''
+  provisionContacts.value = []
+  selectedProvisionContact.value = null
+  provisionError.value = null
+  await nextTick()
+  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    gsap.fromTo('.provision-modal', { autoAlpha: 0, y: 16, scale: .985 }, { autoAlpha: 1, y: 0, scale: 1, duration: .3, ease: 'power2.out' })
+  }
+}
+const closeProvision = () => {
+  if (provisioning.value) return
+  provisionOpen.value = false
+  provisionContacts.value = []
+  selectedProvisionContact.value = null
+  provisionError.value = null
+  provisionSearchSequence++
+}
+const searchProvisionContacts = async () => {
+  const keyword = provisionContactKeyword.value.trim()
+  const sequence = ++provisionSearchSequence
+  selectedProvisionContact.value = null
+  if (!keyword) {
+    provisionContacts.value = []
+    provisionError.value = null
+    return
+  }
+  try {
+    const result = await request<Contact[]>(`/admin/members/contacts?keyword=${encodeURIComponent(keyword)}`)
+    if (sequence !== provisionSearchSequence) return
+    provisionContacts.value = result
+    provisionError.value = null
+  } catch (error) {
+    if (sequence !== provisionSearchSequence) return
+    provisionContacts.value = []
+    provisionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '通讯录搜索失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  }
+}
+const provisionMember = async () => {
+  if (!canProvision.value || !selectedProvisionContact.value || provisioning.value) return
+  provisioning.value = true
+  provisionError.value = null
+  try {
+    await request('/admin/members/provision', {
+      method: 'POST',
+      body: {
+        casUsername: provisionCasUsername.value.trim(),
+        dingtalkUserId: selectedProvisionContact.value.userId,
+      },
+    })
+    provisionOpen.value = false
+    selectedProvisionContact.value = null
+    provisionContacts.value = []
+    activeTab.value = 'users'
+    bindingFilter.value = 'all'
+    currentPage.value = 1
+    await loadAll()
+  } catch (error) {
+    provisionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '成员预开通失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  } finally {
+    provisioning.value = false
+  }
+}
 const unbind = async (user: Member) => {
   if (actingUserId.value || !window.confirm(`确认解绑 ${user.displayName} 的钉钉绑定？`)) return
   actingUserId.value = user.id
@@ -331,21 +414,30 @@ onBeforeUnmount(() => animationContext?.revert())
       </p>
       <header class="members-heading">
         <div><h1>成员管理</h1><p>统一管理系统账号、钉钉身份绑定与法务 BP 工作范围</p></div>
-        <button
-          class="sync-button"
-          type="button"
-          :disabled="syncing"
-          @click="doSync"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            aria-hidden="true"
-          ><path d="M20 11a8 8 0 0 0-15-3M4 4v4h4M4 13a8 8 0 0 0 15 3M20 20v-4h-4" /></svg>
-          {{ syncing ? '正在同步' : '同步钉钉通讯录' }}
-        </button>
+        <div class="heading-actions">
+          <button
+            class="provision-button"
+            type="button"
+            @click="openProvision"
+          >
+            <span>＋</span>预开通成员
+          </button>
+          <button
+            class="sync-button"
+            type="button"
+            :disabled="syncing"
+            @click="doSync"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              aria-hidden="true"
+            ><path d="M20 11a8 8 0 0 0-15-3M4 4v4h4M4 13a8 8 0 0 0 15 3M20 20v-4h-4" /></svg>
+            {{ syncing ? '正在同步' : '同步钉钉通讯录' }}
+          </button>
+        </div>
       </header>
 
       <ErrorState
@@ -460,7 +552,7 @@ onBeforeUnmount(() => animationContext?.revert())
               :key="user.id"
               class="member-row"
             >
-              <span class="member-identity"><i>{{ user.displayName[0] }}</i><strong>{{ user.displayName }}</strong></span>
+              <span class="member-identity"><i>{{ user.displayName[0] }}</i><span><strong>{{ user.displayName }}</strong><small v-if="user.casUsername">CAS {{ user.casUsername }} · {{ user.loginStatus === 'pending' ? '待首次登录' : '已登录' }}</small><small v-else>本地账号</small></span></span>
               <span><em :class="['role-badge', roleClass(user.role)]">{{ roleLabel(user.role) }}</em></span>
               <span>{{ user.department || '—' }}</span>
               <span class="binding-state"><i :class="{ off: !user.dingtalkUserId }" /><span>{{ user.dingtalkUserId ? '已绑定' : '未绑定' }} <small v-if="user.dingtalkUserId">{{ user.dingtalkUserId }}</small></span></span>
@@ -651,6 +743,89 @@ onBeforeUnmount(() => animationContext?.revert())
         </div>
       </section>
     </div>
+
+    <div
+      v-if="provisionOpen"
+      class="bind-modal-mask"
+      @click.self="closeProvision"
+    >
+      <form
+        class="bind-modal provision-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="预开通成员"
+        @submit.prevent="provisionMember"
+      >
+        <header>
+          <div><h2>预开通成员</h2><p>在首次登录前建立 CAS 账号，并绑定可信的钉钉组织身份</p></div><button
+            type="button"
+            aria-label="关闭"
+            @click="closeProvision"
+          >
+            ×
+          </button>
+        </header>
+        <div class="provision-form-body">
+          <label class="bind-search provision-account"><span>CAS 登录账号</span><input
+            v-model="provisionCasUsername"
+            autocomplete="off"
+            placeholder="例如 jun.wang1"
+          ><small>账号必须与 CAS 后台开通的登录账号完全一致。</small></label>
+          <label class="bind-search"><span>匹配钉钉成员</span><input
+            v-model="provisionContactKeyword"
+            placeholder="输入姓名或手机号"
+            @input="searchProvisionContacts"
+          ></label>
+          <ErrorState
+            v-if="provisionError"
+            class="provision-error"
+            :message="provisionError.payload.error"
+            :request-id="provisionError.payload.requestId"
+          />
+          <div class="contact-list provision-contact-list">
+            <button
+              v-for="contact in provisionContacts"
+              :key="contact.userId"
+              type="button"
+              :class="['contact-item', { selected: selectedProvisionContact?.userId === contact.userId }]"
+              :aria-pressed="selectedProvisionContact?.userId === contact.userId"
+              @click="selectedProvisionContact = contact"
+            >
+              <span><strong>{{ contact.name }}</strong><small>{{ contact.department || '未提供部门' }} · {{ contact.mobile || '未提供手机号' }}</small></span><code>{{ selectedProvisionContact?.userId === contact.userId ? '已选择' : contact.userId }}</code>
+            </button>
+            <p
+              v-if="!provisionContacts.length && provisionContactKeyword"
+              class="contact-empty"
+            >
+              未找到可预开通的成员。请先同步钉钉通讯录，或确认该身份尚未被占用。
+            </p>
+            <p
+              v-else-if="!provisionContactKeyword"
+              class="contact-empty"
+            >
+              先搜索并选择唯一的钉钉成员，系统将据此写入姓名、部门和角色。
+            </p>
+          </div>
+        </div>
+        <footer class="provision-actions">
+          <span>开通后状态为“待首次登录”</span>
+          <button
+            type="button"
+            :disabled="provisioning"
+            @click="closeProvision"
+          >
+            取消
+          </button>
+          <button
+            class="primary"
+            type="submit"
+            :disabled="!canProvision || provisioning"
+          >
+            {{ provisioning ? '正在开通' : '确认预开通' }}
+          </button>
+        </footer>
+      </form>
+    </div>
   </div>
 </template>
 
@@ -662,6 +837,8 @@ onBeforeUnmount(() => animationContext?.revert())
 .member-table-shell,.domain-table-shell{overflow:auto;border:1px solid #dce3ec;border-radius:7px 7px 0 0;background:#fff}.member-table-head,.member-row{display:grid;min-width:900px;grid-template-columns:1.15fr .9fr 1.35fr 1.4fr .75fr;align-items:center;column-gap:15px}.member-table-head{height:43px;padding:0 21px;border-bottom:1px solid #e4e9ef;background:#fafbfc;color:#6c788a;font-size:11px;font-weight:650}.member-table-shell>.member-row{width:100%;min-height:54px;padding:0 21px;border:0;border-bottom:1px solid #e8ecf2;background:#fff;color:#46556a;font:inherit;font-size:12px;text-align:left;cursor:default}.member-table-shell>.member-row:hover{background:#f8faff}.member-identity{display:flex;align-items:center;gap:10px;color:#1f2b3d}.member-identity i{display:grid;width:30px;height:30px;border-radius:50%;place-items:center;background:#edf3ff;color:#1764ef;font-style:normal;font-size:11px;font-weight:700}.member-identity strong{font-weight:620}.role-badge{display:inline-flex;width:max-content;height:24px;padding:0 8px;align-items:center;border-radius:4px;background:#eef3f9;color:#4d5e76;font-style:normal;font-size:10px;font-weight:650}.role-badge.bp{background:#eaf8ef;color:#15804a}.role-badge.admin{background:#f2edff;color:#6e50b5}.binding-state{display:flex;align-items:center;gap:7px}.binding-state>i{width:7px;height:7px;border-radius:50%;background:#16a05d}.binding-state>i.off{background:#c0c8d2}.binding-state small{color:#8792a2;font-size:10px}.row-operation button{height:29px;padding:0 10px;border:1px solid #b9c8dc;border-radius:5px;background:#fff;color:#315a91;font:inherit;font-size:10px;cursor:pointer}.row-operation button.bind{border-color:#8db2f3;color:#1764ef}.row-operation button:disabled{opacity:.5;cursor:wait}.empty-table{display:grid;min-height:180px;place-items:center;color:#7b8798;font-size:12px}.member-pagination{display:flex;min-height:51px;padding:9px 15px;align-items:center;justify-content:space-between;border:1px solid #dce3ec;border-top:0;border-radius:0 0 7px 7px;background:#fff;color:#7b8798;font-size:11px}.member-pagination nav{display:flex;gap:6px;align-items:center}.member-pagination button{display:grid;min-width:30px;height:30px;padding:0 8px;border:1px solid #d5dde7;border-radius:5px;place-items:center;background:#fff;color:#526174;font:inherit;font-size:11px;cursor:pointer}.member-pagination button.active{border-color:#1764ef;color:#1764ef;box-shadow:inset 0 0 0 1px #1764ef}.member-pagination button:disabled{opacity:.35;cursor:not-allowed}.member-pagination nav>span{min-width:20px;text-align:center}.member-notice{display:flex;min-height:38px;margin-top:14px;padding:9px 13px;align-items:center;border:1px solid #f1d9bd;border-radius:5px;background:#fffaf3;color:#9a672b;font-size:11px;line-height:1.5}
 .section-intro{display:flex;min-height:67px;align-items:center;justify-content:space-between;gap:20px}.section-intro>div{display:grid;gap:4px}.section-intro strong{color:#27364c;font-size:13px}.section-intro span{color:#7b8798;font-size:11px}.section-intro small{color:#8490a1;font-size:11px}.domain-table-shell{border-radius:7px}.domain-table-head,.domain-row{display:grid;min-width:1000px;grid-template-columns:220px 130px repeat(var(--domain-count),minmax(105px,1fr));align-items:center}.domain-table-head{min-height:43px;padding:0 20px;border-bottom:1px solid #e4e9ef;background:#fafbfc;color:#6c788a;font-size:11px;font-weight:650}.domain-table-head span:nth-child(n+3){text-align:center}.domain-row{min-height:56px;padding:0 20px;border-bottom:1px solid #e8ecf2;color:#46556a;font-size:12px}.domain-row:last-child{border-bottom:0}.domain-check{display:grid;place-items:center;cursor:pointer}.domain-check input{position:absolute;width:1px;height:1px;opacity:0}.domain-check span{display:grid;width:18px;height:18px;border:1px solid #c4ceda;border-radius:4px;place-items:center;background:#fff}.domain-check input:checked+span{border-color:#1764ef;background:#1764ef}.domain-check input:checked+span::after{width:8px;height:4px;border-bottom:2px solid #fff;border-left:2px solid #fff;content:"";transform:translateY(-1px) rotate(-45deg)}.domain-check input:focus-visible+span{outline:2px solid #8eb5f6;outline-offset:2px}.domain-check input:disabled+span{opacity:.55;cursor:wait}.sync-summary-card{display:grid;min-width:0;grid-template-columns:1.6fr repeat(4,1fr);overflow:hidden;border:1px solid #dce3ec;border-radius:7px;background:#fff}.sync-summary-card>div{position:relative;display:grid;min-height:112px;padding:22px;align-content:space-between;gap:14px}.sync-summary-card>div+div::before{position:absolute;inset:20px auto 20px 0;width:1px;background:#e3e8ef;content:""}.sync-summary-card span{color:#718096;font-size:11px}.sync-summary-card strong{color:#223047;font-size:18px;font-weight:650}
 .bind-modal-mask{position:fixed;inset:0;z-index:100;display:grid;padding:24px;place-items:center;background:rgba(15,23,42,.38);backdrop-filter:blur(5px)}.bind-modal{width:min(480px,100%);max-height:min(620px,88vh);overflow-y:auto;border:1px solid #dbe3ed;border-radius:10px;background:#fff;box-shadow:0 24px 70px rgba(15,23,42,.2)}.bind-modal>header{display:flex;padding:21px 22px 16px;align-items:flex-start;justify-content:space-between;border-bottom:1px solid #e7ebf0}.bind-modal h2{margin:0 0 5px;color:#172033;font-size:19px}.bind-modal header p{margin:0;color:#718096;font-size:12px}.bind-modal header button{display:grid;width:30px;height:30px;border:0;border-radius:5px;place-items:center;background:#f3f5f8;color:#526174;font-size:20px;cursor:pointer}.bind-search{display:grid;padding:18px 22px 10px;gap:7px;color:#526174;font-size:11px;font-weight:600}.bind-search input{height:40px;padding:0 12px;border:1px solid #d5dde7;border-radius:6px;outline:0;color:#27364c;font:inherit;font-size:13px}.bind-search input:focus{border-color:#8db2f3;box-shadow:0 0 0 3px rgba(23,100,239,.08)}.contact-list{display:grid;max-height:330px;padding:6px 22px 22px;gap:7px;overflow-y:auto}.contact-item{display:flex;min-height:54px;padding:8px 11px;align-items:center;justify-content:space-between;gap:16px;border:1px solid #dfe5ec;border-radius:6px;background:#fff;color:#26344d;text-align:left;cursor:pointer}.contact-item:hover{border-color:#8db2f3;background:#f7faff}.contact-item>span{display:grid;gap:3px}.contact-item strong{font-size:12px}.contact-item small{color:#8490a1;font-size:10px}.contact-item code{color:#60708a;font-size:10px}.contact-empty{margin:0;padding:28px 8px;color:#8490a1;font-size:12px;text-align:center}
+.heading-actions{display:flex;align-items:center;gap:10px}.provision-button{display:flex;height:44px;padding:0 17px;align-items:center;gap:7px;border:1px solid #1764ef;border-radius:6px;background:#fff;color:#1764ef;font:inherit;font-size:13px;font-weight:650;cursor:pointer}.provision-button:hover{background:#f3f7ff}.provision-button span{font-size:18px;font-weight:450}.member-identity>span{display:grid;min-width:0;gap:2px}.member-identity>span small{overflow:hidden;color:#8994a5;font-size:9px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}.contact-item.selected{border-color:#8db2f3;background:#f7faff;box-shadow:inset 3px 0 #1764ef}.provision-modal{width:min(560px,100%)}.provision-form-body{padding-bottom:4px}.provision-form-body .bind-search{padding-bottom:4px}.provision-account small{color:#8a95a5;font-size:10px;font-weight:450}.provision-contact-list{max-height:250px;padding-top:8px;padding-bottom:14px}.provision-error{margin:10px 22px 0}.provision-actions{display:flex;min-height:67px;padding:13px 22px;align-items:center;gap:9px;border-top:1px solid #e7ebf0}.provision-actions>span{margin-right:auto;color:#7f8b9c;font-size:10px}.provision-actions button{height:36px;padding:0 14px;border:1px solid #ccd5e0;border-radius:5px;background:#fff;color:#536176;font:inherit;font-size:11px;font-weight:600;cursor:pointer}.provision-actions button.primary{border-color:#1764ef;background:#1764ef;color:#fff}.provision-actions button:disabled{opacity:.48;cursor:not-allowed}
 @media(max-width:1100px){.members-page{padding-right:26px;padding-left:26px}.last-sync{display:none}.member-search{width:260px}.sync-summary-card{grid-template-columns:repeat(2,1fr)}.sync-summary-card>div:first-child{grid-column:1/-1}.sync-summary-card>div:nth-child(2)::before{display:none}}
 @media(max-width:760px){.admin-sidebar{width:78px}.admin-brand{min-height:96px;padding:22px 16px}.admin-logo{width:46px}.admin-brand-copy,.admin-nav-label,.admin-nav button:not(.active),.admin-nav button.active{font-size:0}.admin-nav button{justify-content:center;padding:0}.admin-nav svg{width:21px;height:21px}.admin-user{justify-content:center;margin:0 12px;padding-right:0;padding-left:0}.admin-user-copy,.admin-logout{display:none}.members-page{margin-left:78px;padding:22px 18px 30px}.members-heading h1{font-size:32px}.members-heading p{display:none}.sync-button{width:44px;padding:0;justify-content:center;font-size:0}.members-stats{grid-template-columns:repeat(2,1fr)}.member-stat:nth-child(3)::before{display:none}.member-tabs{gap:16px;overflow-x:auto}.member-tabs button{white-space:nowrap}.member-toolbar{align-items:stretch;flex-direction:column;padding:14px 0}.member-search{width:100%}.last-sync{display:block}.member-pagination{align-items:flex-start;flex-direction:column;gap:10px}.sync-summary-card{grid-template-columns:1fr}.sync-summary-card>div:first-child{grid-column:auto}.sync-summary-card>div+div::before{display:none}}
+@media(max-width:760px){.heading-actions{gap:7px}.provision-button{height:44px;padding:0 10px;font-size:11px}.provision-actions{align-items:stretch;flex-wrap:wrap}.provision-actions>span{width:100%;margin:0}.provision-actions button{flex:1}}
 </style>

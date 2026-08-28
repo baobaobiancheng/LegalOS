@@ -119,4 +119,40 @@ describe('HttpExceptionFilter requestId', () => {
     }));
     expect(JSON.stringify(audit.record.mock.calls[0][0])).not.toContain('must-not-log');
   });
+
+  it('成员预开通失败写管理员审计，CAS 与钉钉身份只保存摘要', async () => {
+    const res: any = { status: vi.fn().mockReturnThis(), json: vi.fn(), setHeader: vi.fn() };
+    const req: any = {
+      requestId: 'rid-provision-conflict',
+      method: 'POST',
+      path: '/api/admin/members/provision',
+      originalUrl: '/api/admin/members/provision',
+      headers: {},
+      body: { casUsername: 'jun.wang1', dingtalkUserId: 'DING-1' },
+      params: {},
+      ip: '192.168.1.8',
+    };
+    const audit = {
+      fingerprint: vi.fn((value: string) => value === 'jun.wang1' ? 'cas-hash' : 'ding-hash'),
+      record: vi.fn().mockResolvedValue({}),
+    };
+    const filter = new HttpExceptionFilter(audit as any);
+
+    await filter.catch(
+      new HttpException({ code: 'REQUEST_FAILED', error: '身份已被占用' }, HttpStatus.CONFLICT),
+      makeCtx(req, res),
+    );
+
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'member.provision.failed',
+      outcome: 'failed',
+      retentionClass: 'admin',
+      metadata: expect.objectContaining({
+        casIdentityHash: 'cas-hash',
+        dingtalkIdentityHash: 'ding-hash',
+      }),
+    }));
+    expect(JSON.stringify(audit.record.mock.calls[0][0])).not.toContain('jun.wang1');
+    expect(JSON.stringify(audit.record.mock.calls[0][0])).not.toContain('DING-1');
+  });
 });

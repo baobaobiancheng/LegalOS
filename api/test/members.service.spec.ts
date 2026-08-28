@@ -28,7 +28,13 @@ describe('MembersService', () => {
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
       dingTalkSyncBatch: { create: vi.fn().mockResolvedValue({ id: 'batch-1' }), update: vi.fn().mockResolvedValue({}) },
-      user: { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn().mockResolvedValue({ id: 'u' }), findFirst: vi.fn() },
+      user: {
+        findMany: vi.fn(),
+        findUnique: vi.fn(),
+        update: vi.fn().mockResolvedValue({ id: 'u' }),
+        findFirst: vi.fn(),
+        create: vi.fn(),
+      },
       bpDomainMap: { findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn(), deleteMany: vi.fn() },
       project: { count: vi.fn() },
       $transaction: vi.fn(async (arg: any) => {
@@ -176,6 +182,125 @@ describe('MembersService', () => {
 
     await expect(service.bind('u-1', 'U-1')).rejects.toThrow('已绑定其他系统用户');
     expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('provision：首次登录前创建 CAS 用户、绑定钉钉部门并计算角色', async () => {
+    prisma.dingTalkContact.findUnique.mockResolvedValue({
+      userId: 'DING-1', name: '王君', mobile: '138', department: '合规一组', isActive: true,
+    });
+    prisma.user.findFirst.mockResolvedValue(null);
+    prisma.user.create.mockResolvedValue({
+      id: 'user-new', username: 'jun.wang1', casUsername: 'jun.wang1', displayName: '王君',
+      role: 'legal_bp', department: '合规一组', dingtalkUserId: 'DING-1', dingtalkPhone: '138',
+    });
+    const provisionService = new MembersService(
+      prisma as any,
+      dingtalk as any,
+      { get: (key: string) => key === 'CAS_DEPT_MAP' ? '合规一组:legal_bp' : '' } as any,
+    );
+
+    const result = await provisionService.provision(' Jun.Wang1 ', 'DING-1');
+
+    expect(prisma.user.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        username: 'jun.wang1',
+        casUsername: 'jun.wang1',
+        displayName: '王君',
+        role: 'legal_bp',
+        department: '合规一组',
+        dingtalkUserId: 'DING-1',
+      }),
+    });
+    expect(result).toMatchObject({ id: 'user-new', loginStatus: 'pending', role: 'legal_bp' });
+  });
+
+  it('provision：CAS 账号已存在时拒绝重复预开通', async () => {
+    prisma.dingTalkContact.findUnique.mockResolvedValue({
+      userId: 'DING-1', name: '王君', department: '合规一组', isActive: true,
+    });
+    prisma.user.findFirst
+      .mockResolvedValueOnce({ id: 'existing-user' })
+      .mockResolvedValueOnce(null);
+
+    await expect(service.provision('jun.wang1', 'DING-1')).rejects.toThrow('CAS 账号已存在');
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('provision：写入管理员、身份摘要和待登录状态审计', async () => {
+    prisma.dingTalkContact.findUnique.mockResolvedValue({
+      userId: 'DING-1', name: '王君', mobile: '138', department: '合规一组', isActive: true,
+    });
+    prisma.user.findFirst.mockResolvedValue(null);
+    prisma.user.create.mockResolvedValue({
+      id: 'user-new', casUsername: 'jun.wang1', displayName: '王君', role: 'legal_bp',
+      department: '合规一组', dingtalkUserId: 'DING-1', dingtalkPhone: '138',
+    });
+    const audit = {
+      record: vi.fn().mockResolvedValue({}),
+      fingerprint: vi.fn((value: string) => `hash:${value}`),
+    };
+    const audited = new MembersService(
+      prisma as any,
+      dingtalk as any,
+      { get: (key: string) => key === 'CAS_DEPT_MAP' ? '合规一组:legal_bp' : '' } as any,
+      audit as any,
+    );
+
+    await audited.provision(
+      'jun.wang1',
+      'DING-1',
+      { id: 'admin-1', role: 'admin' },
+      { requestId: 'request-provision-1' },
+    );
+
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'member.provision',
+      actor: { id: 'admin-1', role: 'admin' },
+      resourceId: 'user-new',
+      after: expect.objectContaining({ loginStatus: 'pending', role: 'legal_bp' }),
+      metadata: {
+        casIdentityHash: 'hash:jun.wang1',
+        dingtalkIdentityHash: 'hash:DING-1',
+      },
+    }), prisma);
+  });
+
+  it('listUsers：预开通且尚无登录审计的 CAS 用户显示待首次登录', async () => {
+    prisma.user.findMany.mockResolvedValue([
+      {
+        id: 'user-pending', username: 'jun.wang1', casUsername: 'jun.wang1', displayName: '王君',
+        role: 'legal_bp', department: '合规一组', dingtalkUserId: 'DING-1', loginAudits: [],
+      },
+      {
+        id: 'user-active', username: 'dong.chen', casUsername: 'dong.chen', displayName: '陈东',
+        role: 'legal_bp', department: '合规一组', dingtalkUserId: 'DING-2', loginAudits: [{ id: 'login-1' }],
+      },
+    ]);
+
+    const result = await service.listUsers();
+
+    expect(result.items).toEqual([
+      expect.objectContaining({ id: 'user-pending', loginStatus: 'pending' }),
+      expect.objectContaining({ id: 'user-active', loginStatus: 'active' }),
+    ]);
+    expect(result.items[0]).not.toHaveProperty('loginAudits');
+  });
+
+  it('listContacts：只返回在岗且未被其他系统用户占用的钉钉联系人', async () => {
+    prisma.user.findMany.mockResolvedValue([{ dingtalkUserId: 'DING-USED' }]);
+    prisma.dingTalkContact.findMany.mockResolvedValue([]);
+
+    await service.listContacts('王');
+
+    expect(prisma.dingTalkContact.findMany).toHaveBeenCalledWith({
+      where: {
+        isActive: true,
+        userId: { notIn: ['DING-USED'] },
+        OR: [{ name: { contains: '王' } }, { mobile: { contains: '王' } }],
+      },
+      orderBy: { name: 'asc' },
+      take: 200,
+    });
   });
 
   it('bind：管理员、前后状态与请求标识在同一事务写入统一审计', async () => {

@@ -104,6 +104,30 @@ describe('AuthService.casLogin（账号密码/方式一）', () => {
     expect(user.user.role).toBe('legal_bp');
   });
 
+  it('管理员已预开通用户首次登录：命中既有 CAS 身份并保留钉钉部门和法务角色', async () => {
+    ctx = makeService({ config: cfg({ CAS_DEPT_MAP: '合规一组:legal_bp' }) });
+    ctx.cas.loginWithPassword.mockResolvedValue({ username: 'jun.wang1', name: '王君' });
+    const provisioned = mockUser({
+      id: 'user-provisioned', username: 'jun.wang1', casUsername: 'jun.wang1', displayName: '王君',
+      role: 'legal_bp', department: '合规一组', dingtalkUserId: 'DING-1',
+    });
+    ctx.prisma.user.findUnique.mockResolvedValue(provisioned);
+    ctx.prisma.user.upsert.mockResolvedValue(provisioned);
+
+    const result = await ctx.service.casLogin({ username: 'jun.wang1', password: 'pw' });
+
+    expect(ctx.prisma.user.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { casUsername: 'jun.wang1' },
+      update: { displayName: '王君' },
+    }));
+    expect(ctx.prisma.user.update).not.toHaveBeenCalled();
+    expect(ctx.jwt.signAsync).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      sub: 'user-provisioned',
+      role: 'legal_bp',
+    }));
+    expect(result.user).toMatchObject({ id: 'user-provisioned', role: 'legal_bp' });
+  });
+
   it('个人映射优先于部门映射', async () => {
     ctx = makeService({ config: cfg({ CAS_ROLE_MAP: 'junfang.zhao:legal_lead', CAS_DEPT_MAP: '法务部:legal_bp' }) });
     ctx.cas.loginWithPassword.mockResolvedValue({ username: 'junfang.zhao', name: '赵俊芳' });

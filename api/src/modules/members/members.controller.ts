@@ -3,7 +3,7 @@ import { Request } from 'express';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '@prisma/client';
 import { MembersService } from './members.service';
-import { BindContactDto, SetBpDomainDto } from './dto/members.dto';
+import { BindContactDto, ProvisionMemberDto, SetBpDomainDto } from './dto/members.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { auditRequestContext } from '../../common/audit/audit-request';
 
@@ -46,6 +46,22 @@ export class MembersController {
   @Get('contacts')
   async listContacts(@Query('keyword') keyword?: string) {
     return this.membersService.listContacts(keyword);
+  }
+
+  /** 首次登录前预开通 CAS 用户，并原子绑定钉钉身份、部门和组织角色。 */
+  @Post('provision')
+  async provision(
+    @Body() dto: ProvisionMemberDto,
+    @CurrentUser('id') actorId: string,
+    @CurrentUser('role') actorRole: Role,
+    @Req() request: Request,
+  ) {
+    return this.membersService.provision(
+      dto.casUsername,
+      dto.dingtalkUserId,
+      { id: actorId, role: actorRole },
+      auditRequestContext(request),
+    );
   }
 
   /** 手动绑定系统用户 ↔ 钉钉成员 */

@@ -122,8 +122,16 @@ export class HttpExceptionFilter implements ExceptionFilter {
         ...(isLogin && typeof (request.body as any)?.username === 'string'
           ? { loginIdentityHash: this.audit.fingerprint(String((request.body as any).username).trim().toLocaleLowerCase()) }
           : {}),
+        ...(requestedAction === 'member.provision' && typeof (request.body as any)?.casUsername === 'string'
+          ? { casIdentityHash: this.audit.fingerprint(String((request.body as any).casUsername).trim().toLocaleLowerCase()) }
+          : {}),
+        ...(requestedAction === 'member.provision' && typeof (request.body as any)?.dingtalkUserId === 'string'
+          ? { dingtalkIdentityHash: this.audit.fingerprint(String((request.body as any).dingtalkUserId)) }
+          : {}),
       },
-      retentionClass: isLogin || isDenied ? 'security' : 'business',
+      retentionClass: isLogin || isDenied
+        ? 'security'
+        : requestedAction?.startsWith('member.') ? 'admin' : 'business',
     });
   }
 }
@@ -132,6 +140,7 @@ function classifySensitiveAction(method: string, rawPath: string): string | null
   const path = normalizedPath(rawPath);
   if (method === 'POST' && /^\/auth\/(cas-)?login$/.test(path)) return 'auth.login';
   if (method === 'POST' && /\/admin\/members\/bind$/.test(path)) return 'member.bind';
+  if (method === 'POST' && /\/admin\/members\/provision$/.test(path)) return 'member.provision';
   if (method === 'POST' && /\/admin\/members\/unbind$/.test(path)) return 'member.unbind';
   if (method === 'POST' && /\/admin\/members\/sync$/.test(path)) return 'member.directory.sync';
   if (method === 'PUT' && /\/admin\/members\/bp-domains$/.test(path)) return 'member.bp_scope.change';
