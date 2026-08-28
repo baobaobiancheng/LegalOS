@@ -66,11 +66,11 @@ interface ModelReport {
 
 export const AI_LAW_REPORT_OUTPUT_RULE = `最终只输出一个 JSON 对象，不要输出 Markdown 围栏或额外说明。结构必须是：
 {"query":"本轮问题","title":"不超过40字的报告标题","scope":"本轮检索范围","summary":"两段以内总结","answer":"供咨询对话直接展示的Markdown答复","sections":[{"title":"分析主题","content":"具体分析","sourceIds":["已核验法规ID"]}],"evidenceQuotes":[{"recordId":"已核验法规ID","article":"具体条号","text":"工具返回的逐字原文"}],"limitations":["适用边界"]}。
-answer 必须包含结论、具体分析、适用边界和来源名称；不得泄露内部推理过程。evidenceQuotes 只能逐字复制已读取详情正文。`;
+answer 必须包含结论、具体分析、适用边界和来源名称；不得泄露内部推理过程。没有直接引用时 evidenceQuotes 可为空数组；一旦引用，text 必须逐字复制已读取的法规正文连续片段。`;
 
 export function buildStandaloneAiLawResearchPrompt(query: string, toolCallLimit: number): string {
   return `你是企业法律检索 Agent。围绕用户问题完成一份可审计的 AI 搜法报告。
-先用 search_laws_semantic、search_laws 或 search_laws_advanced 召回候选；为覆盖不同规范层级，最多使用两次召回。候选命中后优先只调用一次 get_law_details，批量核验最多10部最相关法规；仅在单条精确定位时才使用 get_law_detail。只有详情正文才算已核验。
+先用 search_laws_semantic、search_laws 或 search_laws_advanced 召回候选；为覆盖不同规范层级，最多使用两次召回。如需直接引用法规原文，优先只调用一次 get_law_details 批量读取最多10部最相关法规；仅在单条精确定位时使用 get_law_detail。
 本轮最多调用工具 ${toolCallLimit} 次；获得足以回答的证据后立即停止。若全部召回为零结果，answer、summary 必须以“未检索到可核验来源”开头，sources 与 evidenceQuotes 为空，不得生成确定性法规结论。
 ${AI_LAW_REPORT_OUTPUT_RULE}
 
@@ -87,7 +87,7 @@ export function parseAiLawResearchReport(
   const answer = requiredText(value.answer, 'answer', 20_000);
   const verifiedDetails = verifiedLawDetails(toolResults).slice(0, 10);
   const verifiedIds = new Set(verifiedDetails.map((detail) => detail.recordId.toLowerCase()));
-  const evidenceQuotes = parseEvidenceQuotes(value.evidenceQuotes, verifiedIds);
+  const evidenceQuotes = parseEvidenceQuotes(value.evidenceQuotes, verifiedDetails);
   const quotesBySource = new Map<string, Array<{ article: string; text: string }>>();
   for (const quote of evidenceQuotes) {
     const entries = quotesBySource.get(quote.recordId) ?? [];
@@ -340,9 +340,9 @@ function parseSections(value: unknown, verifiedIds: Set<string>): AiLawResearchS
   }
   return value.slice(0, 6).map((item, index) => {
     if (!isRecord(item)) throw new Error('dsh Agent AI 搜法报告结构无效：section 不是对象');
-    const sourceIds = parseStringArray(item.sourceIds, 10, 64).map((id) => id.toLowerCase());
-    const unsupported = sourceIds.find((id) => !verifiedIds.has(id));
-    if (unsupported) throw new Error(`dsh Agent AI 搜法报告结构无效：section 引用了未核验法规 ${unsupported}`);
+    const sourceIds = parseStringArray(item.sourceIds, 10, 64)
+      .map((id) => id.toLowerCase())
+      .filter((id) => verifiedIds.has(id));
     return {
       id: `analysis-${index + 1}`,
       title: requiredText(item.title, 'section.title', 80),
@@ -352,20 +352,33 @@ function parseSections(value: unknown, verifiedIds: Set<string>): AiLawResearchS
   });
 }
 
-function parseEvidenceQuotes(value: unknown, verifiedIds: Set<string>) {
+function parseEvidenceQuotes(value: unknown, verifiedDetails: BaijianLawDetail[]) {
   if (!Array.isArray(value)) return [];
-  return value.slice(0, 30).map((item) => {
-    if (!isRecord(item)) throw new Error('dsh Agent AI 搜法报告结构无效：evidenceQuote 不是对象');
-    const recordId = requiredText(item.recordId, 'evidenceQuote.recordId', 64).toLowerCase();
-    if (!verifiedIds.has(recordId)) {
-      throw new Error(`dsh Agent AI 搜法报告结构无效：引用未核验法规 ${recordId}`);
+  const bodies = verifiedDetails.map((detail) => ({
+    recordId: detail.recordId.toLowerCase(),
+    body: normalizeEvidenceText(detail.contentBlocks.map((block) => block.text).join('\n')),
+  }));
+  return value.slice(0, 30).flatMap((item) => {
+    if (!isRecord(item)
+      || typeof item.article !== 'string'
+      || typeof item.text !== 'string') return [];
+    const quotedText = normalizeEvidenceText(item.text);
+    const preferredId = typeof item.recordId === 'string' ? item.recordId.toLowerCase() : '';
+    const matched = bodies.find((body) => body.recordId === preferredId && body.body.includes(quotedText))
+      ?? bodies.find((body) => body.body.includes(quotedText));
+    if (!quotedText || !matched) {
+      throw new Error('dsh Agent 引用不是法规正文中的连续原文');
     }
     return {
-      recordId,
-      article: requiredText(item.article, 'evidenceQuote.article', 60),
-      text: requiredText(item.text, 'evidenceQuote.text', 1_000),
+      recordId: matched.recordId,
+      article: bound(item.article.trim() || '法规原文', 60),
+      text: bound(item.text.trim(), 1_000),
     };
   });
+}
+
+function normalizeEvidenceText(value: string): string {
+  return value.normalize('NFKC').replace(/\s+/gu, '');
 }
 
 function parseStringArray(value: unknown, maxItems: number, maxLength: number): string[] {

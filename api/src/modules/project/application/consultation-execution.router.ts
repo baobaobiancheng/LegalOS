@@ -152,7 +152,7 @@ function buildResearchPrompt(
     : messages;
   const history = selectedMessages.map((message) => `[${message.role}]\n${message.content}`).join('\n\n');
   const sourceRule = capability === 'law_search'
-    ? `先判断任务是法条定位、法规定位还是法律问题。本轮必须先使用 search_laws、search_laws_advanced、search_laws_semantic 中至少一种工具召回候选；最多使用两次召回以覆盖不同规范层级。有命中时优先只调用一次 get_law_details，批量核验最多10部最相关法规；仅在单条精确定位时使用 get_law_detail。只有详情正文才算已核验条文。不得引用未读取详情的法规 ID。若全部检索为零结果，必须明确“未检索到可核验来源”，不得生成确定性法规结论。${AI_LAW_REPORT_OUTPUT_RULE}`
+    ? `先判断任务是法条定位、法规定位还是法律问题。本轮必须先使用 search_laws、search_laws_advanced、search_laws_semantic 中至少一种工具召回候选；最多使用两次召回以覆盖不同规范层级。如需直接引用法规原文，优先只调用一次 get_law_details 批量读取最多10部最相关法规；仅在单条精确定位时使用 get_law_detail。若全部检索为零结果，必须明确“未检索到可核验来源”，不得生成确定性法规结论。${AI_LAW_REPORT_OUTPUT_RULE}`
     : '必须调用 search_similar_cases。只能引用工具真实返回的案例，不得虚构案号、法院或公开链接。';
   return `你是企业法律检索 Agent。先理解对话，再自主规划并按需迭代调用本轮开放的受控工具，然后基于结果回答。\n${sourceRule}\n本轮最多调用工具 ${toolCallLimit} 次；获得足以回答的有效证据后必须停止检索。\n若零结果，仍可给一般分析，但必须在开头醒目标明“未检索到可核验来源”。引用来源时只使用工具返回的信息。不要泄露内部推理过程。\n\n【对话上下文】\n${history}`;
 }
@@ -171,6 +171,7 @@ export function classifyResearchError(error: Error): string {
   if (text.includes('原文引用了未核验法规')) return 'RESEARCH_QUOTE_UNVERIFIED';
   if (text.includes('引用了未核验法规')) return 'RESEARCH_CITATION_UNVERIFIED';
   if (text.includes('最终回答未提供可核验的法规原文引用')) return 'RESEARCH_QUOTE_MISSING';
+  if (text.includes('引用不是法规正文中的连续原文')) return 'RESEARCH_QUOTE_MISMATCH';
   if (text.includes('法规原文与权威详情不匹配')) return 'RESEARCH_QUOTE_MISMATCH';
   if (text.includes('零结果时未声明')) return 'RESEARCH_EMPTY_UNDECLARED';
   if (text.includes('ai 搜法报告结构无效')) return 'RESEARCH_REPORT_INVALID';

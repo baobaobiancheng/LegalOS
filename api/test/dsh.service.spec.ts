@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 describe('DshService 法律检索执行契约', () => {
-  it('拒绝引用未读取详情的法规 ID', () => {
+  it('不再核验法规 ID，只核验引用是否为已读取正文的连续原文', () => {
     const candidateId = 'D6592443DA000EF8D692CE667E947A69';
     const unsupportedId = 'E4A4956751D374FD35D0CEA47C041313';
     const results: any[] = [
@@ -25,7 +25,7 @@ describe('DshService 法律检索执行契约', () => {
       `> [法规原文｜ID:${candidateId}｜条文:第八十七条] 用人单位违法解除劳动合同的，应支付赔偿金。\n另见 ID: ${unsupportedId}`,
       [{ callId: '1', name: 'search_laws', arguments: {} }, { callId: '2', name: 'get_law_detail', arguments: { lawId: candidateId } }],
       results,
-    )).toThrow(`引用了未核验法规 ID：${unsupportedId.toLowerCase()}`);
+    )).not.toThrow();
   });
 
   it('拒绝用真实法规 ID 包装的虚构条文', () => {
@@ -43,7 +43,30 @@ describe('DshService 法律检索执行契约', () => {
       `> [法规原文｜ID:${lawId}｜条文:第八十七条] 用人单位必须额外支付三倍赔偿金。`,
       calls,
       results,
-    )).toThrow('法规原文与权威详情不匹配');
+    )).toThrow('引用不是法规正文中的连续原文');
+  });
+
+  it('有检索结果但没有直接引用时允许生成分析', () => {
+    const lawId = 'D6592443DA000EF8D692CE667E947A69';
+    expect(() => validateResearchEvidence(
+      'law_search',
+      JSON.stringify({ answer: '根据已检索法规，需要结合财产性质进一步分析。', evidenceQuotes: [] }),
+      [{ callId: '1', name: 'search_laws', arguments: {} }],
+      [{ name: 'search_laws', isError: false, result: { records: [{ recordId: lawId }] } }] as any[],
+    )).not.toThrow();
+  });
+
+  it('answer 中显式引用的内容也必须是法规正文连续原文', () => {
+    const lawId = 'D6592443DA000EF8D692CE667E947A69';
+    expect(() => validateResearchEvidence(
+      'law_search',
+      JSON.stringify({ answer: '《民法典》规定：“离婚时所有财产必须平均分割。”', evidenceQuotes: [] }),
+      [{ callId: '1', name: 'search_laws', arguments: {} }, { callId: '2', name: 'get_law_detail', arguments: { lawId } }],
+      [
+        { name: 'search_laws', isError: false, result: { records: [{ recordId: lawId }] } },
+        { name: 'get_law_detail', isError: false, result: { recordId: lawId, contentBlocks: [{ text: '离婚时，夫妻的共同财产由双方协议处理。' }] } },
+      ] as any[],
+    )).toThrow('引用不是法规正文中的连续原文');
   });
 
   it('允许可控的 Markdown 和中英文标点差异，但仍逐字核对原文', () => {

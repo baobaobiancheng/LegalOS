@@ -39,14 +39,24 @@ describe('LegalResearchService', () => {
   });
 
   it('执行层证据闸门拦截时保留已完成的受控工具结果', () => {
+    const lawId = 'D6592443DA000EF8D692CE667E947A69';
     const completion = {
-      text: '无法核验的模型文本',
+      text: `> [法规原文｜ID:${lawId}｜条文:第一条] 这是并不存在于法规正文中的引用。`,
       dshSessionId: 'dsh-partial',
-      toolCalls: [{ callId: 's1', name: 'search_laws', arguments: { keyword: '公司法' } }],
-      toolResults: [{
-        callId: 's1', name: 'search_laws', isError: false,
-        result: { records: [{ recordId: 'D6592443DA000EF8D692CE667E947A69', lawName: '中华人民共和国公司法' }] },
-      }],
+      toolCalls: [
+        { callId: 's1', name: 'search_laws', arguments: { keyword: '公司法' } },
+        { callId: 'd1', name: 'get_law_detail', arguments: { lawId } },
+      ],
+      toolResults: [
+        {
+          callId: 's1', name: 'search_laws', isError: false,
+          result: { records: [{ recordId: lawId, lawName: '中华人民共和国公司法' }] },
+        },
+        {
+          callId: 'd1', name: 'get_law_detail', isError: false,
+          result: { recordId: lawId, contentBlocks: [{ text: '第一条 为了规范公司的组织和行为，制定本法。' }] },
+        },
+      ],
     } as any;
 
     try {
@@ -55,7 +65,7 @@ describe('LegalResearchService', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(DshResearchEvidenceError);
       expect((error as DshResearchEvidenceError).result).toBe(completion);
-      expect((error as Error).message).toContain('命中法规后未读取权威正文');
+      expect((error as Error).message).toContain('引用不是法规正文中的连续原文');
     }
   });
 

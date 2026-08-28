@@ -55,20 +55,22 @@ describe('AI 搜法结构化报告', () => {
     expect(parsed.report.metrics).toEqual({ candidateCount: 1, verifiedSourceCount: 1, citedSourceCount: 1 });
   });
 
-  it('拒绝模型在章节或引用中注入未核验法规 ID', () => {
+  it('过滤章节中的未知 ID，并按连续原文将引用归一到已读取法规', () => {
     const unknown = 'E4A4956751D374FD35D0CEA47C041313';
-    expect(() => parseAiLawResearchReport(JSON.stringify({
+    const parsed = parseAiLawResearchReport(JSON.stringify({
       title: '报告', scope: '范围', summary: '总结', answer: `ID: ${LAW_ID}`,
       sections: [{ title: '分析', content: '内容', sourceIds: [unknown] }],
-      evidenceQuotes: [{ recordId: LAW_ID, article: '第一条', text: ORIGINAL }],
+      evidenceQuotes: [{ recordId: unknown, article: '第一千零六十二条', text: ORIGINAL }],
       limitations: [],
-    }), toolResults(), '问题')).toThrow('section 引用了未核验法规');
+    }), toolResults(), '问题');
+    expect(parsed.report.sections[0].sourceIds).toEqual([]);
+    expect(parsed.report.sources[0].articles).toEqual([{ article: '第一千零六十二条', text: ORIGINAL }]);
   });
 
-  it('提示词明确批量核验与5次工具调用上限', () => {
+  it('提示词明确批量读取与5次工具调用上限', () => {
     const prompt = buildStandaloneAiLawResearchPrompt('经济补偿如何计算', 5);
     expect(prompt).toContain('get_law_details');
-    expect(prompt).toContain('批量核验最多10部');
+    expect(prompt).toContain('批量读取最多10部');
     expect(prompt).toContain('最多调用工具 5 次');
   });
 });

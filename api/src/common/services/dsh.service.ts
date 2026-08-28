@@ -504,30 +504,19 @@ export function validateResearchEvidence(
     return;
   }
 
-  const details = verifiedLawDetails(toolResults);
-  if (!details.length) throw new Error('dsh Agent 命中法规后未读取权威正文');
-  const detailedIds = new Set(details.map((detail) => detail.recordId.toLowerCase()));
-  const outsideCandidate = [...detailedIds].find((id) => !candidateIds.has(id));
-  if (outsideCandidate) throw new Error(`dsh Agent 读取了非候选法规：${outsideCandidate}`);
-
   const answerText = evidenceTextForValidation(text);
-  const citedIds = [...answerText.matchAll(/\b[0-9a-f]{32}\b/gi)].map((match) => match[0].toLowerCase());
-  if (!citedIds.some((id) => detailedIds.has(id))) throw new Error('dsh Agent 最终回答未引用已核验法规 ID');
-  const unsupported = citedIds.find((id) => !detailedIds.has(id));
-  if (unsupported) throw new Error(`dsh Agent 引用了未核验法规 ID：${unsupported}`);
-
   const evidenceQuotes = extractEvidenceQuotes(answerText);
-  if (!evidenceQuotes.length) throw new Error('dsh Agent 最终回答未提供可核验的法规原文引用');
-  const contentById = new Map(details.map((detail) => [
-    detail.recordId.toLowerCase(),
-    normalizeEvidenceText(detail.contentBlocks.map((block) => block.text).join('\n')),
-  ] as const));
-  for (const quote of evidenceQuotes) {
-    const sourceText = contentById.get(quote.recordId);
-    if (!sourceText) throw new Error(`dsh Agent 原文引用了未核验法规 ID：${quote.recordId}`);
-    const quotedText = normalizeEvidenceText(quote.text);
-    if (quotedText.length < 8 || !sourceText.includes(quotedText)) {
-      throw new Error(`dsh Agent 法规原文与权威详情不匹配：${quote.recordId}`);
+  const quotedTexts = [
+    ...evidenceQuotes.map((quote) => quote.text),
+    ...extractInlineEvidenceQuotes(answerText),
+  ];
+  if (!quotedTexts.length) return;
+  const authoritativeBodies = verifiedLawDetails(toolResults).map((detail) =>
+    normalizeEvidenceText(detail.contentBlocks.map((block) => block.text).join('\n')));
+  for (const quote of quotedTexts) {
+    const quotedText = normalizeEvidenceText(quote);
+    if (!quotedText || !authoritativeBodies.some((body) => body.includes(quotedText))) {
+      throw new Error('dsh Agent 引用不是法规正文中的连续原文');
     }
   }
 }
@@ -568,6 +557,21 @@ function evidenceTextForValidation(text: string): string {
 function extractEvidenceQuotes(text: string): Array<{ recordId: string; article: string; text: string }> {
   return [...text.matchAll(/^\s*>?\s*(?:\*\*)?\[法规原文\s*[|｜]\s*ID\s*[:：]\s*([0-9a-f]{32})\s*[|｜]\s*条文\s*[:：]\s*([^\]\r\n]{1,40})\]\s*(?:\*\*)?\s*(.+)$/gimu)]
     .map((match) => ({ recordId: match[1].toLowerCase(), article: match[2].trim(), text: match[3].trim() }));
+}
+
+/**
+ * evidenceQuotes 可以为空，但 answer 中显式标记的直接引文仍必须逐字核对。
+ * 只识别明确的中文引号和 Markdown 引用块，避免把一般分析误判为原文。
+ */
+function extractInlineEvidenceQuotes(text: string): string[] {
+  const quoted = [...text.matchAll(/[“「]([^”」\r\n]{2,2000})[”」]/gu)]
+    .map((match) => match[1].trim());
+  const blockquotes = text.split(/\r?\n/u).flatMap((line) => {
+    const match = line.match(/^\s*>\s*(.+)$/u);
+    if (!match || match[1].includes('[法规原文')) return [];
+    return [match[1].trim()];
+  });
+  return [...quoted, ...blockquotes].filter(Boolean);
 }
 
 function normalizeEvidenceText(value: string): string {
