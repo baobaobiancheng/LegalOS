@@ -57,12 +57,6 @@ const groups = computed<Array<{ key: RecordGroup; label: string; count: number }
   { key: 'completed', label: '已回传', count: statusCounts.value.已回传 },
   { key: 'cancelled', label: '已取消', count: statusCounts.value.已取消 },
 ])
-const summary = computed(() => [
-  { label: '全部记录', count: allCount.value },
-  { label: '处理中', count: processingCount.value },
-  { label: '已回传', count: statusCounts.value.已回传 },
-  { label: '已取消', count: statusCounts.value.已取消 },
-])
 
 const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
@@ -147,14 +141,6 @@ onMounted(async () => {
         stagger: .08,
         ease: 'power2.out',
       })
-      gsap.from('.summary-cell', {
-        autoAlpha: 0,
-        y: 14,
-        duration: .46,
-        stagger: .06,
-        delay: .12,
-        ease: 'power2.out',
-      })
     }, pageRoot.value)
   }
   await loadRecords()
@@ -195,20 +181,6 @@ onBeforeUnmount(() => animationContext?.revert())
           </button>
         </div>
       </header>
-
-      <section
-        class="summary-grid"
-        aria-label="记录统计"
-      >
-        <div
-          v-for="stat in summary"
-          :key="stat.label"
-          class="summary-cell"
-        >
-          <span>{{ stat.label }}</span>
-          <strong>{{ stat.count }}</strong>
-        </div>
-      </section>
 
       <div class="records-toolbar">
         <nav aria-label="记录状态">
@@ -437,40 +409,35 @@ onBeforeUnmount(() => animationContext?.revert())
 <script lang="ts">export default { name: 'RecordsView' }</script>
 
 <style scoped>
-.records-page { width: min(100%, 1540px); height: 100%; min-height: 0; margin: 0 auto; padding: 34px 38px 48px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; color: #111827; }
-.records-heading { margin-bottom: 28px; }
-.breadcrumb { margin: 0 0 30px; color: #53627a; font-size: 13px; }
+.records-page { width: min(100%, 1540px); height: 100%; min-height: 0; margin: 0 auto; padding: 28px 38px 48px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; color: #111827; }
+.records-heading { margin-bottom: 22px; }
+.breadcrumb { margin: 0 0 20px; color: #53627a; font-size: 13px; }
 .breadcrumb span { margin: 0 10px; color: #a8b1bf; }
 .heading-row { display: flex; align-items: center; justify-content: space-between; gap: 28px; }
 .heading-copy { display: flex; min-width: 0; align-items: center; gap: 18px; }
-.heading-copy h1 { margin: 0; color: #0b1222; font-size: clamp(34px, 3.2vw, 46px); font-weight: 680; letter-spacing: -.045em; line-height: 1; white-space: nowrap; }
-.heading-divider { width: 1px; height: 36px; flex: 0 0 auto; background: #cbd5e1; }
+.heading-copy h1 { margin: 0; color: #0b1222; font-size: clamp(32px, 2.8vw, 42px); font-weight: 680; letter-spacing: -.045em; line-height: 1; white-space: nowrap; }
+.heading-divider { width: 1px; height: 32px; flex: 0 0 auto; background: #cbd5e1; }
 .heading-copy p { margin: 0; color: #526174; font-size: 14px; white-space: nowrap; }
-.new-consult-button { display: inline-flex; min-width: 136px; height: 44px; padding: 0 16px; align-items: center; justify-content: center; gap: 8px; border: 1px solid #0f5fff; border-radius: 6px; background: #0f5fff; color: #fff; font: inherit; font-size: 14px; font-weight: 620; cursor: pointer; transition: background 160ms ease, transform 160ms ease; }
+.new-consult-button { display: inline-flex; min-width: 136px; height: 42px; padding: 0 16px; align-items: center; justify-content: center; gap: 8px; border: 1px solid #0f5fff; border-radius: 6px; background: #0f5fff; color: #fff; font: inherit; font-size: 14px; font-weight: 620; cursor: pointer; transition: background 160ms ease, transform 160ms ease; }
 .new-consult-button:hover { transform: translateY(-1px); background: #004dcc; }
 .new-consult-button svg { width: 18px; height: 18px; }
-.summary-grid { display: grid; overflow: hidden; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 24px; border: 1px solid #dce3ec; border-radius: 8px; background: #fff; }
-.summary-cell { position: relative; display: grid; min-height: 112px; padding: 24px 34px; align-content: space-between; gap: 14px; }
-.summary-cell + .summary-cell::before { position: absolute; inset: 22px auto 22px 0; width: 1px; background: #dce3ec; content: ""; }
-.summary-cell span { color: #526174; font-size: 13px; }
-.summary-cell strong { color: #0f172a; font-size: 34px; font-weight: 620; letter-spacing: -.04em; line-height: 1; }
-.records-toolbar { display: flex; scroll-margin-top: 20px; margin-bottom: 12px; align-items: stretch; justify-content: space-between; gap: 24px; }
-.records-toolbar > nav { display: grid; min-width: 560px; overflow: hidden; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid #d7dfea; border-radius: 7px; background: #fff; }
-.records-toolbar > nav button { position: relative; min-height: 52px; border: 0; border-left: 1px solid #e5eaf1; background: #fff; color: #4b5568; font: inherit; font-size: 14px; cursor: pointer; }
+.records-toolbar { display: grid; scroll-margin-top: 20px; grid-template-columns: minmax(520px, 1fr) auto; margin-bottom: 14px; align-items: stretch; gap: 16px; }
+.records-toolbar > nav { display: grid; min-width: 0; overflow: hidden; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid #d7dfea; border-radius: 7px; background: #fff; }
+.records-toolbar > nav button { position: relative; min-height: 48px; border: 0; border-left: 1px solid #e5eaf1; background: #fff; color: #4b5568; font: inherit; font-size: 14px; cursor: pointer; }
 .records-toolbar > nav button:first-child { border-left: 0; }
 .records-toolbar > nav button::after { position: absolute; inset: auto 0 0; height: 3px; background: transparent; content: ""; }
 .records-toolbar > nav button:hover:not(:disabled) { background: #f8fafc; color: #2563eb; }
 .records-toolbar > nav button.active { color: #2563eb; }
 .records-toolbar > nav button.active::after { background: #2563eb; }
 .records-toolbar > nav button span { margin-left: 7px; font-weight: 600; }
-.filters { display: flex; min-width: 430px; gap: 12px; }
+.filters { display: flex; min-width: 418px; justify-content: flex-end; gap: 10px; }
 .search-field,
-.kind-filter { display: flex; height: 52px; align-items: center; border: 1px solid #d7dfea; border-radius: 7px; background: #fff; color: #66758b; }
-.search-field { min-width: 268px; padding: 0 14px; gap: 9px; }
+.kind-filter { display: flex; height: 48px; align-items: center; border: 1px solid #d7dfea; border-radius: 7px; background: #fff; color: #66758b; }
+.search-field { min-width: 262px; padding: 0 14px; gap: 9px; }
 .search-field svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .search-field input { min-width: 0; width: 100%; border: 0; outline: 0; background: transparent; color: #24324a; font: inherit; font-size: 13px; }
 .search-field input::placeholder { color: #8a96a8; }
-.kind-filter { position: relative; min-width: 150px; }
+.kind-filter { position: relative; min-width: 146px; }
 .kind-filter select { width: 100%; height: 100%; padding: 0 38px 0 16px; appearance: none; border: 0; outline: 0; background: transparent; color: #334155; font: inherit; font-size: 13px; cursor: pointer; }
 .kind-filter > svg { position: absolute; right: 13px; width: 17px; height: 17px; pointer-events: none; }
 .records-table-section { min-width: 0; }
@@ -525,8 +492,7 @@ onBeforeUnmount(() => animationContext?.revert())
   .records-page { padding-right: 26px; padding-left: 26px; }
   .heading-copy p,
   .heading-divider { display: none; }
-  .records-toolbar { align-items: stretch; flex-direction: column; }
-  .records-toolbar > nav { min-width: 0; }
+  .records-toolbar { grid-template-columns: 1fr; }
   .filters { min-width: 0; justify-content: flex-end; }
 }
 
@@ -536,9 +502,6 @@ onBeforeUnmount(() => animationContext?.revert())
   .heading-copy h1 { font-size: 32px; }
   .new-consult-button { min-width: 44px; padding: 0 12px; font-size: 0; }
   .new-consult-button svg { width: 20px; height: 20px; }
-  .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .summary-cell { min-height: 96px; padding: 20px; }
-  .summary-cell:nth-child(3)::before { display: none; }
   .records-toolbar > nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .filters { flex-direction: column; }
   .search-field,
