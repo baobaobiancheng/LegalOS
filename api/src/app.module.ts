@@ -17,6 +17,7 @@ import { BaijianModule } from './common/baijian/baijian.module';
 import { AiExecutionModule } from './common/services/ai-execution.module';
 import { LegalResearchModule } from './modules/legal-research/legal-research.module';
 import { AuditModule } from './common/audit/audit.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { AuditModule } from './common/audit/audit.module';
     ContractModule,
     SkillModule,
     MembersModule,
+    DashboardModule,
     LegalResearchModule,
   ],
   providers: [
