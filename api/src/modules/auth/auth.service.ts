@@ -220,15 +220,17 @@ export class AuthService {
       throw new UnauthorizedException({ error: '账号已停用，请联系管理员', code: 'USER_DISABLED' });
     }
 
-    // 角色按 User.department（钉钉部门）解析：admin 不降级,其余 个人映射 > 部门映射 > business；不同则更新
+    // 角色按 User.department（钉钉部门）解析：个人显式映射 > admin 保护 > 部门映射 > business。
     const role = this.resolveRole(user.role, info.username, user.department ?? undefined);
     if (role !== user.role) {
       await this.prisma.user.update({ where: { id: user.id }, data: { role } });
     }
 
-    const tokens = await this.issueTokens(user, CAS);
+    // 必须使用本轮解析后的角色签发 JWT；否则数据库/响应已变更，但当前 access token 仍保留旧权限。
+    const effectiveUser = { ...user, role };
+    const tokens = await this.issueTokens(effectiveUser, CAS);
     await this.prisma.loginAudit.create({ data: { userId: user.id, ip: ip ?? null } });
-    return { ...tokens, user: this.publicUser({ ...user, role }) };
+    return { ...tokens, user: this.publicUser(effectiveUser) };
   }
 
   /** 原子递增失败次数，达阈值则锁定（Prisma increment 防竞态） */

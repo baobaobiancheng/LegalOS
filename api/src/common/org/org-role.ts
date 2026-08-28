@@ -17,26 +17,34 @@ function parseRoleMap(raw: string): Record<string, Role> {
   return map;
 }
 
+function personalRole(
+  identity: string | undefined,
+  config: Pick<ConfigService, 'get'>,
+): Role | undefined {
+  if (!identity) return undefined;
+  return parseRoleMap(config.get('CAS_ROLE_MAP') || '')[identity.trim().toLowerCase()];
+}
+
+function departmentRole(
+  dept: string | undefined,
+  config: Pick<ConfigService, 'get'>,
+): Role | undefined {
+  if (!dept) return undefined;
+  return parseRoleMap(config.get('CAS_DEPT_MAP') || '')[dept.trim().toLowerCase()];
+}
+
 export function resolveOrgRole(
   identity: string | undefined,
   dept: string | undefined,
   config: Pick<ConfigService, 'get'>,
 ): Role {
-  if (identity) {
-    const personal = parseRoleMap(config.get('CAS_ROLE_MAP') || '')[identity.trim().toLowerCase()];
-    if (personal) return personal;
-  }
-  if (dept) {
-    const deptRole = parseRoleMap(config.get('CAS_DEPT_MAP') || '')[dept.trim()];
-    if (deptRole) return deptRole;
-  }
-  return 'business';
+  return personalRole(identity, config) ?? departmentRole(dept, config) ?? 'business';
 }
 
 /**
  * 应用组织架构角色（用户决策 2026-08-11）：
- * 已有 admin 角色【不降级】——平台管理员是手动/种子授予的系统级角色，不跟组织架构走；
- * 组织同步/登录只赋予非 admin 角色。移除 admin 需手动操作。
+ * 个人显式映射是管理员授权的权威配置，可以晋升或降级任何已有角色；
+ * 未配置个人映射时，已有 admin 仍受保护，不会因部门同步或缺少部门而降级。
  */
 export function applyOrgRole(
   existingRole: Role,
@@ -44,6 +52,8 @@ export function applyOrgRole(
   dept: string | undefined,
   config: Pick<ConfigService, 'get'>,
 ): Role {
+  const personal = personalRole(identity, config);
+  if (personal) return personal;
   if (existingRole === 'admin') return 'admin';
-  return resolveOrgRole(identity, dept, config);
+  return departmentRole(dept, config) ?? 'business';
 }

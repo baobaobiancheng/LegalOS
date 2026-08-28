@@ -89,6 +89,7 @@ describe('AuthService.casLogin（账号密码/方式一）', () => {
     const user = await ctx.service.casLogin({ username: 'junfang.zhao', password: 'pw' });
     expect(ctx.prisma.user.upsert.mock.calls[0][0].create.role).toBe('business'); // 初始
     expect(ctx.prisma.user.update).toHaveBeenCalledWith(expect.objectContaining({ data: { role: 'legal_lead' } }));
+    expect(ctx.jwt.signAsync).toHaveBeenNthCalledWith(1, expect.objectContaining({ role: 'legal_lead' }));
     expect(user.user.role).toBe('legal_lead');
   });
 
