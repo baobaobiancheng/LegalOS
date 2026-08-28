@@ -28,6 +28,7 @@ export type User = {
   username: string
   role: Role
   displayName: string
+  avatarUrl: string | null
 }
 
 export type ApiError = {

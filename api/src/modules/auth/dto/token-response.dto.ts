@@ -5,6 +5,7 @@ export class PublicUserDto {
   username: string;
   role: Role;
   displayName: string;
+  avatarUrl: string | null;
 }
 
 export class LoginResponseDto {

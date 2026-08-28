@@ -7,6 +7,7 @@ import { Role } from '@prisma/client';
  * 登录(casLogin)与钉钉同步(绑定/重算/解绑)共用同一解析器，保证角色判定一致（review 2026-08-11 P1）。
  */
 const VALID_ROLES = new Set<Role>(['admin', 'legal_bp', 'legal_lead', 'business']);
+type DepartmentInput = string | readonly string[] | undefined;
 
 function parseRoleMap(raw: string): Record<string, Role> {
   const map: Record<string, Role> = {};
@@ -25,17 +26,49 @@ function personalRole(
   return parseRoleMap(config.get('CAS_ROLE_MAP') || '')[identity.trim().toLowerCase()];
 }
 
+function normalizeDepartments(dept: DepartmentInput): string[] {
+  const values = Array.isArray(dept) ? dept : dept ? [dept] : [];
+  const seen = new Set<string>();
+  const departments: string[] = [];
+  for (const value of values) {
+    const normalized = value?.trim();
+    const key = normalized?.toLowerCase();
+    if (!normalized || !key || seen.has(key)) continue;
+    seen.add(key);
+    departments.push(normalized);
+  }
+  return departments;
+}
+
 function departmentRole(
-  dept: string | undefined,
+  dept: DepartmentInput,
   config: Pick<ConfigService, 'get'>,
 ): Role | undefined {
-  if (!dept) return undefined;
-  return parseRoleMap(config.get('CAS_DEPT_MAP') || '')[dept.trim().toLowerCase()];
+  const roleMap = parseRoleMap(config.get('CAS_DEPT_MAP') || '');
+  for (const department of normalizeDepartments(dept)) {
+    const role = roleMap[department.toLowerCase()];
+    if (role) return role;
+  }
+  return undefined;
+}
+
+/**
+ * 多部门成员的有效部门：优先选择命中角色映射的部门，避免兼任部门覆盖法务主部门；
+ * 都未命中时稳定回退到通讯录顺序中的第一个部门。
+ */
+export function selectOrgDepartment(
+  dept: DepartmentInput,
+  config: Pick<ConfigService, 'get'>,
+): string | undefined {
+  const departments = normalizeDepartments(dept);
+  if (!departments.length) return undefined;
+  const roleMap = parseRoleMap(config.get('CAS_DEPT_MAP') || '');
+  return departments.find((department) => roleMap[department.toLowerCase()]) ?? departments[0];
 }
 
 export function resolveOrgRole(
   identity: string | undefined,
-  dept: string | undefined,
+  dept: DepartmentInput,
   config: Pick<ConfigService, 'get'>,
 ): Role {
   return personalRole(identity, config) ?? departmentRole(dept, config) ?? 'business';
@@ -49,7 +82,7 @@ export function resolveOrgRole(
 export function applyOrgRole(
   existingRole: Role,
   identity: string | undefined,
-  dept: string | undefined,
+  dept: DepartmentInput,
   config: Pick<ConfigService, 'get'>,
 ): Role {
   const personal = personalRole(identity, config);

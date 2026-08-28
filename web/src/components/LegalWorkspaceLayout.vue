@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import bairongMark from '../assets/bairong-intelligence-mark.png'
 import { useAuthStore } from '../stores/auth'
+import UserAvatar from './UserAvatar.vue'
 
 const props = defineProps<{
   activeKey: 'projects' | 'research' | 'skills'
@@ -116,7 +117,12 @@ async function handleLogout() {
       </div>
 
       <div class="workspace-user">
-        <span class="workspace-avatar">{{ auth.user?.displayName?.[0] || '法' }}</span>
+        <UserAvatar
+          class="workspace-avatar"
+          :src="auth.user?.avatarUrl"
+          :name="auth.user?.displayName"
+          fallback="法"
+        />
         <span class="workspace-user-copy">
           <strong>{{ auth.user?.displayName || '法务用户' }}</strong>
           <small>{{ roleLabel }}</small>

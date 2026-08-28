@@ -3,6 +3,7 @@ import { computed, useSlots } from 'vue'
 import { useRouter } from 'vue-router'
 import bairongMark from '../assets/bairong-intelligence-mark.png'
 import { useAuthStore } from '../stores/auth'
+import UserAvatar from './UserAvatar.vue'
 
 defineProps<{
   activeKey: 'consult' | 'contract' | 'records'
@@ -118,7 +119,12 @@ async function handleLogout() {
       </div>
 
       <div class="workspace-user">
-        <span class="workspace-avatar">{{ auth.user?.displayName?.[0] || '业' }}</span>
+        <UserAvatar
+          class="workspace-avatar"
+          :src="auth.user?.avatarUrl"
+          :name="auth.user?.displayName"
+          fallback="业"
+        />
         <span class="workspace-user-copy">
           <strong>{{ auth.user?.displayName || '业务用户' }}</strong>
           <small>业务人员</small>

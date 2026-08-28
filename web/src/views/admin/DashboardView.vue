@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import bairongMark from '../../assets/bairong-intelligence-mark.png'
 import { RequestError, request } from '../../api/client'
 import ErrorState from '../../components/ErrorState.vue'
+import UserAvatar from '../../components/UserAvatar.vue'
 import { useAuthStore } from '../../stores/auth'
 
 type TrendItem = { date: string; created: number; returned: number }
@@ -221,7 +222,12 @@ onBeforeUnmount(() => {
         </button>
       </nav>
       <div class="admin-user">
-        <span class="admin-avatar">{{ auth.user?.displayName?.[0] || '管' }}</span>
+        <UserAvatar
+          class="admin-avatar"
+          :src="auth.user?.avatarUrl"
+          :name="auth.user?.displayName"
+          fallback="管"
+        />
         <span class="admin-user-copy"><strong>{{ auth.user?.displayName || '系统管理员' }}</strong><small>管理员</small></span>
         <button
           class="admin-logout"

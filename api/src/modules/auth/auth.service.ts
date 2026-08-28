@@ -60,6 +60,7 @@ export class AuthService {
       username: user.username,
       role: user.role,
       displayName: user.displayName,
+      avatarUrl: user.avatarUrl,
     };
   }
 

@@ -53,7 +53,7 @@ describe('MembersService', () => {
   it('syncContacts：staging 批处理 + 软失效 + 唯一姓名自动绑定 + 重名跳过', async () => {
     dingtalk.syncContacts.mockResolvedValue({
       contacts: [
-        { userId: 'U-1', name: '彭宇欣', mobile: '138' },
+        { userId: 'U-1', name: '彭宇欣', mobile: '138', avatarUrl: 'https://img.example/u-1.png' },
         { userId: 'U-2', name: '重名用户', mobile: '139' },
       ],
       complete: true,
@@ -70,7 +70,7 @@ describe('MembersService', () => {
       ])
       .mockResolvedValueOnce([]);
     prisma.dingTalkContactStaging.findMany.mockResolvedValue([
-      { userId: 'U-1', name: '彭宇欣', mobile: '138' },
+      { userId: 'U-1', name: '彭宇欣', mobile: '138', avatarUrl: 'https://img.example/u-1.png' },
       { userId: 'U-2', name: '重名用户', mobile: '139' },
     ]);
 
@@ -84,7 +84,10 @@ describe('MembersService', () => {
     expect(prisma.user.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'u-bp' },
-        data: expect.objectContaining({ dingtalkUserId: 'U-1' }),
+        data: expect.objectContaining({
+          dingtalkUserId: 'U-1',
+          avatarUrl: 'https://img.example/u-1.png',
+        }),
       }),
     );
     // 系统重名 → 不自动绑定，进 ambiguous
@@ -148,13 +151,74 @@ describe('MembersService', () => {
     }), prisma);
   });
 
+  it('syncContacts：多部门成员优先落库命中角色映射的部门', async () => {
+    dingtalk.syncContacts.mockResolvedValue({
+      contacts: [{
+        userId: 'dong.chen',
+        name: '陈东',
+        avatarUrl: 'https://img.example/dong.png',
+        department: '华西南法务BP',
+        departments: ['华西南法务BP', '合规一组'],
+      }],
+      complete: true,
+      departmentCount: 2,
+      pageCount: 2,
+      warnings: [],
+    });
+    prisma.dingTalkContactStaging.findMany.mockResolvedValue([
+      {
+        userId: 'dong.chen',
+        name: '陈东',
+        mobile: null,
+        avatarUrl: 'https://img.example/dong.png',
+        department: '合规一组',
+      },
+    ]);
+    prisma.user.findMany
+      .mockResolvedValueOnce([{
+        id: 'u-dong', username: 'dong.chen', displayName: '陈东', casUsername: 'dong.chen',
+        role: 'business', avatarUrl: null, department: '华西南法务BP',
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    const multiDepartmentService = new MembersService(
+      prisma as any,
+      dingtalk as any,
+      { get: (key: string) => key === 'CAS_DEPT_MAP' ? '合规一组:legal_bp' : '' } as any,
+    );
+
+    const result = await multiDepartmentService.syncContacts();
+
+    expect(result.complete).toBe(true);
+    expect(prisma.dingTalkContactStaging.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({
+        userId: 'dong.chen',
+        avatarUrl: 'https://img.example/dong.png',
+        department: '合规一组',
+      })],
+    });
+    expect(prisma.user.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'u-dong' },
+      data: expect.objectContaining({
+        avatarUrl: 'https://img.example/dong.png',
+        department: '合规一组',
+        role: 'legal_bp',
+      }),
+    }));
+  });
+
   it('bind：快照不存在拒绝', async () => {
     prisma.dingTalkContact.findUnique.mockResolvedValue(null);
     await expect(service.bind('u-1', 'U-nope')).rejects.toThrow('请先同步');
   });
 
   it('bind：成功写入 userid + phone（联系人 active 且未被占用）', async () => {
-    prisma.dingTalkContact.findUnique.mockResolvedValue({ userId: 'U-1', mobile: '138', isActive: true });
+    prisma.dingTalkContact.findUnique.mockResolvedValue({
+      userId: 'U-1',
+      mobile: '138',
+      avatarUrl: 'https://img.example/u-1.png',
+      isActive: true,
+    });
     prisma.user.findUnique.mockResolvedValue({ id: 'u-1', displayName: '彭宇欣' });
     prisma.user.findFirst.mockResolvedValue(null); // 联系人未被其他用户绑定
     prisma.user.update.mockResolvedValue({ id: 'u-1', displayName: '彭宇欣', dingtalkUserId: 'U-1' });
@@ -168,6 +232,7 @@ describe('MembersService', () => {
         data: expect.objectContaining({
           dingtalkUserId: 'U-1',
           dingtalkPhone: '138',
+          avatarUrl: 'https://img.example/u-1.png',
           role: 'business', // 手动绑定应用组织架构角色映射（review 2026-08-11）
         }),
       }),
@@ -186,12 +251,12 @@ describe('MembersService', () => {
 
   it('provision：首次登录前创建 CAS 用户、绑定钉钉部门并计算角色', async () => {
     prisma.dingTalkContact.findUnique.mockResolvedValue({
-      userId: 'DING-1', name: '王君', mobile: '138', department: '合规一组', isActive: true,
+      userId: 'DING-1', name: '王君', mobile: '138', avatarUrl: 'https://img.example/wang.png', department: '合规一组', isActive: true,
     });
     prisma.user.findFirst.mockResolvedValue(null);
     prisma.user.create.mockResolvedValue({
       id: 'user-new', username: 'jun.wang1', casUsername: 'jun.wang1', displayName: '王君',
-      role: 'legal_bp', department: '合规一组', dingtalkUserId: 'DING-1', dingtalkPhone: '138',
+      role: 'legal_bp', avatarUrl: 'https://img.example/wang.png', department: '合规一组', dingtalkUserId: 'DING-1', dingtalkPhone: '138',
     });
     const provisionService = new MembersService(
       prisma as any,
@@ -209,9 +274,15 @@ describe('MembersService', () => {
         role: 'legal_bp',
         department: '合规一组',
         dingtalkUserId: 'DING-1',
+        avatarUrl: 'https://img.example/wang.png',
       }),
     });
-    expect(result).toMatchObject({ id: 'user-new', loginStatus: 'pending', role: 'legal_bp' });
+    expect(result).toMatchObject({
+      id: 'user-new',
+      avatarUrl: 'https://img.example/wang.png',
+      loginStatus: 'pending',
+      role: 'legal_bp',
+    });
   });
 
   it('provision：CAS 账号已存在时拒绝重复预开通', async () => {
@@ -269,7 +340,7 @@ describe('MembersService', () => {
     prisma.user.findMany.mockResolvedValue([
       {
         id: 'user-pending', username: 'jun.wang1', casUsername: 'jun.wang1', displayName: '王君',
-        role: 'legal_bp', department: '合规一组', dingtalkUserId: 'DING-1', loginAudits: [],
+        role: 'legal_bp', avatarUrl: 'https://img.example/wang.png', department: '合规一组', dingtalkUserId: 'DING-1', loginAudits: [],
       },
       {
         id: 'user-active', username: 'dong.chen', casUsername: 'dong.chen', displayName: '陈东',
@@ -280,7 +351,11 @@ describe('MembersService', () => {
     const result = await service.listUsers();
 
     expect(result.items).toEqual([
-      expect.objectContaining({ id: 'user-pending', loginStatus: 'pending' }),
+      expect.objectContaining({
+        id: 'user-pending',
+        avatarUrl: 'https://img.example/wang.png',
+        loginStatus: 'pending',
+      }),
       expect.objectContaining({ id: 'user-active', loginStatus: 'active' }),
     ]);
     expect(result.items[0]).not.toHaveProperty('loginAudits');
@@ -378,7 +453,15 @@ describe('MembersService', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
-        { id: 'u-old', username: 'old.staff', dingtalkUserId: 'U-X', casUsername: null, role: 'legal_bp' },
+        {
+          id: 'u-old',
+          username: 'old.staff',
+          dingtalkUserId: 'U-X',
+          casUsername: null,
+          role: 'legal_bp',
+          avatarUrl: 'https://img.example/old.png',
+          department: '法务部',
+        },
       ]);
 
     const result = await service.syncContacts();
@@ -388,7 +471,7 @@ describe('MembersService', () => {
     expect(prisma.user.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'u-old' },
-        data: expect.objectContaining({ department: null, role: 'business' }),
+        data: expect.objectContaining({ avatarUrl: null, department: null, role: 'business' }),
       }),
     );
     // staging 清理:成功保留本批、删旧批
@@ -416,7 +499,12 @@ describe('MembersService', () => {
     await service.unbind('u-seed');
     expect(prisma.user.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ dingtalkUserId: null, department: null, role: 'business' }),
+        data: expect.objectContaining({
+          dingtalkUserId: null,
+          avatarUrl: null,
+          department: null,
+          role: 'business',
+        }),
       }),
     );
   });

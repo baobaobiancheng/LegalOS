@@ -31,6 +31,17 @@ function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>):
   ).then(() => results);
 }
 
+/** 只接收钉钉返回的 HTTPS 头像地址，避免将非网络协议透传到前端。 */
+function normalizeAvatarUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value.trim() || value.length > 4096) return undefined;
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === 'https:' ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * 钉钉企业内部应用适配器（2026-08-05 钉钉拉群模块，/review 2026-08-05 修正链路注释）
  *
@@ -191,12 +202,17 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
   async syncContacts(): Promise<ContactSyncResult> {
     // 两阶段有界并发（2026-08-06 提速：原串行递归约 94 次请求 ≈45s → 并发 6 ≈10s）：
     //   ① BFS + mapLimit 枚举部门树（listsub，seenDepts 防环 + 深度上限 8）
-    //   ② mapLimit 逐部门分页拉用户（user/list，userid 去重 + 过滤机器人/离职）
-    // 并发内 seen/contacts 变更均为同步语句（循环内无 await 交错），JS 单线程保证安全。
+    //   ② mapLimit 逐部门分页拉用户（user/list，userid 汇总多部门 + 过滤机器人/离职）
+    // 同一员工可同时出现在多个部门，不能“首次出现即去重”，否则并发返回顺序会导致部门/角色随机。
     // P1-07：跟踪深度/分页截断，达到上限即判定不完整并抛 DingTalkSyncIncompleteError，
     // 调用方（MembersService）据此把批次标记 failed，不动旧快照。
-    const seen = new Set<string>();
-    const contacts: ContactInfo[] = [];
+    const contactsByUser = new Map<string, {
+      userId: string;
+      name: string;
+      mobile?: string;
+      avatarUrl?: string;
+      departmentIds: Set<number>;
+    }>();
     const deptNames = new Map<number, string>(); // 部门 id → 部门名（2026-08-11 存部门）
     let truncatedDepth = false;
     let truncatedPage = false;
@@ -251,20 +267,46 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
         pageCount++;
         const list: any[] = res.result?.list || [];
         for (const u of list) {
-          if (!u.userid || seen.has(u.userid)) continue; // 跨部门重复按 userid 去重
+          if (!u.userid) continue;
           if (this.isBlockedContact(u)) continue; // 排除机器人/离职/停用/测试账号
-          seen.add(u.userid);
-          contacts.push({
+          const contact = contactsByUser.get(u.userid) ?? {
             userId: u.userid,
             name: u.name || '',
             mobile: u.mobile,
-            department: deptNames.get(deptId), // 该用户所属部门名
-          });
+            avatarUrl: normalizeAvatarUrl(u.avatar),
+            departmentIds: new Set<number>(),
+          };
+          if (!contact.name && u.name) contact.name = u.name;
+          if (!contact.mobile && u.mobile) contact.mobile = u.mobile;
+          if (!contact.avatarUrl && u.avatar) contact.avatarUrl = normalizeAvatarUrl(u.avatar);
+          contact.departmentIds.add(deptId);
+          if (Array.isArray(u.dept_id_list)) {
+            for (const id of u.dept_id_list) {
+              const parsed = Number(id);
+              if (Number.isFinite(parsed)) contact.departmentIds.add(parsed);
+            }
+          }
+          contactsByUser.set(u.userid, contact);
         }
         if (!res.result?.has_more) break;
         cursor = res.result?.next_cursor ?? 0;
         if (page === 49) truncatedPage = true; // 达 50 页上限且仍 has_more → 不完整
       }
+    });
+
+    const contacts: ContactInfo[] = [...contactsByUser.values()].map((contact) => {
+      const departments = allDepts
+        .filter((deptId) => contact.departmentIds.has(deptId))
+        .map((deptId) => deptNames.get(deptId))
+        .filter((name): name is string => Boolean(name));
+      return {
+        userId: contact.userId,
+        name: contact.name,
+        mobile: contact.mobile,
+        avatarUrl: contact.avatarUrl,
+        department: departments[0],
+        departments,
+      };
     });
 
     if (truncatedDepth || truncatedPage) {

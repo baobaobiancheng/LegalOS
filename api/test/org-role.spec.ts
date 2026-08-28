@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveOrgRole, applyOrgRole } from '../src/common/org/org-role';
+import { resolveOrgRole, applyOrgRole, selectOrgDepartment } from '../src/common/org/org-role';
 
 const cfg = (over: Record<string, string> = {}) => ({
   get: (k: string) =>
@@ -30,5 +30,15 @@ describe('org-role 组织架构角色解析', () => {
 
   it('部门名称匹配忽略大小写并清理首尾空格', () => {
     expect(resolveOrgRole('staff', ' 合规一组 ', cfg())).toBe('legal_bp');
+  });
+
+  it('多部门成员：任一部门命中映射即获得角色，并选中该部门展示', () => {
+    const departments = ['华西南法务BP', '合规一组'];
+    expect(resolveOrgRole('dong.chen', departments, cfg())).toBe('legal_bp');
+    expect(selectOrgDepartment(departments, cfg())).toBe('合规一组');
+  });
+
+  it('多部门都未命中映射时，稳定回退到第一个部门', () => {
+    expect(selectOrgDepartment(['华西南法务BP', '平台职能部'], cfg())).toBe('华西南法务BP');
   });
 });

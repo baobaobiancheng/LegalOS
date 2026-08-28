@@ -22,6 +22,7 @@ const mockUser = (over: any = {}) => ({
   role: 'business' as const,
   isActive: true,
   casUsername: 'zhenghe.bao',
+  avatarUrl: null,
   ...over,
 });
 
@@ -109,7 +110,7 @@ describe('AuthService.casLogin（账号密码/方式一）', () => {
     ctx.cas.loginWithPassword.mockResolvedValue({ username: 'jun.wang1', name: '王君' });
     const provisioned = mockUser({
       id: 'user-provisioned', username: 'jun.wang1', casUsername: 'jun.wang1', displayName: '王君',
-      role: 'legal_bp', department: '合规一组', dingtalkUserId: 'DING-1',
+      role: 'legal_bp', avatarUrl: 'https://img.example/wang.png', department: '合规一组', dingtalkUserId: 'DING-1',
     });
     ctx.prisma.user.findUnique.mockResolvedValue(provisioned);
     ctx.prisma.user.upsert.mockResolvedValue(provisioned);
@@ -125,7 +126,11 @@ describe('AuthService.casLogin（账号密码/方式一）', () => {
       sub: 'user-provisioned',
       role: 'legal_bp',
     }));
-    expect(result.user).toMatchObject({ id: 'user-provisioned', role: 'legal_bp' });
+    expect(result.user).toMatchObject({
+      id: 'user-provisioned',
+      avatarUrl: 'https://img.example/wang.png',
+      role: 'legal_bp',
+    });
   });
 
   it('个人映射优先于部门映射', async () => {

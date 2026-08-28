@@ -18,7 +18,10 @@ export interface ContactInfo {
   userId: string;
   name: string;
   mobile?: string;
+  avatarUrl?: string;
   department?: string;
+  /** 同一员工可同时隶属多个钉钉部门；department 为后续业务选定的有效部门。 */
+  departments?: string[];
 }
 
 /** 通讯录同步结构化结果（P1-07）：complete=false 时不允许失效对账/自动绑定 */

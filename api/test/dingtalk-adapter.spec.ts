@@ -119,7 +119,13 @@ describe('DingTalkAdapterImpl', () => {
             result: {
               has_more: false,
               list: [
-                { userid: 'zhang.fang', name: '赵俊芳', active: true, disable_status: false }, // 真人 → 保留
+                {
+                  userid: 'zhang.fang',
+                  name: '赵俊芳',
+                  avatar: 'http://insecure.example/avatar.png',
+                  active: true,
+                  disable_status: false,
+                }, // 真人 → 保留，非 HTTPS 头像不透传
                 { userid: 'hr', name: '人力资源部', active: true, disable_status: false }, // BLOCKED_USERIDS → 剔除
                 { userid: 'U-disabled', name: '已离职', active: true, disable_status: true }, // 离职 → 剔除
                 { userid: 'U-inactive', name: '未激活', active: false, disable_status: false }, // 停用 → 剔除
@@ -133,6 +139,7 @@ describe('DingTalkAdapterImpl', () => {
     const adapter = new DingTalkAdapterImpl();
     const contacts = (await adapter.syncContacts()).contacts;
     expect(contacts.map((c) => c.userId)).toEqual(['zhang.fang']);
+    expect(contacts[0].avatarUrl).toBeUndefined();
   });
 
   it('syncContacts：跨部门重复 userid 去重 + 分页翻页', async () => {
@@ -176,6 +183,57 @@ describe('DingTalkAdapterImpl', () => {
     // 3 个部门（1, 11, 22）× 2 页 = 6 次 user/list 调用，U-1 重复出现仅保留一次
     expect(contacts.map((c) => c.userId).sort()).toEqual(['U-1', 'U-2']);
     expect(calls.length).toBe(6); // 部门 1/11/22 × 分页 2 页
+  });
+
+  it('syncContacts：同一 userid 在多部门中出现时汇总全部部门', async () => {
+    mockFetch(async (url: string, init?: any) => {
+      const body = JSON.parse(init?.body || '{}');
+      if (url.includes('/department/get')) {
+        return { json: async () => ({ errcode: 0, result: { name: '百融智能' } }) };
+      }
+      if (url.includes('/department/listsub')) {
+        if (body.dept_id === 1) {
+          return {
+            json: async () => ({
+              errcode: 0,
+              result: [
+                { dept_id: 11, name: '合规一组' },
+                { dept_id: 22, name: '华西南法务BP' },
+              ],
+            }),
+          };
+        }
+        return { json: async () => ({ errcode: 0, result: [] }) };
+      }
+      if (url.includes('/user/list')) {
+        return {
+          json: async () => ({
+            errcode: 0,
+            result: {
+              has_more: false,
+              list: body.dept_id === 1
+                ? []
+                : [{
+                    userid: 'dong.chen',
+                    name: '陈东',
+                    avatar: 'https://static.dingtalk.com/avatar/dong.png',
+                    dept_id_list: [11, 22],
+                  }],
+            },
+          }),
+        };
+      }
+      return { json: async () => ({ errcode: 0 }) };
+    });
+
+    const contacts = (await new DingTalkAdapterImpl().syncContacts()).contacts;
+    expect(contacts).toHaveLength(1);
+    expect(contacts[0]).toEqual(expect.objectContaining({
+      userId: 'dong.chen',
+      avatarUrl: 'https://static.dingtalk.com/avatar/dong.png',
+      department: '合规一组',
+      departments: ['合规一组', '华西南法务BP'],
+    }));
   });
 
   it('群名 20 字截断（钉钉限制 ≤30，按 20 截断）', async () => {

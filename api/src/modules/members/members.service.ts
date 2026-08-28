@@ -10,7 +10,7 @@ import { Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Role } from '@prisma/client';
 import * as crypto from 'node:crypto';
-import { applyOrgRole } from '../../common/org/org-role';
+import { applyOrgRole, selectOrgDepartment } from '../../common/org/org-role';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   DINGTALK_ADAPTER,
@@ -58,7 +58,14 @@ export class MembersService {
     const batch = await this.prisma.dingTalkSyncBatch.create({ data: {} });
     try {
       const result = await this.dingtalk.syncContacts();
-      const contacts = result.contacts;
+      const contacts = result.contacts.map((contact) => ({
+        ...contact,
+        // 多部门成员优先展示/使用命中 CAS_DEPT_MAP 的部门，兼任部门不再覆盖法务角色。
+        department: selectOrgDepartment(
+          contact.departments?.length ? contact.departments : contact.department,
+          this.config,
+        ),
+      }));
       if (!result.complete) {
         throw new Error('钉钉通讯录返回不完整，拒绝覆盖上一成功快照');
       }
@@ -72,6 +79,7 @@ export class MembersService {
             userId: c.userId,
             name: c.name,
             mobile: c.mobile ?? null,
+            avatarUrl: c.avatarUrl ?? null,
             department: c.department ?? null,
           })),
         });
@@ -82,12 +90,13 @@ export class MembersService {
       const { autoBound, ambiguous } = await this.prisma.$transaction(async (tx) => {
         const staged = await tx.dingTalkContactStaging.findMany({
           where: { batchId: batch.id },
-          select: { userId: true, name: true, mobile: true, department: true },
+          select: { userId: true, name: true, mobile: true, avatarUrl: true, department: true },
         });
         const stagedContacts: ContactInfo[] = staged.map((c) => ({
           userId: c.userId,
           name: c.name,
           mobile: c.mobile ?? undefined,
+          avatarUrl: c.avatarUrl ?? undefined,
           department: c.department ?? undefined,
         }));
 
@@ -219,13 +228,14 @@ export class MembersService {
     if (typeof tx.$executeRaw === 'function') {
       await tx.$executeRaw`
         INSERT INTO dingtalk_contacts
-          (id, user_id, name, mobile, department, is_active, last_seen_batch_id, last_seen_at, synced_at)
-        SELECT UUID(), user_id, name, mobile, department, TRUE, batch_id, NOW(), NOW()
+          (id, user_id, name, mobile, avatar_url, department, is_active, last_seen_batch_id, last_seen_at, synced_at)
+        SELECT UUID(), user_id, name, mobile, avatar_url, department, TRUE, batch_id, NOW(), NOW()
         FROM dingtalk_contact_staging
         WHERE batch_id = ${batchId}
         ON DUPLICATE KEY UPDATE
           name = VALUES(name),
           mobile = VALUES(mobile),
+          avatar_url = VALUES(avatar_url),
           department = VALUES(department),
           is_active = TRUE,
           last_seen_batch_id = VALUES(last_seen_batch_id),
@@ -242,8 +252,8 @@ export class MembersService {
         chunk.map((c) =>
           tx.dingTalkContact.upsert({
             where: { userId: c.userId },
-            update: { name: c.name, mobile: c.mobile ?? null, department: c.department ?? null, isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
-            create: { userId: c.userId, name: c.name, mobile: c.mobile ?? null, department: c.department ?? null, isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
+            update: { name: c.name, mobile: c.mobile ?? null, avatarUrl: c.avatarUrl ?? null, department: c.department ?? null, isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
+            create: { userId: c.userId, name: c.name, mobile: c.mobile ?? null, avatarUrl: c.avatarUrl ?? null, department: c.department ?? null, isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
           }),
         ),
       );
@@ -320,6 +330,7 @@ export class MembersService {
         data: {
           dingtalkUserId: contact.userId,
           dingtalkPhone: contact.mobile ?? null,
+          avatarUrl: contact.avatarUrl ?? null,
           department: contact.department ?? null,
           role,
         },
@@ -378,7 +389,7 @@ export class MembersService {
     const stagedById = new Map(stagedContacts.map((c) => [c.userId, c]));
     const bound = (await tx.user.findMany({
       where: { dingtalkUserId: { not: null } },
-      select: { id: true, username: true, dingtalkUserId: true, casUsername: true, role: true, department: true },
+      select: { id: true, username: true, dingtalkUserId: true, casUsername: true, role: true, avatarUrl: true, department: true },
     })) ?? [];
     let refreshed = 0;
     for (const u of bound) {
@@ -388,17 +399,24 @@ export class MembersService {
         // 在岗/调岗：刷新部门 + 角色（admin 不降级）
         const role = this.orgRole(u.role, u.casUsername ?? contact.userId, contact.department);
         const department = contact.department ?? null;
-        if (u.department !== department || u.role !== role) {
-          await tx.user.update({ where: { id: u.id }, data: { department, role } });
-          await this.recordDirectoryProfileChange(tx, u, role, department, actor, request, batchId);
+        const avatarUrl = contact.avatarUrl ?? null;
+        const profileChanged = u.department !== department || u.role !== role;
+        if (profileChanged || u.avatarUrl !== avatarUrl) {
+          await tx.user.update({ where: { id: u.id }, data: { department, role, avatarUrl } });
+          if (profileChanged) {
+            await this.recordDirectoryProfileChange(tx, u, role, department, actor, request, batchId);
+          }
           refreshed++;
         }
       } else {
         // 联系人已不在本批通讯录(软失效)：回收部门 + 重算角色(仅剩个人映射或 business),admin 不降级
         const role = this.orgRole(u.role, u.casUsername ?? undefined, undefined);
-        if (u.department !== null || u.role !== role) {
-          await tx.user.update({ where: { id: u.id }, data: { department: null, role } });
-          await this.recordDirectoryProfileChange(tx, u, role, null, actor, request, batchId);
+        const profileChanged = u.department !== null || u.role !== role;
+        if (profileChanged || u.avatarUrl !== null) {
+          await tx.user.update({ where: { id: u.id }, data: { department: null, role, avatarUrl: null } });
+          if (profileChanged) {
+            await this.recordDirectoryProfileChange(tx, u, role, null, actor, request, batchId);
+          }
           refreshed++;
         }
       }
@@ -469,6 +487,7 @@ export class MembersService {
         role: true,
         casUsername: true,
         dingtalkUserId: true,
+        avatarUrl: true,
         department: true,
         loginAudits: { select: { id: true }, take: 1 },
       },
@@ -542,6 +561,7 @@ export class MembersService {
             passwordHash: crypto.randomBytes(32).toString('hex'),
             dingtalkUserId,
             dingtalkPhone: contact.mobile ?? null,
+            avatarUrl: contact.avatarUrl ?? null,
             department: contact.department ?? null,
             role,
           },
@@ -576,6 +596,7 @@ export class MembersService {
           role: created.role,
           department: created.department,
           dingtalkUserId: created.dingtalkUserId,
+          avatarUrl: created.avatarUrl,
           casUsername: created.casUsername,
           loginStatus: 'pending' as const,
         };
@@ -622,6 +643,7 @@ export class MembersService {
           data: {
             dingtalkUserId,
             dingtalkPhone: contact.mobile,
+            avatarUrl: contact.avatarUrl ?? null,
             department: contact.department ?? undefined,
             role,
           },
@@ -668,7 +690,7 @@ export class MembersService {
     await this.prisma.$transaction(async (tx) => {
       const updated = await tx.user.update({
         where: { id: userId },
-        data: { dingtalkUserId: null, dingtalkPhone: null, department: null, role },
+        data: { dingtalkUserId: null, dingtalkPhone: null, avatarUrl: null, department: null, role },
       });
       if (this.audit) {
         await this.audit.record({
@@ -700,6 +722,7 @@ export class MembersService {
       select: {
         id: true,
         displayName: true,
+        avatarUrl: true,
         dingtalkUserId: true,
         bpDomainMaps: { select: { domain: true } },
       },
@@ -709,6 +732,7 @@ export class MembersService {
       users: users.map((u) => ({
         id: u.id,
         displayName: u.displayName,
+        avatarUrl: u.avatarUrl,
         bound: !!u.dingtalkUserId,
         domains: u.bpDomainMaps.map((m) => m.domain),
       })),
