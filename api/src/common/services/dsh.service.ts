@@ -51,6 +51,21 @@ export class DshExecutionHandle extends EventEmitter {
   }
 }
 
+/**
+ * 法规证据闸门拦截模型回答时，保留本轮已完成的受控工具调用。
+ * 上层只能用 result 构建确定性降级结果，不得展示未通过核验的 result.text。
+ */
+export class DshResearchEvidenceError extends Error {
+  constructor(message: string, public readonly result: DshExecutionResult) {
+    super(message);
+    this.name = 'DshResearchEvidenceError';
+  }
+}
+
+export function partialResearchResult(error: unknown): DshExecutionResult | undefined {
+  return error instanceof DshResearchEvidenceError ? error.result : undefined;
+}
+
 /** AI 禁用/排队被取消时返回的伪句柄：立即 emit 对应事件，调用方走既有失败/取消分支。 */
 function disabledHandle(message: string): DshExecutionHandle {
   const handle = new DshExecutionHandle();
@@ -384,15 +399,16 @@ export class DshService implements OnModuleDestroy {
       const reason = this.readTurnEndReason(agent.session.events);
       if (reason?.kind === 'completed') {
         const finalText = this.readFinalAssistantText(agent.session.events) || fullText;
-        if (params.researchCapability && params.requireResearchTool) {
-          validateResearchEvidence(params.researchCapability, finalText, toolCalls, toolResults);
-        }
-        handle.emit('done', {
+        const completion = {
           text: finalText,
           dshSessionId: String(dshSessionId),
           toolCalls,
           toolResults,
-        } satisfies DshExecutionResult);
+        } satisfies DshExecutionResult;
+        if (params.researchCapability && params.requireResearchTool) {
+          validateResearchCompletion(params.researchCapability, completion);
+        }
+        handle.emit('done', completion);
       } else if (reason?.kind === 'aborted') {
         if (policyFailure) handle.emit('error', policyFailure);
         else handle.emit('cancelled');
@@ -513,6 +529,18 @@ export function validateResearchEvidence(
     if (quotedText.length < 8 || !sourceText.includes(quotedText)) {
       throw new Error(`dsh Agent 法规原文与权威详情不匹配：${quote.recordId}`);
     }
+  }
+}
+
+export function validateResearchCompletion(
+  capability: NonNullable<DshOptions['researchCapability']>,
+  completion: DshExecutionResult,
+): void {
+  try {
+    validateResearchEvidence(capability, completion.text, completion.toolCalls, completion.toolResults);
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    throw new DshResearchEvidenceError(failure.message, completion);
   }
 }
 

@@ -300,14 +300,16 @@ export class ConsultationReplyOrchestrator {
                 });
               }
               if (runId && this.audit) {
+                const degraded = child.__researchDegraded as { level?: string; reasonCode?: string } | undefined;
                 await this.audit.record({
                   actor: { type: 'system' },
-                  action: 'ai.run.succeeded',
+                  action: degraded ? 'ai.run.degraded' : 'ai.run.succeeded',
                   resourceType: 'consultation_run',
                   resourceId: runId,
                   projectId,
                   source: capability === 'general' ? 'api' : 'dsh',
-                  outcome: 'success',
+                  outcome: degraded ? 'partial' : 'success',
+                  reasonCode: degraded?.reasonCode ?? null,
                   correlationId: child.__researchTrace?.dshSessionId ?? runId,
                   after: { status: 'succeeded', answerMessageId, modelVersion, toolSummary, outputHash },
                   metadata: {
@@ -317,6 +319,7 @@ export class ConsultationReplyOrchestrator {
                     outputHash,
                     answerMessageId,
                     dshSessionId: child.__researchTrace?.dshSessionId ?? null,
+                    ...(degraded ? { fallbackLevel: degraded.level ?? null } : {}),
                   },
                   retentionClass: 'ai',
                 }, tx);

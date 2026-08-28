@@ -60,6 +60,52 @@ describe('ConsultationReplyOrchestrator 审计关联', () => {
     }), prisma);
   });
 
+  it('业务咨询法规核验降级时写 partial 审计事件和原因码', async () => {
+    const child: any = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(),
+      thinking: new PassThrough(),
+      __finalText: '已保留可安全展示的法规原文',
+      __researchDegraded: { level: 'verified_evidence', reasonCode: 'RESEARCH_CITATION_MISSING' },
+    });
+    const prisma: any = {
+      project: {
+        findUnique: vi.fn().mockResolvedValue({ extra: null, skillName: null }),
+        update: vi.fn().mockResolvedValue({}),
+      },
+      projectMessage: { create: vi.fn().mockResolvedValue({ id: 'answer-degraded' }) },
+      projectEvent: { create: vi.fn().mockResolvedValue({}) },
+      consultationRun: {
+        findUnique: vi.fn().mockResolvedValue({ id: 'run-degraded', capability: 'law_search' }),
+        findFirst: vi.fn().mockResolvedValue(null),
+        update: vi.fn().mockResolvedValue({}),
+      },
+      $transaction: vi.fn(async (callback: any) => callback(prisma)),
+    };
+    const audit = {
+      record: vi.fn().mockResolvedValue({}),
+      digestCanonical: vi.fn().mockReturnValue('degraded-output-hash'),
+    };
+    const orchestrator = new ConsultationReplyOrchestrator(
+      prisma,
+      { execute: vi.fn().mockResolvedValue(child) } as any,
+      { build: vi.fn().mockResolvedValue({ messages: [{ role: 'user', content: '法律问题' }] }) } as any,
+      { get: (_key: string, fallback?: unknown) => fallback } as any,
+      {} as any,
+      audit as any,
+    );
+
+    const result = await orchestrator.reply('p-degraded', 'message-degraded', undefined, 'run-degraded', 'law_search');
+    child.emit('close', 0);
+    await result.completion;
+
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'ai.run.degraded',
+      outcome: 'partial',
+      reasonCode: 'RESEARCH_CITATION_MISSING',
+      metadata: expect.objectContaining({ fallbackLevel: 'verified_evidence' }),
+    }), prisma);
+  });
+
   it('AI 执行器启动失败时，Run 与 ai.run.failed 在同一事务落库', async () => {
     const prisma: any = {
       project: { findUnique: vi.fn().mockResolvedValue({ extra: null, skillName: null }) },

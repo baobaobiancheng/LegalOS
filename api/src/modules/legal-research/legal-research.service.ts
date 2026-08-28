@@ -4,15 +4,20 @@ import { createHash, randomUUID } from 'crypto';
 import { BaijianError } from '../../common/baijian/baijian.types';
 import { CachedLegalResearchGateway } from '../../common/baijian/cached-legal-research.gateway';
 import { DshExecutionResult } from '../../common/services/dsh-agent.types';
-import { DshService } from '../../common/services/dsh.service';
+import { DshService, partialResearchResult } from '../../common/services/dsh.service';
 import {
+  buildAiLawResearchFallback,
   buildStandaloneAiLawResearchPrompt,
   parseAiLawResearchReport,
 } from '../../common/services/ai-law-research-report';
 import { AuditService } from '../../common/audit/audit.service';
 import { AuditRequestContext } from '../../common/audit/audit.types';
 import { buildResearchTrace } from '../project/application/research-trace';
-import { classifyResearchError, publicResearchError } from '../project/application/consultation-execution.router';
+import {
+  classifyResearchError,
+  publicResearchDegradedWarning,
+  publicResearchError,
+} from '../project/application/consultation-execution.router';
 import {
   AiLawReportDownloadDto,
   AiLawResearchDto,
@@ -90,6 +95,7 @@ export class LegalResearchService {
       retentionClass: 'ai',
     });
 
+    let completedResult: DshExecutionResult | undefined;
     try {
       const handle = await this.dsh.executeStream(
         buildStandaloneAiLawResearchPrompt(query, this.dsh.getToolCallLimit()),
@@ -102,6 +108,7 @@ export class LegalResearchService {
         },
       );
       const result = await completionOf(handle);
+      completedResult = result;
       const parsed = parseAiLawResearchReport(result.text, result.toolResults, query);
       const trace = buildResearchTrace('law_search', result, parsed.report);
       await this.audit.record({
@@ -125,6 +132,39 @@ export class LegalResearchService {
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
       const reasonCode = classifyResearchError(failure);
+      const fallbackResult = completedResult ?? partialResearchResult(error);
+      const fallback = fallbackResult
+        ? buildAiLawResearchFallback(query, fallbackResult, reasonCode)
+        : undefined;
+      if (fallback && fallbackResult) {
+        const trace = buildResearchTrace('law_search', fallbackResult, fallback.report);
+        await this.audit.record({
+          actor,
+          action: 'ai.legal_research.degraded',
+          resourceType: 'ai_legal_research_report',
+          resourceId: correlationId,
+          source: 'dsh',
+          outcome: 'partial',
+          reasonCode,
+          request,
+          correlationId: fallbackResult.dshSessionId,
+          after: {
+            reportId: fallbackResult.dshSessionId,
+            fallbackLevel: fallback.level,
+            verifiedSourceCount: fallback.report.metrics.verifiedSourceCount,
+            candidateCount: fallback.report.metrics.candidateCount,
+          },
+          metadata: { queryHash, toolCalls: fallbackResult.toolCalls.length },
+          retentionClass: 'ai',
+        });
+        return {
+          reportId: fallbackResult.dshSessionId,
+          report: fallback.report,
+          trace,
+          degraded: true,
+          warning: { code: reasonCode, message: publicResearchDegradedWarning(reasonCode) },
+        };
+      }
       await this.audit.record({
         actor,
         action: 'ai.legal_research.failed',

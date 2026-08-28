@@ -5,7 +5,13 @@ import type { AiLawResearchReportV1, ResearchTraceV1 } from '../types'
 import AiLawReport from './AiLawReport.vue'
 import DownloadMenu from './DownloadMenu.vue'
 
-type AiSearchResponse = { reportId: string; report: AiLawResearchReportV1; trace: ResearchTraceV1 }
+type AiSearchResponse = {
+  reportId: string
+  report: AiLawResearchReportV1
+  trace: ResearchTraceV1
+  degraded?: boolean
+  warning?: { code: string; message: string }
+}
 
 const query = ref('')
 const submittedQuery = ref('')
@@ -13,6 +19,7 @@ const followup = ref('')
 const loading = ref(false)
 const report = ref<AiLawResearchReportV1 | null>(null)
 const reportId = ref('')
+const degradedWarning = ref<AiSearchResponse['warning']>(undefined)
 const error = ref<RequestError | null>(null)
 const copied = ref(false)
 const followupInput = ref<HTMLInputElement | null>(null)
@@ -44,6 +51,7 @@ async function runSearch(nextQuery?: string) {
     })
     report.value = result.report
     reportId.value = result.reportId
+    degradedWarning.value = result.degraded ? result.warning : undefined
   } catch (cause) {
     if (abort.signal.aborted) return
     error.value = cause instanceof RequestError
@@ -165,10 +173,19 @@ onBeforeUnmount(() => activeAbort?.abort())
           重试
         </button>
       </div>
+      <div
+        v-if="degradedWarning"
+        class="ai-degraded"
+        role="status"
+      >
+        <strong>当前为安全降级结果</strong>
+        <span>{{ degradedWarning.message }}</span>
+        <small>原因代码 {{ degradedWarning.code }}</small>
+      </div>
       <header class="ai-report-heading">
         <div>
           <h2>{{ report.title }}</h2>
-          <p>检索完成 · 已核验 {{ report.metrics.verifiedSourceCount }} 部权威法规 · 生成于 {{ generatedLabel }}</p>
+          <p>{{ degradedWarning ? '证据核验未完全通过' : '检索完成' }} · 已核验 {{ report.metrics.verifiedSourceCount }} 部权威法规 · 生成于 {{ generatedLabel }}</p>
         </div>
         <div class="report-heading-actions">
           <button
@@ -293,6 +310,10 @@ onBeforeUnmount(() => activeAbort?.abort())
 .ai-error small { color: #9f6670; }
 .ai-error button { padding: 7px 14px; border: 1px solid #d73b52; border-radius: 5px; background: #fff; color: #b4233b; font: inherit; cursor: pointer; }
 .retained-report-error { margin-top: 16px; }
+.ai-degraded { display: grid; margin-top: 16px; padding: 13px 15px; gap: 4px; border: 1px solid #f2c98a; border-radius: 7px; background: #fff9ef; color: #81500c; }
+.ai-degraded strong { font-size: 13px; }
+.ai-degraded span { font-size: 12px; line-height: 1.6; }
+.ai-degraded small { color: #9a6c2e; font-size: 11px; }
 .ai-loading { display: grid; min-height: 360px; place-content: center; justify-items: center; color: #243650; text-align: center; }
 .loading-mark { width: 38px; height: 38px; margin-bottom: 18px; border: 3px solid #dbe6fa; border-top-color: #1768f2; border-radius: 50%; animation: spin .9s linear infinite; }
 .ai-loading strong { font-size: 20px; }

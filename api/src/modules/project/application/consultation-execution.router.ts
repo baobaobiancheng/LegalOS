@@ -2,12 +2,13 @@ import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { DshService } from '../../../common/services/dsh.service';
+import { DshService, partialResearchResult } from '../../../common/services/dsh.service';
 import { ConsultationChatService, ChatMessage } from '../../../common/services/consultation-chat.service';
 import { ConsultationCapability, isResearchCapability } from '../domain/consultation-capability';
 import { buildResearchTrace } from './research-trace';
 import {
   AI_LAW_REPORT_OUTPUT_RULE,
+  buildAiLawResearchFallback,
   parseAiLawResearchReport,
 } from '../../../common/services/ai-law-research-report';
 import {
@@ -51,6 +52,22 @@ export class ConsultationExecutionRouter {
     const stdout = new PassThrough();
     const thinking = new PassThrough();
     const stream: any = Object.assign(emitter, { stdout, thinking, __runId: input.runId });
+    const fallbackQuery = [...input.messages].reverse().find((message) => message.role === 'user')?.content ?? '';
+    const finishWithFallback = (result: NonNullable<ReturnType<typeof partialResearchResult>>, error: Error): boolean => {
+      if (input.capability !== 'law_search') return false;
+      const reasonCode = classifyResearchError(error);
+      const fallback = buildAiLawResearchFallback(fallbackQuery, result, reasonCode);
+      if (!fallback) return false;
+      stream.__finalText = fallback.answer;
+      stream.__researchTrace = buildResearchTrace('law_search', result, fallback.report);
+      stream.__researchDegraded = { level: fallback.level, reasonCode };
+      thinking.write('\nAI 结论未通过核验，已保留可安全展示的检索结果。');
+      stdout.write(fallback.answer);
+      stdout.end();
+      thinking.end();
+      emitter.emit('close', 0);
+      return true;
+    };
     const prompt = buildResearchPrompt(
       input.capability,
       input.messages,
@@ -97,6 +114,7 @@ export class ConsultationExecutionRouter {
         emitter.emit('close', finalText.trim() ? 0 : 1);
       } catch (error) {
         const failure = error instanceof Error ? error : new Error(String(error));
+        if (finishWithFallback(result, failure)) return;
         stream.__errorCode = classifyResearchError(failure);
         stream.__errorMessage = publicResearchError(stream.__errorCode);
         stdout.end();
@@ -111,6 +129,8 @@ export class ConsultationExecutionRouter {
       emitter.emit('close', 1);
     });
     handle.on('error', (error) => {
+      const result = partialResearchResult(error);
+      if (result && finishWithFallback(result, error)) return;
       stream.__errorCode = classifyResearchError(error);
       stream.__errorMessage = publicResearchError(stream.__errorCode);
       stdout.end();
@@ -174,4 +194,14 @@ export function publicResearchError(code: string): string {
   if (code === 'RESEARCH_EMPTY_UNDECLARED') return '未检索到法规，且回答未明确提示“无可核验来源”，本次回答已拦截';
   if (code === 'RESEARCH_REPORT_INVALID') return 'AI 搜法报告结构不完整，本次回答未保存，请重试';
   return '法律检索暂不可用，本次未切换为通用咨询';
+}
+
+export function publicResearchDegradedWarning(code: string): string {
+  if (code === 'RESEARCH_DETAIL_REQUIRED') {
+    return '已召回候选法规，但尚未完成权威正文读取；当前仅展示候选清单，不作为正式引用依据';
+  }
+  if (code === 'RESEARCH_SEARCH_REQUIRED') {
+    return '法规召回结果未通过完整核验；当前仅展示系统能够安全保留的检索信息';
+  }
+  return 'AI 结论未通过法规证据核验，系统已拦截未核验内容；当前仅展示可安全核验的法规信息';
 }
