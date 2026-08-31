@@ -47,7 +47,6 @@ describe('ProjectService.create 技能解析', () => {
   let service: ProjectService;
   let prisma: any;
   let risk: any;
-  let crm: any;
   let dingtalk: any;
 
   beforeEach(() => {
@@ -67,7 +66,6 @@ describe('ProjectService.create 技能解析', () => {
     };
     makeTransaction(prisma);
     risk = { assess: vi.fn().mockResolvedValue({ risk: 'P1', route: 'legalbp', domain: null }) }; // legalbp 避免触发 AI
-    crm = { writeBack: vi.fn() };
     dingtalk = {
       createGroup: vi.fn().mockResolvedValue({ chatId: 'c1', members: ['m1'] }),
       sendNotification: vi.fn(),
@@ -75,7 +73,6 @@ describe('ProjectService.create 技能解析', () => {
     service = new ProjectService(
       prisma as any,
       risk as any,
-      crm as any,
       dingtalk as any,
       new CreateProjectUseCase(prisma) as any,
       new ProjectAccessPolicy() as any,

@@ -5,6 +5,7 @@ import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor';
 import { AuditService } from './common/audit/audit.service';
+import { isCrmA1SecretStrong } from './modules/crm-integration/crm-a1-auth.service';
 
 /**
  * CAS 启动强校验（T4）：生产/预发(CAS_ENFORCED)配置错误 → 拒绝启动,不在登录时 500。
@@ -15,6 +16,7 @@ function assertStartupConfig() {
   const env = process.env;
   const isProd = env.NODE_ENV === 'production';
   const enforced = env.CAS_ENFORCED === 'true';
+  const crmA1Enabled = String(env.CRM_A1_ENABLED).toLowerCase() === 'true';
 
   if (env.CAS_BYPASS === 'true' && isProd) {
     throw new Error('[config] CAS_BYPASS 在生产环境禁止启用（安全门禁）');
@@ -25,6 +27,17 @@ function assertStartupConfig() {
     }
     if (env.CAS_BYPASS === 'true') {
       throw new Error('[config] CAS_ENFORCED 环境不允许启用 CAS_BYPASS');
+    }
+  }
+  if (crmA1Enabled) {
+    if (!env.CRM_A1_APP_ID || !env.CRM_A1_SECRET) {
+      throw new Error('[config] CRM_A1_ENABLED=true 时必须配置 CRM_A1_APP_ID 和 CRM_A1_SECRET');
+    }
+    if (!isCrmA1SecretStrong(env.CRM_A1_SECRET)) {
+      throw new Error('[config] CRM_A1_SECRET 必须至少包含 32 个 UTF-8 字节');
+    }
+    if (isProd && !env.CRM_A1_ALLOWED_IPS?.split(',').some((value) => value.trim())) {
+      throw new Error('[config] 生产环境启用 CRM A1 时必须配置 CRM_A1_ALLOWED_IPS');
     }
   }
 }

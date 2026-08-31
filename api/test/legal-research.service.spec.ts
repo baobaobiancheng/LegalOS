@@ -228,11 +228,10 @@ describe('LegalResearchService', () => {
     expect(timeline.indexOf('persisted')).toBeLessThan(timeline.indexOf('report_start'));
     expect(candidateMetrics).toEqual([1, 2]);
     expect(verifiedMetrics).toEqual([1]);
-    expect(answerDeltas.join('')).toBe('应依据已核验的劳动合同法计算。\n具体工资基数需结合个案确认。');
+    expect(answerDeltas).toEqual([]);
     expect(stageEvents).toContainEqual({ status: 'running', title: '调整检索方式' });
     expect(stageEvents).not.toContainEqual(expect.objectContaining({ status: 'degraded' }));
-    expect(timeline.indexOf('evidence_gate_open')).toBeLessThan(timeline.indexOf('answer_delta'));
-    expect(timeline.indexOf('answer_delta')).toBeLessThan(timeline.indexOf('persisted'));
+    expect(timeline).not.toContain('answer_delta');
     expect(timeline.at(-1)).toBe('report_completed');
   });
 

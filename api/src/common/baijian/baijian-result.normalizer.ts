@@ -67,11 +67,11 @@ export function normalizeLawDetail(inner: Record<string, unknown>): BaijianLawDe
     toolName: BAIJIAN_LAW_DETAIL_TOOL,
     recordId,
     lawName,
-    issuingOrgan: nullableCleanString(data.issuingOrgan),
-    issuingNo: nullableCleanString(data.issuingNo),
-    releaseDate: nullableCleanString(data.releaseYearMonthDate),
-    implementDate: nullableCleanString(data.implementYearMonthDate),
-    timeliness: nullableCleanString(data.timeliness),
+    issuingOrgan: nullableDisplayString(data.issuingOrgan),
+    issuingNo: nullableDisplayString(data.issuingNo),
+    releaseDate: nullableDisplayString(data.releaseYearMonthDate),
+    implementDate: nullableDisplayString(data.implementYearMonthDate),
+    timeliness: nullableDisplayString(data.timeliness),
     hasCompare: String(data.hasCompare ?? '') === '1',
     historyCount: safeArrayLength(data.hisgroup),
     enclosureCount: safeArrayLength(data.enclosure),
@@ -149,9 +149,9 @@ function normalizeSemanticLaws(inner: Record<string, unknown>): BaijianNormalize
     if (!record || !isRecord(value)) continue;
     records.push({
       ...record,
-      issuingNo: nullableCleanString(value.filenum ?? value.issuingNo),
+      issuingNo: nullableDisplayString(value.filenum ?? value.issuingNo),
       matchedContent: nullableCleanHtml(value.content),
-      articleNumber: nullableCleanString(value.rawnumber),
+      articleNumber: nullableDisplayString(value.rawnumber),
       score: nullableNumber(value.score),
     });
   }
@@ -175,11 +175,11 @@ function normalizeLawRecord(value: unknown): BaijianLawRecord | null {
     source: 'lawstar',
     recordId,
     lawName,
-    issuingOrgan: nullableCleanString(value.issuingOrgan),
-    issuingNo: nullableCleanString(value.issuingNo),
-    releaseDate: nullableCleanString(value.releaseYearMonthDate),
-    implementDate: nullableCleanString(value.implementYearMonthDate),
-    timeliness: nullableCleanString(value.timeliness),
+    issuingOrgan: nullableDisplayString(value.issuingOrgan),
+    issuingNo: nullableDisplayString(value.issuingNo),
+    releaseDate: nullableDisplayString(value.releaseYearMonthDate),
+    implementDate: nullableDisplayString(value.implementYearMonthDate),
+    timeliness: nullableDisplayString(value.timeliness),
   };
 }
 
@@ -191,7 +191,7 @@ function normalizeCases(inner: Record<string, unknown>): BaijianNormalizedResult
     toolName: BAIJIAN_CASE_SEARCH_TOOL,
     status: records.length ? 'success_hit' : 'success_empty',
     count: safeNonNegativeInteger(inner.total_hits, records.length),
-    query: nullableCleanString(inner.query),
+    query: nullableDisplayString(inner.query),
     elapsedMs: nullableNumber(inner.elapsed_ms),
     records,
   };
@@ -199,7 +199,7 @@ function normalizeCases(inner: Record<string, unknown>): BaijianNormalizedResult
 
 function normalizeCaseRecord(value: unknown): BaijianCaseRecord | null {
   if (!isRecord(value)) return null;
-  const sourceName = cleanString(value.source);
+  const sourceName = cleanDisplayString(value.source);
   const sourceId = cleanString(value.source_id);
   const title = cleanHtml(value.title);
   if (!sourceName || !sourceId || !title) return null;
@@ -209,11 +209,11 @@ function normalizeCaseRecord(value: unknown): BaijianCaseRecord | null {
     sourceId,
     sourceName,
     title,
-    court: nullableCleanString(value.court),
-    date: nullableCleanString(value.date),
-    country: nullableCleanString(value.country),
-    caseNumber: nullableCleanString(value.case_number),
-    jurisdiction: nullableCleanString(value.jurisdiction),
+    court: nullableDisplayString(value.court),
+    date: nullableDisplayString(value.date),
+    country: nullableDisplayString(value.country),
+    caseNumber: nullableDisplayString(value.case_number),
+    jurisdiction: nullableDisplayString(value.jurisdiction),
     snippet: nullableCleanHtml(value.snippet),
     url: safePublicUrl(value.url),
     score: nullableNumber(value.score),
@@ -230,16 +230,7 @@ function extractFirstText(content: unknown): string | null {
 }
 
 export function cleanHtml(value: unknown): string {
-  return cleanString(value)
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&amp;/gi, '&')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
+  return cleanDisplayString(cleanString(value).replace(/<[^>]*>/g, ''));
 }
 
 function normalizeLawContent(value: unknown): BaijianLawContentBlock[] {
@@ -344,8 +335,14 @@ function cleanString(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, 4_000) : '';
 }
 
-function nullableCleanString(value: unknown): string | null {
-  const cleaned = cleanString(value);
+function cleanDisplayString(value: unknown): string {
+  return decodeHtmlEntities(cleanString(value))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function nullableDisplayString(value: unknown): string | null {
+  const cleaned = cleanDisplayString(value);
   return cleaned || null;
 }
 

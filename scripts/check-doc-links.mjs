@@ -60,11 +60,13 @@ const CRM_SYMBOLS = [
   ['api/src/modules/project/dto/create-project.dto.ts', 'crmReference'], // crmReference 入参
   ['api/src/modules/project/adapters/adapter.interfaces.ts', 'CrmAdapter'], // CRM 适配器抽象
   ['api/src/modules/project/adapters/mock-crm.adapter.ts', 'MockCrmAdapter'], // Mock 实现
-  ['api/src/modules/project/project.service.ts', 'reply'], // 回传触发(writeBack)
-  ['api/src/modules/project/project.service.ts', 'executeStream'], // AI 自动回传(无 CRM 调用)
+  ['api/src/modules/crm-integration/crm-contract-task.controller.ts', 'create'], // A1 验签建单入口
+  ['api/src/modules/crm-integration/create-crm-contract-task.use-case.ts', 'CreateCrmContractTaskUseCase.execute'], // A1 原子建单
+  ['api/src/modules/project/project.service.ts', 'reply'], // 审核完成并写 CRM Outbox
+  ['api/src/modules/project/infrastructure/outbox.worker.ts', 'handleCrmReviewResultDeliver'], // B1 异步交付
   ['api/src/modules/project/project.controller.ts', 'transfer'], // 转派(不调 CRM)
   ['api/src/modules/contract/contract.controller.ts', 'upload'], // 文件上传
-  ['api/src/modules/contract/contract.service.ts', 'uploadFile'], // 附件类型(仅 revised|final)
+  ['api/src/modules/contract/contract-file.service.ts', 'uploadFile'], // 平台附件上传(revised|final)
   ['api/src/modules/project/application/create-project.use-case.ts', 'idempotencyKey'], // 幂等键
 ]
 for (const [file, symbol] of CRM_SYMBOLS) {

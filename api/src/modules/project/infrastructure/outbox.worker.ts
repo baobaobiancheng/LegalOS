@@ -1,12 +1,20 @@
 import { Inject, Injectable, Logger, OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../../prisma/prisma.service';
-import { DINGTALK_ADAPTER, DingTalkAdapter } from '../adapters/adapter.interfaces';
+import {
+  CRM_ADAPTER,
+  CrmAdapter,
+  DINGTALK_ADAPTER,
+  DingTalkAdapter,
+} from '../adapters/adapter.interfaces';
 import { OutboxRepository, OutboxClaim } from './outbox.repository';
+import { OUTBOX_EVENT_CRM_REVIEW_RESULT_DELIVER } from '../application/crm-delivery';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
- * Outbox Worker（P1-04）：用 NestJS 生命周期管理，带租约（lease）认领任务，
- * 替换旧的 dingtalkChatId='PENDING' 哨兵。
+ * Outbox Worker（P1-04）：用 NestJS 生命周期管理，带租约（lease）认领钉钉和 CRM 外部副作用，
+ * 替换旧的 dingtalkChatId='PENDING' 哨兵，并保证 CRM 成功回执前不标记已送达。
  *
  * - 认领：条件更新（pending 到可执行时间 / processing 租约过期），原子写入 claimToken。
  * - 完成/失败：id + claimToken 条件更新，防止旧 Worker 覆盖重新认领的任务。
@@ -23,6 +31,7 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
   private readonly batchSize: number;
   private readonly maxAttempts: number;
   private readonly dingtalkMock: boolean;
+  private readonly contractStorageDir: string;
   private stopped = false;
   private polling = false;
   private timer: NodeJS.Timeout | null = null;
@@ -31,12 +40,15 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxRepository,
     @Inject(DINGTALK_ADAPTER) private readonly dingtalk: DingTalkAdapter,
+    @Inject(CRM_ADAPTER) private readonly crm: CrmAdapter,
     config: ConfigService,
   ) {
     this.pollIntervalMs = Number(config.get('OUTBOX_POLL_INTERVAL_MS', 1000));
     this.batchSize = Number(config.get('OUTBOX_BATCH_SIZE', 10));
     this.maxAttempts = Number(config.get('OUTBOX_MAX_ATTEMPTS', 8));
     this.dingtalkMock = config.get('DINGTALK_MOCK', 'false') === 'true';
+    this.contractStorageDir = config.get<string>('CONTRACT_STORAGE_DIR')
+      || join(process.cwd(), 'storage', 'contracts');
   }
 
   async onApplicationBootstrap(): Promise<void> {
@@ -92,9 +104,19 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
       await this.outbox.markSucceeded(event.id, claimToken);
     } catch (e: any) {
       const msg = String(e?.message ?? e);
-      await this.outbox.markFailed(event.id, claimToken, msg, attempts);
+      const nextStatus = await this.outbox.markFailed(event.id, claimToken, msg, attempts);
+      if (nextStatus && event.eventType === OUTBOX_EVENT_CRM_REVIEW_RESULT_DELIVER && event.projectId) {
+        await this.prisma.project.updateMany({
+          where: { id: event.projectId, crmDeliveryStatus: { not: 'delivered' } },
+          data: {
+            crmDeliveryStatus: nextStatus === 'dead' ? 'dead' : 'failed',
+            crmDeliveryUpdatedAt: new Date(),
+            crmDeliveryLastError: msg.slice(0, 1000),
+          },
+        }).catch(() => undefined);
+      }
       // dead 时写入不含敏感信息的工单事件 + 告警（8.2-6）
-      if (event.projectId && attempts >= this.maxAttempts) {
+      if (event.projectId && nextStatus === 'dead') {
         await this.prisma.projectEvent
           .create({
             data: {
@@ -113,6 +135,8 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
         return this.handleDingtalkGroupCreate(event);
       case 'dingtalk.member.add':
         return this.handleDingtalkMemberAdd(event);
+      case OUTBOX_EVENT_CRM_REVIEW_RESULT_DELIVER:
+        return this.handleCrmReviewResultDeliver(event);
       default:
         throw new Error(`未知 Outbox 事件类型：${event.eventType}`);
     }
@@ -263,6 +287,76 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
       projectId,
       `${this.fmt()} · ${user.displayName} 已加入钉钉群${this.dingtalkMock ? '（模拟）' : ''}`,
     );
+  }
+
+  /**
+   * CRM 交付：事件只携带内部 ID，消费时重读权威任务、结论与文件。
+   * 只有适配器收到 CRM 成功回执后才标记 delivered；失败由 Outbox 重试/死信接管。
+   */
+  private async handleCrmReviewResultDeliver(event: any): Promise<void> {
+    const { projectId, contractFileId } = event.payload as {
+      projectId?: string;
+      contractFileId?: string;
+    };
+    if (!projectId || !contractFileId) throw new Error('payload 缺少 projectId/contractFileId');
+
+    const project = await this.prisma.project.findUnique({ where: { id: projectId } });
+    if (!project) return;
+    if (project.crmDeliveryStatus === 'delivered') return;
+    if (!project.sourceAppId || !project.crmTaskId || !project.reviewCompletedAt || !project.result) {
+      throw new Error('CRM 交付缺少任务标识或审核结果');
+    }
+    if (project.crmDeliveryFileId !== contractFileId) {
+      throw new Error('CRM 交付文件与法务确认版本不一致');
+    }
+
+    const file = await this.prisma.contractFile.findFirst({
+      where: { id: contractFileId, projectId },
+      include: { uploader: { select: { role: true } } },
+    });
+    if (!file) throw new Error('CRM 交付文件不存在');
+    if (!['legal_bp', 'legal_lead', 'admin'].includes(file.uploader.role)) {
+      throw new Error('CRM 交付文件未经法务角色确认');
+    }
+    const filePath = join(this.contractStorageDir, projectId, file.storedName);
+    if (!existsSync(filePath)) throw new Error('CRM 交付文件已丢失');
+
+    const claimed = await this.prisma.project.updateMany({
+      where: { id: projectId, crmDeliveryStatus: { not: 'delivered' } },
+      data: {
+        crmDeliveryStatus: 'sending',
+        crmDeliveryUpdatedAt: new Date(),
+        crmDeliveryLastError: null,
+      },
+    });
+    if (claimed.count === 0) return;
+
+    await this.crm.writeBack({
+      sourceAppId: project.sourceAppId,
+      crmTaskId: project.crmTaskId,
+      contractNo: project.contractNo ?? project.crmReference,
+      projectId,
+      conclusion: project.result,
+      reviewCompletedAt: project.reviewCompletedAt.toISOString(),
+      file: {
+        id: file.id,
+        originalName: file.originalName,
+        mimeType: file.mimeType,
+        size: file.size,
+        path: filePath,
+      },
+    });
+
+    await this.prisma.project.updateMany({
+      where: { id: projectId },
+      data: {
+        crmDeliveryStatus: 'delivered',
+        crmDeliveryUpdatedAt: new Date(),
+        crmDeliveredAt: new Date(),
+        crmDeliveryLastError: null,
+      },
+    });
+    await this.addProjectEvent(projectId, `${this.fmt()} · CRM 审核结果已送达`);
   }
 
   private parseMembers(value: string | null): string[] {

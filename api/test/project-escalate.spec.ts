@@ -67,7 +67,6 @@ describe('ProjectService.escalate（人工升级接口）', () => {
     service = new ProjectService(
       prisma as any,
       { assess: vi.fn() } as any,
-      { writeBack: vi.fn() } as any,
       { createGroup: vi.fn(), addMember: vi.fn(), sendNotification: vi.fn(), syncContacts: vi.fn() } as any,
       new CreateProjectUseCase(prisma) as any,
       new ProjectAccessPolicy() as any,

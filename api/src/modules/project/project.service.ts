@@ -12,14 +12,12 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { ConsultationAttachmentService } from '../../common/services/consultation-attachment.service';
 import { LLMRiskService } from '../../common/services/llm-risk.service';
 import {
-  CrmAdapter,
   DingTalkAdapter,
-  CRM_ADAPTER,
   DINGTALK_ADAPTER,
 } from './adapters/adapter.interfaces';
 import { CreateProjectDto, CreateProjectMessageDto, ReplyProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
-import { Prisma } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import { ConsultationReplyOrchestrator } from './application/consultation-reply.orchestrator';
 import { formatEventTime } from '../../common/utils/event-time';
 import { ProjectAccessPolicy } from './domain/project-access.policy';
@@ -37,6 +35,10 @@ import { normalizeConsultationCapability } from './domain/consultation-capabilit
 import { AuditService } from '../../common/audit/audit.service';
 import { AuditRequestContext } from '../../common/audit/audit.types';
 import { RecordDownloadDto } from './dto/record-download.dto';
+import {
+  crmReviewDeliveryOutboxDedupKey,
+  OUTBOX_EVENT_CRM_REVIEW_RESULT_DELIVER,
+} from './application/crm-delivery';
 
 // 用户选择器，避免暴露密码哈希
 const userSelect = { id: true, username: true, displayName: true, role: true };
@@ -48,7 +50,6 @@ export class ProjectService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly riskService: LLMRiskService,
-    @Inject(CRM_ADAPTER) private readonly crm: CrmAdapter,
     @Inject(DINGTALK_ADAPTER) private readonly dingtalk: DingTalkAdapter,
     private readonly createProjectUseCase: CreateProjectUseCase,
     private readonly accessPolicy: ProjectAccessPolicy,
@@ -181,7 +182,13 @@ export class ProjectService {
 
   /** 工单响应脱敏：extra（技能 prompt 快照）不返回；route/risk 冗余展开 */
   private formatProject(project: any) {
-    const { extra: _extra, ...safeProject } = project;
+    const {
+      extra: _extra,
+      crmDeliveryLastError: _crmDeliveryLastError,
+      crmPayloadSha256: _crmPayloadSha256,
+      crmFileManifestSha256: _crmFileManifestSha256,
+      ...safeProject
+    } = project;
     return { ...safeProject, route: project.route, risk: project.risk };
   }
 
@@ -687,9 +694,45 @@ export class ProjectService {
     const { result: fresh, before } = await this.prisma.$transaction(async (tx) => {
       const before = await this.lockProjectForAudit(tx, projectId, project);
       this.accessPolicy.assertCan(actor, ProjectAction.Reply, before);
+      const reviewCompletedAt = new Date();
+      const needsCrmDelivery = Boolean(before.sourceAppId && before.crmTaskId);
+      let deliveryFileId: string | null = null;
+      if (needsCrmDelivery) {
+        if (!dto.deliveryFileId) {
+          throw new ConflictException('CRM 合同任务必须明确选择法务确认的回传文件');
+        }
+        const deliveryFile = await tx.contractFile.findFirst({
+          where: {
+            id: dto.deliveryFileId,
+            projectId,
+            kind: { in: ['final', 'revised'] },
+            uploader: { role: { in: [Role.legal_bp, Role.legal_lead, Role.admin] } },
+          },
+          select: { id: true },
+        });
+        if (!deliveryFile) {
+          throw new ConflictException('回传文件不存在、已不属于本工单，或未经法务角色上传确认');
+        }
+        deliveryFileId = deliveryFile.id;
+      }
       const updated = await tx.project.updateMany({
         where,
-        data: { status: '已回传', result: dto.text, legalBpId: actor.id },
+        data: {
+          status: '已回传',
+          result: dto.text,
+          legalBpId: actor.id,
+          reviewStatus: 'review_completed',
+          reviewCompletedAt,
+          ...(needsCrmDelivery
+            ? {
+                crmDeliveryStatus: 'pending' as const,
+                crmDeliveryUpdatedAt: reviewCompletedAt,
+                crmDeliveredAt: null,
+                crmDeliveryLastError: null,
+                crmDeliveryFileId: deliveryFileId,
+              }
+            : {}),
+        },
       });
       if (updated.count === 0) {
         throw new ForbiddenException('只有待复核状态、且已指派给您的工单才能回传');
@@ -699,8 +742,23 @@ export class ProjectService {
       await tx.projectMessage.create({
         data: { projectId, role: 'legal', text: dto.text, label: '法务BP 正式回复' },
       });
-      await tx.projectEvent.create({ data: { projectId, text: formatEventTime() + ' · 已回传业务端' } });
+      await tx.projectEvent.create({ data: { projectId, text: formatEventTime() + ' · 法务审核已完成' } });
       await tx.projectEvent.create({ data: { projectId, text: formatEventTime() + ' · 通知业务端 + 钉钉群同步' } });
+      if (needsCrmDelivery && deliveryFileId) {
+        await tx.outboxEvent.create({
+          data: {
+            eventType: OUTBOX_EVENT_CRM_REVIEW_RESULT_DELIVER,
+            aggregateType: 'project',
+            aggregateId: projectId,
+            dedupKey: crmReviewDeliveryOutboxDedupKey(before.sourceAppId, before.crmTaskId),
+            payload: { projectId, contractFileId: deliveryFileId },
+            projectId,
+          },
+        });
+        await tx.projectEvent.create({
+          data: { projectId, text: formatEventTime() + ' · CRM 交付任务已入队' },
+        });
+      }
       if (this.audit) {
         const latestRun = await tx.consultationRun.findFirst({
           where: { projectId, status: 'succeeded' },
@@ -722,6 +780,9 @@ export class ProjectService {
             status: { from: before.status, to: '已回传' },
             legalBpId: { from: before.legalBpId, to: actor.id },
             resultHash: { from: before.result ? this.audit.digestCanonical(before.result) : null, to: this.audit.digestCanonical(dto.text) },
+            ...(deliveryFileId
+              ? { crmDeliveryFileId: { from: before.crmDeliveryFileId ?? null, to: deliveryFileId } }
+              : {}),
           },
           metadata: latestRun ? {
             consultationRunId: latestRun.id,
@@ -748,23 +809,20 @@ export class ProjectService {
       );
     }
 
-    // CRM 回写（Mock）
-    try {
-      await this.crm.writeBack(projectId, dto.text);
-    } catch (e) {
-      this.logger.warn(`CRM 回写失败（Mock）：${e}`);
-    }
-
     // 钉钉通知
     try {
       if (fresh.dingtalkChatId) {
-        await this.dingtalk.sendNotification(fresh.dingtalkChatId, '工单已回传');
+        await this.dingtalk.sendNotification(fresh.dingtalkChatId, '法务审核已完成');
       }
     } catch (e) {
       this.logger.warn(`钉钉通知失败：${e}`);
     }
 
-    return { status: '已回传' };
+    return {
+      status: '已回传',
+      reviewStatus: fresh.reviewStatus,
+      crmDeliveryStatus: fresh.crmDeliveryStatus ?? null,
+    };
   }
 
   async recordDownload(

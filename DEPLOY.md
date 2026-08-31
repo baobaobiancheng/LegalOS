@@ -1,13 +1,13 @@
 # LegalOS 部署指南
 
-> 生成：2026-08-05
+> 更新：2026-08-31
 > 适用于服务器全新部署（git clone 后）。
 
 ## 一、前置条件
 
 | 依赖 | 版本/说明 |
 |------|----------|
-| Node.js | ≥ 18（含 fetch） |
+| Node.js | 20.16+（20.x）或 22.3+；推荐 22 LTS（PDF 解析依赖要求） |
 | MySQL | ≥ 5.7，建议 8.0（utf8mb4） |
 | Codex CLI | AI 服务底层；法律检索 Agent 首期锁定 `0.146.0`，需受管配置(`/etc/codex/*.toml`) + `CODEX_API_KEY`（网关 token） |
 
@@ -43,10 +43,15 @@ cp api/.env.example api/.env
 | `BAIJIAN_MCP_APP_SECRET` | 百鉴 MCP App Secret；已在聊天或本地文档暴露的旧值必须先轮换 |
 | `LEGAL_RESEARCH_SEARCH_CACHE_TTL_MS` | 法规/类案精确请求快照 TTL，默认 24 小时 |
 | `LEGAL_RESEARCH_LAW_DETAIL_CACHE_TTL_MS` | 法规正文再校验间隔，默认 30 天 |
+| `CRM_A1_ENABLED` | 是否开放 CRM A1 入站；正式联调设为 `true` |
+| `CRM_A1_APP_ID` | CRM 调用方 AppId，必须与双方登记值一致 |
+| `CRM_A1_SECRET` | A1 HMAC Secret，由受管 Secret 注入且至少 32 字节 |
+| `CRM_A1_ALLOWED_IPS` | CRM 直连源 IP 白名单，生产启用 A1 时必填；不读取 `X-Forwarded-For` |
+| `CONTRACT_STORAGE_DIR` | 合同文件持久目录；多实例 API/Worker 必须挂载同一共享卷 |
 
 ### 可保持默认
 
-`PORT`（3000）、`ACCESS_TOKEN_TTL`、`REFRESH_TOKEN_TTL_MS`、`DINGTALK_MOCK`（`false`=真实钉钉，`true`=本地无凭证 Mock）。
+`PORT`（3000）、`ACCESS_TOKEN_TTL`、`REFRESH_TOKEN_TTL_MS`、`CONTRACT_FILE_PARSE_CONCURRENCY`（2，允许 1..4）、`DINGTALK_MOCK`（`false`=真实钉钉，`true`=本地无凭证 Mock）。`CRM_MOCK` 生产必须保持 `false`。
 
 ## 四、合同模板源文件（易漏！）
 
@@ -56,6 +61,14 @@ cp api/.env.example api/.env
 ```bash
 # 从本地开发机复制
 scp -r api/storage/contract-templates user@server:/path/to/LegalOS/api/storage/
+```
+
+合同上传和 CRM A1 原文件不能依赖发布目录内的临时磁盘。先创建持久目录，并将绝对路径写入
+`CONTRACT_STORAGE_DIR`；API 运行用户必须拥有该目录，多实例必须挂载同一个共享卷：
+
+```bash
+# 以运行 PM2/API 的同一账号执行。
+install -d -m 0700 /home/zhenghe.bao/LegalOS/shared/contracts
 ```
 
 ## 五、安装 + 数据库
@@ -76,12 +89,24 @@ mysql -u root -p -e "CREATE DATABASE legal_platform CHARACTER SET utf8mb4 COLLAT
 # 2. 每次部署都重新生成 Prisma Client
 npx prisma generate
 
-# 3. 应用全部 migration 建表（7 个，含技能库/钉钉）
+# 3. 先确认待执行 migration
+npx prisma migrate status
+
+# 4. 应用仓库内全部 migration
 npx prisma migrate deploy
 
-# 4. 种子数据（账号/技能/BP 领域映射）
+# 5. 种子数据（仅首次部署或明确需要刷新种子时执行）
 npx prisma db seed
 ```
+
+升级已有环境时，`20260831113000_add_crm_task_delivery_fields` 会修改 `projects`、
+`project_messages`，`20260831170000_add_crm_a1_ingress` 会修改合同文件/文档枚举并创建 nonce 表。
+MySQL 5.7 上这些 `ALTER TABLE` 可能重建表或持有元数据锁，不能承诺零停机。部署前必须：
+
+1. 通过 `information_schema.tables` 核对 `projects`、`project_messages`、`contract_files`、`contract_documents` 的行数和数据量。
+2. 完成可恢复的数据库备份并验证恢复路径。
+3. 在维护窗口停止写流量后执行 `npx prisma migrate deploy`；超大表由 DBA 评估在线 DDL 工具。
+4. 迁移后再次执行 `npx prisma migrate status`，确认所有 migration 均为 applied。
 
 ## 六、构建 + 验证 + 启动
 
@@ -99,7 +124,24 @@ cd ../web && npm install && npm run build
 # 产物在 web/dist/，由 Nginx 等托管；前端 API 地址需配代理到 :3000
 ```
 
-## 七、种子账号（`db seed` 后）
+## 七、CRM A1 上线检查
+
+1. 受管 Secret 已注入 `CRM_A1_APP_ID`、至少 32 字节的 `CRM_A1_SECRET`，命令和日志中不出现明文。
+2. `CRM_A1_ALLOWED_IPS` 填写负载均衡之后 API socket 实际看到的 CRM 源 IP；当前实现不信任 `X-Forwarded-For`。
+3. `CONTRACT_STORAGE_DIR` 是绝对持久路径、权限为 API 用户可读写，且各 API/Worker 实例共享同一卷。
+4. 真实 CRM 回传 Adapter 尚未接入前保持 `CRM_MOCK=false`；失败任务应进入 Outbox 重试/`dead`，不得显示为已送达。
+5. CRM 使用测试任务执行一次签名 multipart 建单，再用相同指纹重放；首次应成功，重放应返回同一 `projectId` 且 `duplicated=true`。
+
+服务启动后至少检查：
+
+```bash
+# 未带 JWT 访问受保护端点应返回 401；同时证明 API 已监听并经过全局守卫。
+curl --silent --show-error --output /dev/null --write-out '%{http_code}\n' \
+  http://127.0.0.1:3000/api/auth/me
+pm2 logs legalos-api --lines 100 --nostream
+```
+
+## 八、种子账号（`db seed` 后）
 
 | 账号 | 密码 | 角色 |
 |------|------|------|
@@ -108,14 +150,14 @@ cd ../web && npm install && npm run build
 
 法务 BP、法务负责人统一使用 CAS 身份，不再提供本地密码账号。部署后通过成员管理预开通，或由员工首次 CAS 登录创建。
 
-## 八、钉钉集成上线检查清单
+## 九、钉钉集成上线检查清单
 
 1. 钉钉后台：应用已授权「**通讯录部门成员读权限**」+ 可选「企业员工手机号信息」
 2. 钉钉后台：应用**可见范围**含全员或目标用户（否则建群报"群主不在应用可见性内"）
 3. `.env`：`DINGTALK_MOCK=false` + 4 项凭证正确
 4. 管理端（admin 登录）→ 成员管理 → **一键同步** → 确认员工按姓名自动绑定
 
-## 九、疑难排查
+## 十、疑难排查
 
 | 症状 | 原因 | 处理 |
 |------|------|------|
@@ -123,10 +165,13 @@ cd ../web && npm install && npm run build
 | 登录"服务响应异常" | API 进程未启动 | 检查 `:3000` 监听 + 启动日志 |
 | dsh AI 回复失败 | 模型凭证、余额或网关配置异常 | `npm run dsh:model-gate`；检查 `DSH_LLM_*`（独立模型）或 `LLM_*`（公司网关） |
 | 合同导出无模板 | storage 未复制 | 见"四、合同模板源文件" |
-| 钉钉同步"部门不在授权范围" | 通讯录权限未批 | 见"八、钉钉集成上线检查清单" |
+| A1 启动失败 | AppId/Secret/IP 白名单缺失或 Secret 少于 32 字节 | 对照 `.env.example` 和“七、CRM A1 上线检查” |
+| A1 返回 `FORBIDDEN_APP` | socket 源 IP 不在白名单，或 AppId 不匹配 | 核对反向代理拓扑与 CRM 出口 IP，不要伪造转发头 |
+| 合同文件在另一实例找不到 | `CONTRACT_STORAGE_DIR` 未使用共享持久卷 | 统一挂载路径并校验 API 用户权限 |
+| 钉钉同步"部门不在授权范围" | 通讯录权限未批 | 见"九、钉钉集成上线检查清单" |
 | 钉钉建群"群主不在可见性内" | 应用可见范围未含群主 | 同上 |
 
-## 十、百鉴 MCP / dsh Agent PR0 技术闸门
+## 十一、百鉴 MCP / dsh Agent PR0 技术闸门
 
 法律检索功能启用前，服务器必须先通过下面两层检查。普通 PR CI 只运行脱敏契约夹具；真实检查只在受控服务器或预发布环境运行。
 
@@ -152,7 +197,7 @@ LEGAL_RESEARCH_LAW_DETAIL_CACHE_TTL_MS=2592000000
 首次部署先创建 dsh 持久目录，并确保只有 API 运行用户可以访问：
 
 ```bash
-install -d -m 0700 "$HOME/LegalOS/LegalOS/api/.data/dsh"
+install -d -m 0700 /home/zhenghe.bao/LegalOS/LegalOS/api/.data/dsh
 ```
 
 ```bash
@@ -171,7 +216,7 @@ npm run dsh:baijian-gate -- law '劳动合同解除经济补偿'
 npm run dsh:baijian-gate -- case '劳动合同违法解除经济补偿的中国类似案例'
 ```
 
-PR-B 的 AI 搜法会同时开放关键词、高级、语义、单条法规详情和批量法规详情五个受控工具。当前法规检索完成条件只保留两项：必须产生成功的法规检索结果；检索命中候选法规后，必须读取至少一份权威详情正文。模型正文、`sourceIds`、引文逐字匹配以及详情与候选 ID 的关联不再作为拦截条件；前端会把模型标注引文明确提示为“未做逐字核对”。高级与语义检索同样经过 PR-A 缓存，不新增 Redis 或环境变量。
+PR-B 的 AI 搜法会同时开放关键词、高级、语义、单条法规详情和批量法规详情五个受控工具。单轮最多执行 2 次法规召回、读取 3 部权威正文，总供应商请求预算为 5 次。服务端只接受本轮候选 ID 对应的已核验详情，最终报告必须通过完整性闸门：结构完整、来源 ID 已核验、展示的法规直接引文可在已读取正文中逐字定位。模型输出不在终态校验前向前端流式透传；解析或证据校验失败时，服务端使用已核验正文生成安全降级报告。高级与语义检索同样经过 PR-A 缓存，不新增 Redis 或环境变量。
 
 PR-A 部署必须执行 `20260824150000_add_legal_research_cache` migration，新增权威文档投影、精确请求快照和脱敏成本台账。当前单 API 实例使用进程内 single-flight，不依赖 Redis。同一精确请求在 TTL 内直接复用本地快照；只有显式「刷新权威数据」、缓存缺失或过期时才再调用百鉴。
 

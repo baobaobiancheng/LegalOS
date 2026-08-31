@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
-export type WritableContractDocumentType = 'draft' | 'revised' | 'final';
+export type WritableContractDocumentType = 'draft' | 'revised' | 'final' | 'source';
 
 /**
  * ContractDocument 的共享事务写入器。

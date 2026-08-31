@@ -39,6 +39,7 @@ const draftComplete = ref(false)
 const projectId = ref('')
 const projectRoute = ref('')
 const projectStatus = ref('')
+const projectStatusDisplay = computed(() => projectStatus.value === '已回传' ? '已完成' : projectStatus.value)
 const submittedReview = ref(false)
 const submittingReview = ref(false)
 
@@ -406,7 +407,7 @@ const submitReview = async () => {
         v-if="projectStatus"
         class="status-row"
       >
-        <span :class="['status-chip', 'status-' + projectStatus]">{{ projectStatus }}</span>
+        <span :class="['status-chip', 'status-' + projectStatus]">{{ projectStatusDisplay }}</span>
         <span
           v-if="submittedReview"
           class="status-hint"

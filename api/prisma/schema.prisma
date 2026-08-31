@@ -48,8 +48,29 @@ enum OutboxStatus {
   dead
 }
 
+enum CrmDeliveryStatus {
+  pending
+  sending
+  delivered
+  failed
+  dead
+}
+
+enum ReviewStatus {
+  review_completed
+}
+
 enum ContractDocumentType {
   draft
+  revised
+  final
+  source
+}
+
+enum ContractFileKind {
+  source
+  attachment
+  main_contract
   revised
   final
 }
@@ -106,7 +127,7 @@ model User {
   // CAS 是唯一身份来源(生产),cas-login 按 casUsername 找/建,防重复人
   casUsername String? @unique @map("cas_username") @db.VarChar(128)
   // 组织架构部门（2026-08-11 统一身份映射）：CAS 登录写入(deptName)/钉钉绑定同步;角色 CAS_DEPT_MAP 据此匹配
-  department String? @map("department") @db.VarChar(128)
+  department  String? @map("department") @db.VarChar(128)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -179,15 +200,15 @@ model DingTalkSyncBatch {
 
 // 同步 staging（P1-08）：批内数据先 createMany 落 staging，完整校验通过后短事务 merge 到正式表
 model DingTalkContactStaging {
-  id      String            @id @default(uuid())
-  batchId String            @map("batch_id")
-  batch   DingTalkSyncBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
-  userId  String            @map("user_id") @db.VarChar(128)
-  name    String            @db.VarChar(128)
-  mobile  String?           @db.VarChar(32)
-  avatarUrl String?         @map("avatar_url") @db.Text
+  id         String            @id @default(uuid())
+  batchId    String            @map("batch_id")
+  batch      DingTalkSyncBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  userId     String            @map("user_id") @db.VarChar(128)
+  name       String            @db.VarChar(128)
+  mobile     String?           @db.VarChar(32)
+  avatarUrl  String?           @map("avatar_url") @db.Text
   // 部门名（2026-08-11 组织架构身份映射）：钉钉同步按部门拉取时写入
-  department String?        @db.VarChar(128)
+  department String?           @db.VarChar(128)
 
   @@unique([batchId, userId])
   @@index([batchId, name])
@@ -222,10 +243,25 @@ model Project {
   requesterName       String? @map("requester_name") @db.VarChar(128)
   requesterDepartment String? @map("requester_department") @db.VarChar(128)
 
-  // CRM 上下文（Adapter 占位）
-  crmReference   String? @map("crm_reference") @db.VarChar(256)
-  crmCustomer    String? @map("crm_customer") @db.VarChar(256)
-  crmOpportunity String? @map("crm_opportunity") @db.VarChar(256)
+  // CRM 业务标识：sourceAppId + crmTaskId 唯一定位一次审核任务；contractNo 只是合同业务号。
+  sourceAppId           String? @map("source_app_id") @db.VarChar(64)
+  crmTaskId             String? @map("crm_task_id") @db.VarChar(128)
+  contractNo            String? @map("contract_no") @db.VarChar(128)
+  crmPayloadSha256      String? @map("crm_payload_sha256") @db.Char(64)
+  crmFileManifestSha256 String? @map("crm_file_manifest_sha256") @db.Char(64)
+  // 兼容旧字段：新 CRM 链路不再将它作为任务主键。
+  crmReference          String? @map("crm_reference") @db.VarChar(256)
+  crmCustomer           String? @map("crm_customer") @db.VarChar(256)
+  crmOpportunity        String? @map("crm_opportunity") @db.VarChar(256)
+
+  // 审核完成与 CRM 交付是两个维度：内部完成不等于 CRM 已送达。
+  reviewStatus         ReviewStatus?      @map("review_status")
+  reviewCompletedAt    DateTime?          @map("review_completed_at")
+  crmDeliveryStatus    CrmDeliveryStatus? @map("crm_delivery_status")
+  crmDeliveryUpdatedAt DateTime?          @map("crm_delivery_updated_at")
+  crmDeliveredAt       DateTime?          @map("crm_delivered_at")
+  crmDeliveryLastError String?            @map("crm_delivery_last_error") @db.Text
+  crmDeliveryFileId    String?            @map("crm_delivery_file_id") @db.VarChar(64)
 
   // 钉钉（Adapter 占位）
   dingtalkChatId  String? @map("dingtalk_chat_id") @db.VarChar(256)
@@ -252,6 +288,7 @@ model Project {
   reviewRuns        ContractReviewRun[]
   generationRuns    ContractGenerationRun[]
 
+  @@unique([sourceAppId, crmTaskId])
   @@index([creatorId])
   @@index([ownerId])
   @@index([status])
@@ -260,21 +297,37 @@ model Project {
 }
 
 model ProjectMessage {
-  id        String   @id @default(uuid())
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId String   @map("project_id")
-  role      String   @db.VarChar(32) // user | assistant | legal | event
-  text      String   @db.Text
-  label     String?  @db.VarChar(256)
+  id            String   @id @default(uuid())
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId     String   @map("project_id")
+  role          String   @db.VarChar(32) // user | assistant | legal | event
+  // 合同文件正文可超过 MySQL TEXT 64KB，与 ContractDocument 保持 LongText 容量一致。
+  text          String   @db.LongText
+  label         String?  @db.VarChar(256)
   // 2026-08-12 客户端幂等键：前端每个问题生成一个 key，防双重提交/网络重试
   // 产生重复消息与重复回答（与 ConsultationRun.userMessageId 配合）。
-  clientKey String?  @unique @map("client_key")
+  clientKey     String?  @unique @map("client_key")
   // 2026-08-12 附件：本轮消息关联的咨询附件 id 列表（正文由后端提取后注入上下文）
-  attachmentIds Json? @map("attachment_ids")
-  createdAt DateTime @default(now()) @map("created_at")
+  attachmentIds Json?    @map("attachment_ids")
+  createdAt     DateTime @default(now()) @map("created_at")
 
   @@index([projectId])
   @@map("project_messages")
+}
+
+// CRM A1 入站 nonce：以 AppId 为命名空间防止签名请求重放。
+// 只保存 nonce 和时间窗口，不保存密钥、签名串或业务正文。
+model CrmInboundNonce {
+  id               String   @id @default(uuid())
+  appId            String   @map("app_id") @db.VarChar(64)
+  nonce            String   @db.VarChar(128)
+  requestTimestamp DateTime @map("request_timestamp")
+  expiresAt        DateTime @map("expires_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@unique([appId, nonce])
+  @@index([expiresAt])
+  @@map("crm_inbound_nonces")
 }
 
 model ConsultationAttachment {
@@ -397,23 +450,23 @@ model RiskAssessmentLog {
 // 咨询回答运行（2026-08-11）：一条用户消息最多一个生成任务（userMessageId 唯一），
 // 防 firstReply 重复调用启动多个 AI / 重复落库答案。
 model ConsultationRun {
-  id              String   @id @default(uuid())
-  projectId       String   @map("project_id")
-  userMessageId   String   @unique @map("user_message_id")
-  status          String   @default("running") @db.VarChar(16) // queued/running/succeeded/failed/cancelled
-  answerMessageId String?  @map("answer_message_id")
-  errorMessage    String?  @map("error_message") @db.Text
-  capability      String   @default("general") @db.VarChar(32)
-  dshSessionId    String?  @map("dsh_session_id") @db.VarChar(128)
-  researchTrace   Json?    @map("research_trace")
-  modelVersion    String?  @map("model_version") @db.VarChar(128)
-  toolSummary     Json?    @map("tool_summary")
-  outputHash      String?  @map("output_hash") @db.Char(64)
-  humanAuditEventId String? @map("human_audit_event_id") @db.VarChar(64)
-  startedAt       DateTime @default(now()) @map("started_at")
-  completedAt     DateTime? @map("completed_at")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  id                String    @id @default(uuid())
+  projectId         String    @map("project_id")
+  userMessageId     String    @unique @map("user_message_id")
+  status            String    @default("running") @db.VarChar(16) // queued/running/succeeded/failed/cancelled
+  answerMessageId   String?   @map("answer_message_id")
+  errorMessage      String?   @map("error_message") @db.Text
+  capability        String    @default("general") @db.VarChar(32)
+  dshSessionId      String?   @map("dsh_session_id") @db.VarChar(128)
+  researchTrace     Json?     @map("research_trace")
+  modelVersion      String?   @map("model_version") @db.VarChar(128)
+  toolSummary       Json?     @map("tool_summary")
+  outputHash        String?   @map("output_hash") @db.Char(64)
+  humanAuditEventId String?   @map("human_audit_event_id") @db.VarChar(64)
+  startedAt         DateTime  @default(now()) @map("started_at")
+  completedAt       DateTime? @map("completed_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
   @@index([projectId])
   @@index([projectId, capability, completedAt])
@@ -423,19 +476,19 @@ model ConsultationRun {
 
 // 百鉴权威文档本地投影：按供应商 ID 去重，为不同查询复用元数据与正文。
 model LegalSourceDocument {
-  id             String   @id @default(uuid())
-  source         String   @db.VarChar(32)
-  externalId     String   @map("external_id") @db.VarChar(191)
-  kind           String   @db.VarChar(16)
-  title          String   @db.VarChar(512)
-  metadata       Json
-  content        Json?
-  contentHash    String?  @map("content_hash") @db.Char(64)
+  id                String    @id @default(uuid())
+  source            String    @db.VarChar(32)
+  externalId        String    @map("external_id") @db.VarChar(191)
+  kind              String    @db.VarChar(16)
+  title             String    @db.VarChar(512)
+  metadata          Json
+  content           Json?
+  contentHash       String?   @map("content_hash") @db.Char(64)
   contentVerifiedAt DateTime? @map("content_verified_at")
-  fetchedAt      DateTime @map("fetched_at")
-  lastVerifiedAt DateTime @map("last_verified_at")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  fetchedAt         DateTime  @map("fetched_at")
+  lastVerifiedAt    DateTime  @map("last_verified_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
   @@unique([source, externalId])
   @@index([kind, lastVerifiedAt])
@@ -476,19 +529,19 @@ model LegalResearchUsage {
 }
 
 // 合同附件（本地磁盘文件，DB 只存元数据）
-// kind 仅 revised | final：草稿走前端 markdown→docx（DownloadMenu），不落盘
+// 人工上传使用 revised | final；CRM A1 原始材料使用 source | attachment | main_contract。
 model ContractFile {
-  id           String   @id @default(uuid())
-  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId    String   @map("project_id")
-  kind         String   @db.VarChar(32) // revised | final
-  originalName String   @map("original_name") @db.VarChar(256)
-  storedName   String   @map("stored_name") @db.VarChar(256) // uuid.ext，磁盘文件名
-  mimeType     String?  @map("mime_type") @db.VarChar(128)
+  id           String           @id @default(uuid())
+  project      Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId    String           @map("project_id")
+  kind         ContractFileKind
+  originalName String           @map("original_name") @db.VarChar(256)
+  storedName   String           @map("stored_name") @db.VarChar(256) // uuid.ext，磁盘文件名
+  mimeType     String?          @map("mime_type") @db.VarChar(128)
   size         Int
-  uploadedBy   String   @map("uploaded_by") // FK → users.id
-  uploader     User     @relation(fields: [uploadedBy], references: [id])
-  createdAt    DateTime @default(now()) @map("created_at")
+  uploadedBy   String           @map("uploaded_by") // FK → users.id
+  uploader     User             @relation(fields: [uploadedBy], references: [id])
+  createdAt    DateTime         @default(now()) @map("created_at")
 
   @@index([projectId])
   @@map("contract_files")
@@ -530,32 +583,32 @@ model LoginAudit {
 // 平台级权威审计事件（V0.2.0）：只追加，不与业务实体建立级联外键，避免业务删除破坏审计证据。
 // before/after 仅保存规范化哈希；changes/metadata 由 AuditService 白名单化、限长后写入。
 model AuditEvent {
-  id             String   @id @default(uuid())
-  eventId        String   @unique @map("event_id") @db.VarChar(64)
-  occurredAt     DateTime @default(now()) @map("occurred_at")
-  actorType      String   @default("user") @map("actor_type") @db.VarChar(16)
-  actorId        String?  @map("actor_id") @db.VarChar(64)
-  actorRole      String?  @map("actor_role") @db.VarChar(32)
-  action         String   @db.VarChar(96)
-  resourceType   String   @map("resource_type") @db.VarChar(64)
-  resourceId     String?  @map("resource_id") @db.VarChar(191)
-  projectId      String?  @map("project_id") @db.VarChar(64)
-  source         String   @default("api") @db.VarChar(24)
-  outcome        String   @db.VarChar(16)
-  reasonCode     String?  @map("reason_code") @db.VarChar(96)
-  requestId      String?  @map("request_id") @db.VarChar(64)
-  correlationId  String?  @map("correlation_id") @db.VarChar(128)
-  ipHash         String?  @map("ip_hash") @db.Char(64)
-  userAgentHash  String?  @map("user_agent_hash") @db.Char(64)
-  beforeHash     String?  @map("before_hash") @db.Char(64)
-  afterHash      String?  @map("after_hash") @db.Char(64)
+  id             String    @id @default(uuid())
+  eventId        String    @unique @map("event_id") @db.VarChar(64)
+  occurredAt     DateTime  @default(now()) @map("occurred_at")
+  actorType      String    @default("user") @map("actor_type") @db.VarChar(16)
+  actorId        String?   @map("actor_id") @db.VarChar(64)
+  actorRole      String?   @map("actor_role") @db.VarChar(32)
+  action         String    @db.VarChar(96)
+  resourceType   String    @map("resource_type") @db.VarChar(64)
+  resourceId     String?   @map("resource_id") @db.VarChar(191)
+  projectId      String?   @map("project_id") @db.VarChar(64)
+  source         String    @default("api") @db.VarChar(24)
+  outcome        String    @db.VarChar(16)
+  reasonCode     String?   @map("reason_code") @db.VarChar(96)
+  requestId      String?   @map("request_id") @db.VarChar(64)
+  correlationId  String?   @map("correlation_id") @db.VarChar(128)
+  ipHash         String?   @map("ip_hash") @db.Char(64)
+  userAgentHash  String?   @map("user_agent_hash") @db.Char(64)
+  beforeHash     String?   @map("before_hash") @db.Char(64)
+  afterHash      String?   @map("after_hash") @db.Char(64)
   changes        Json?
   metadata       Json?
-  eventHash      String   @map("event_hash") @db.Char(64)
-  hashVersion    String   @default("sha256-v1") @map("hash_version") @db.VarChar(32)
-  retentionClass String   @map("retention_class") @db.VarChar(24)
+  eventHash      String    @map("event_hash") @db.Char(64)
+  hashVersion    String    @default("sha256-v1") @map("hash_version") @db.VarChar(32)
+  retentionClass String    @map("retention_class") @db.VarChar(24)
   expiresAt      DateTime? @map("expires_at")
-  createdAt      DateTime @default(now()) @map("created_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
 
   @@index([actorId, occurredAt])
   @@index([action, outcome, occurredAt])

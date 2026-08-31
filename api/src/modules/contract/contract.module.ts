@@ -10,6 +10,7 @@ import { ProjectAccessPolicy } from '../project/domain/project-access.policy';
 import { CreateProjectUseCase } from '../project/application/create-project.use-case';
 import { EscalateProjectToLegalUseCase } from '../project/application/escalate-project-to-legal.use-case';
 import { ContractDocumentWriter } from './application/contract-document.writer';
+import { ContractFileProcessor } from './application/contract-file.processor';
 
 @Module({
   imports: [PrismaModule],
@@ -18,11 +19,13 @@ import { ContractDocumentWriter } from './application/contract-document.writer';
     ContractService,
     ContractFileService,
     ContractDocumentWriter,
+    ContractFileProcessor,
     ContractTemplateService,
     ProjectAccessPolicy,
     CreateProjectUseCase,
     EscalateProjectToLegalUseCase,
     { provide: DINGTALK_ADAPTER, useClass: MockDingTalkAdapter },
   ],
+  exports: [ContractFileProcessor],
 })
 export class ContractModule {}

@@ -3,7 +3,16 @@ import { ConfigService } from '@nestjs/config';
 import { AiExecutionQueueService } from '../src/common/services/ai-execution-queue.service';
 import { DshExecutionHandle, DshService } from '../src/common/services/dsh.service';
 import { DshBaijianToolsService } from '../src/common/services/dsh-baijian-tools.service';
-import { DshExecutionResult, DshResearchCapability } from '../src/common/services/dsh-agent.types';
+import {
+  DshExecutionResult,
+  DshResearchCapability,
+  DSH_LAW_ADVANCED_SEARCH_TOOL,
+  DSH_LAW_BATCH_DETAIL_TOOL,
+  DSH_LAW_DETAIL_TOOL,
+  DSH_LAW_SEARCH_TOOL,
+  DSH_LAW_SEMANTIC_SEARCH_TOOL,
+  LAW_RESEARCH_RECALL_CALL_LIMIT,
+} from '../src/common/services/dsh-agent.types';
 import { BaijianMcpClientService } from '../src/common/baijian/baijian-mcp-client.service';
 import { BaijianResultNormalizer } from '../src/common/baijian/baijian-result.normalizer';
 import { CachedLegalResearchGateway } from '../src/common/baijian/cached-legal-research.gateway';
@@ -44,7 +53,7 @@ async function main() {
   const prompt = [
     '你正在执行 LegalOS dsh/百鉴只读技术闸门。',
     capability === 'law_search'
-      ? '使用关键词、高级或语义搜索召回法规；命中后必须调用 get_law_detail，传 articleHint 或 query 定位正文。evidenceQuotes 必须至少有一项，text 必须是 contentBlocks 返回的连续逐字原文，不得改写、省略或拼接。answer、sourceUses 和 evidenceQuotes 必须引用同一个已读取详情的32位法规ID。'
+      ? '使用关键词、高级或语义搜索召回法规；命中后必须读取权威正文，优先一次调用 get_law_details 批量核验最多3部法规。evidenceQuotes 必须至少有一项，text 必须是 contentBlocks 返回的连续逐字原文，不得改写、省略或拼接。answer、sourceUses 和 evidenceQuotes 必须引用同一个已读取详情的32位法规ID。'
       : '必须调用 search_similar_cases，自主改写为不含个人信息的完整法律问题。',
     `本轮最多调用检索工具 ${dsh.getToolCallLimit()} 次；获得足以回答的有效结果后必须停止检索并输出最终答案。`,
     `用户问题：${question}`,
@@ -62,6 +71,8 @@ async function main() {
       requireResearchTool: true,
     });
     const completion = await waitForCompletion(handle);
+    assertNoToolErrors(completion);
+    assertEfficientToolPlan(completion, capability);
     const final = parseFinal(completion.text);
     assertAuthoritativeSources(completion, final, capability);
     console.log(JSON.stringify({
@@ -204,6 +215,31 @@ export function assertAuthoritativeSources(
       || !authoritative.has(`${sourceUse.source}:${sourceUse.recordId}`)) {
       throw new Error(`引用了本轮工具结果中不存在的 ID：${sourceUse.recordId}`);
     }
+  }
+}
+
+export function assertNoToolErrors(completion: DshExecutionResult): void {
+  const failed = completion.toolResults.filter((result) => result.isError);
+  if (!failed.length) return;
+  const labels = failed.map((result) => `${result.name}:${result.error?.code ?? 'TOOL_EXECUTION_FAILED'}`);
+  throw new Error(`dsh Agent 存在 ${failed.length} 次失败工具调用：${labels.join('、')}`);
+}
+
+export function assertEfficientToolPlan(
+  completion: DshExecutionResult,
+  capability: DshResearchCapability,
+): void {
+  if (capability !== 'law_search') return;
+  const recallTools = new Set<string>([
+    DSH_LAW_SEARCH_TOOL,
+    DSH_LAW_ADVANCED_SEARCH_TOOL,
+    DSH_LAW_SEMANTIC_SEARCH_TOOL,
+  ]);
+  const detailTools = new Set<string>([DSH_LAW_BATCH_DETAIL_TOOL, DSH_LAW_DETAIL_TOOL]);
+  const recallCalls = completion.toolCalls.filter((call) => recallTools.has(call.name));
+  const detailCalls = completion.toolCalls.filter((call) => detailTools.has(call.name));
+  if (recallCalls.length > LAW_RESEARCH_RECALL_CALL_LIMIT || detailCalls.length > 1) {
+    throw new Error(`dsh Agent 工具规划存在重复调用：召回 ${recallCalls.length} 次，详情 ${detailCalls.length} 次`);
   }
 }
 

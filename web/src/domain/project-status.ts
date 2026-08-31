@@ -1,4 +1,4 @@
-import type { ProjectStatus } from '../types'
+import type { CrmDeliveryStatus, ProjectStatus } from '../types'
 
 /**
  * P2-02：前端唯一工单状态配置。
@@ -20,7 +20,7 @@ export const PROJECT_STATUS_META = {
   分析中: { label: '分析中', group: 'processing', tone: 'info', terminal: false, actions: ['view', 'cancel'] },
   待处理: { label: '待处理', group: 'processing', tone: 'warning', terminal: false, actions: ['view', 'cancel'] },
   待复核: { label: '待复核', group: 'processing', tone: 'warning', terminal: false, actions: ['view', 'cancel', 'reply', 'transfer'] },
-  已回传: { label: '已回传', group: 'completed', tone: 'success', terminal: true, actions: ['view'] },
+  已回传: { label: '已完成', group: 'completed', tone: 'success', terminal: true, actions: ['view'] },
   已取消: { label: '已取消', group: 'cancelled', tone: 'neutral', terminal: true, actions: ['view'] },
 } satisfies Record<ProjectStatus, ProjectStatusMeta>
 
@@ -46,4 +46,21 @@ export function assertNever(value: never): never {
 /** 状态 → 稳定 CSS class(避免业务中文值直接参与动态 class) */
 export function statusClass(status: ProjectStatus): string {
   return `status-${PROJECT_STATUS_META[status].tone}`
+}
+
+/** Legacy 状态值“已回传”只表示平台内审核完成，界面不把它表述为 CRM 已送达。 */
+export function statusLabel(status: ProjectStatus): string {
+  return PROJECT_STATUS_META[status].label
+}
+
+const CRM_DELIVERY_LABELS: Record<CrmDeliveryStatus, string> = {
+  pending: 'CRM 待交付',
+  sending: 'CRM 交付中',
+  delivered: 'CRM 已送达',
+  failed: 'CRM 交付失败，等待重试',
+  dead: 'CRM 交付已停止，需人工处理',
+}
+
+export function crmDeliveryStatusLabel(status: CrmDeliveryStatus): string {
+  return CRM_DELIVERY_LABELS[status]
 }

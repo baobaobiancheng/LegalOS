@@ -1,6 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OutboxRepository } from '../src/modules/project/infrastructure/outbox.repository';
 import { OutboxWorker } from '../src/modules/project/infrastructure/outbox.worker';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /**
  * P1-04 Outbox 租约/认领单测：
@@ -23,6 +26,7 @@ const makePrisma = () => ({
     count: vi.fn(),
   },
   project: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+  contractFile: { findFirst: vi.fn() },
   user: { findUnique: vi.fn() },
   projectEvent: { create: vi.fn() },
 });
@@ -136,13 +140,20 @@ describe('OutboxRepository 认领/租约', () => {
       lastError: 'boom',
     });
   });
+
+  it('旧 Worker 的 claimToken 已失效时返回 null，不得触发后续业务状态改写', async () => {
+    prisma.outboxEvent.updateMany.mockResolvedValue({ count: 0 });
+    await expect(repo.markFailed('e1', 'tok-stale', 'late failure', 8)).resolves.toBeNull();
+  });
 });
 
 describe('OutboxWorker 钉钉建群幂等', () => {
   let prisma: any;
   let outbox: any;
   let dingtalk: any;
+  let crm: any;
   let worker: OutboxWorker;
+  let contractStorageDir: string;
 
   const claim = (over: any = {}) => ({
     event: { ...CANDIDATE, ...over },
@@ -161,12 +172,24 @@ describe('OutboxWorker 钉钉建群幂等', () => {
       addMember: vi.fn().mockResolvedValue(undefined),
       sendNotification: vi.fn().mockResolvedValue(undefined),
     };
-    worker = new OutboxWorker(prisma as any, outbox as any, dingtalk as any, makeConfig() as any);
+    crm = { writeBack: vi.fn().mockResolvedValue(undefined) };
+    contractStorageDir = mkdtempSync(join(tmpdir(), 'legalos-crm-delivery-'));
+    worker = new OutboxWorker(
+      prisma as any,
+      outbox as any,
+      dingtalk as any,
+      crm as any,
+      makeConfig({ CONTRACT_STORAGE_DIR: contractStorageDir }) as any,
+    );
     prisma.user.findUnique.mockImplementation(({ where }: any) =>
       where.id === 'u1'
         ? { dingtalkUserId: 'U1', displayName: '业务' }
         : { dingtalkUserId: 'B1', displayName: '彭宇欣' },
     );
+  });
+
+  afterEach(() => {
+    rmSync(contractStorageDir, { recursive: true, force: true });
   });
 
   it('已有真实群 → 不再建群，标记 succeeded', async () => {
@@ -255,5 +278,114 @@ describe('OutboxWorker 钉钉建群幂等', () => {
       data: { dingtalkMembers: '["U1","B1"]' },
     });
     expect(outbox.markSucceeded).toHaveBeenCalledWith('e1', 'tok');
+  });
+
+  it('CRM 交付：收到成功回执后才标记 delivered', async () => {
+    const projectDir = join(contractStorageDir, 'p1');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(join(projectDir, 'final.docx'), 'file-bytes');
+    outbox.claimNext.mockResolvedValue([
+      claim({
+        eventType: 'crm.review-result.deliver',
+        payload: { projectId: 'p1', contractFileId: 'f1' },
+      }),
+    ]);
+    prisma.project.findUnique.mockResolvedValue({
+      id: 'p1', sourceAppId: 'crm-legal', crmTaskId: 'task-1', contractNo: 'HT-1', crmReference: null,
+      crmDeliveryStatus: 'pending', crmDeliveryFileId: 'f1',
+      reviewCompletedAt: new Date('2026-08-31T00:00:00Z'), result: '审核通过',
+    });
+    prisma.contractFile.findFirst.mockResolvedValue({
+      id: 'f1', projectId: 'p1', storedName: 'final.docx', originalName: '定稿.docx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', size: 10,
+      uploader: { role: 'legal_bp' },
+    });
+
+    await worker.pollOnce();
+
+    expect(crm.writeBack).toHaveBeenCalledWith(expect.objectContaining({
+      sourceAppId: 'crm-legal', crmTaskId: 'task-1', contractNo: 'HT-1', projectId: 'p1', conclusion: '审核通过',
+      file: expect.objectContaining({ id: 'f1', originalName: '定稿.docx' }),
+    }));
+    expect(prisma.project.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ crmDeliveryStatus: 'delivered' }),
+    }));
+    expect(outbox.markSucceeded).toHaveBeenCalledWith('e1', 'tok');
+  });
+
+  it('CRM 交付失败：保留内部审核完成状态，交付单独标记 failed 并重试', async () => {
+    const projectDir = join(contractStorageDir, 'p1');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(join(projectDir, 'final.docx'), 'file-bytes');
+    outbox.claimNext.mockResolvedValue([
+      claim({
+        eventType: 'crm.review-result.deliver',
+        payload: { projectId: 'p1', contractFileId: 'f1' },
+      }),
+    ]);
+    outbox.markFailed.mockResolvedValue('pending');
+    crm.writeBack.mockRejectedValue(new Error('CRM 503'));
+    prisma.project.findUnique.mockResolvedValue({
+      id: 'p1', sourceAppId: 'crm-legal', crmTaskId: 'task-1', contractNo: 'HT-1', crmReference: null,
+      crmDeliveryStatus: 'pending', crmDeliveryFileId: 'f1',
+      reviewCompletedAt: new Date('2026-08-31T00:00:00Z'), result: '审核通过',
+    });
+    prisma.contractFile.findFirst.mockResolvedValue({
+      id: 'f1', projectId: 'p1', storedName: 'final.docx', originalName: '定稿.docx', mimeType: null, size: 10,
+      uploader: { role: 'legal_bp' },
+    });
+
+    await worker.pollOnce();
+
+    expect(outbox.markFailed).toHaveBeenCalledWith('e1', 'tok', 'CRM 503', 1);
+    expect(prisma.project.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'p1', crmDeliveryStatus: { not: 'delivered' } },
+      data: expect.objectContaining({ crmDeliveryStatus: 'failed', crmDeliveryLastError: 'CRM 503' }),
+    }));
+  });
+
+  it('CRM 交付事件引用的文件与法务确认绑定不一致时拒绝外发', async () => {
+    outbox.claimNext.mockResolvedValue([
+      claim({
+        eventType: 'crm.review-result.deliver',
+        payload: { projectId: 'p1', contractFileId: 'stale-file' },
+      }),
+    ]);
+    outbox.markFailed.mockResolvedValue('pending');
+    prisma.project.findUnique.mockResolvedValue({
+      id: 'p1', sourceAppId: 'crm-legal', crmTaskId: 'task-1',
+      crmDeliveryStatus: 'pending', crmDeliveryFileId: 'confirmed-file',
+      reviewCompletedAt: new Date('2026-08-31T00:00:00Z'), result: '审核通过',
+    });
+
+    await worker.pollOnce();
+
+    expect(crm.writeBack).not.toHaveBeenCalled();
+    expect(outbox.markFailed).toHaveBeenCalledWith(
+      'e1',
+      'tok',
+      'CRM 交付文件与法务确认版本不一致',
+      1,
+    );
+  });
+
+  it('旧 Worker 交付失败但 claimToken 已失效时，不覆盖新 Worker 的交付状态', async () => {
+    outbox.claimNext.mockResolvedValue([
+      claim({
+        eventType: 'crm.review-result.deliver',
+        payload: { projectId: 'p1', contractFileId: 'stale-file' },
+      }),
+    ]);
+    outbox.markFailed.mockResolvedValue(null);
+    prisma.project.findUnique.mockResolvedValue({
+      id: 'p1', sourceAppId: 'crm-legal', crmTaskId: 'task-1',
+      crmDeliveryStatus: 'sending', crmDeliveryFileId: 'confirmed-file',
+      reviewCompletedAt: new Date('2026-08-31T00:00:00Z'), result: '审核通过',
+    });
+
+    await worker.pollOnce();
+
+    expect(prisma.project.updateMany).not.toHaveBeenCalled();
+    expect(prisma.projectEvent.create).not.toHaveBeenCalled();
   });
 });

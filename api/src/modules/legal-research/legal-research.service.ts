@@ -19,7 +19,6 @@ import {
   buildStandaloneAiLawResearchPrompt,
   AiLawResearchReportV1,
   AiLawResearchTurnContext,
-  JsonAnswerFieldStream,
   parseAiLawResearchReport,
 } from '../../common/services/ai-law-research-report';
 import { AuditService } from '../../common/audit/audit.service';
@@ -199,7 +198,6 @@ export class LegalResearchService {
         verifiedSourceIds: new Set<string>(),
         successfulSearchCount: 0,
       };
-      const answerStream = new GatedAnswerStream((delta) => emit({ type: 'answer_delta', delta }));
       const result = await this.executeAiSearch(
         prepared.query,
         actor,
@@ -210,11 +208,7 @@ export class LegalResearchService {
           resumeDshSessionId: prepared.resumeDshSessionId,
           turnContext: prepared.turnContext,
           onToolCall: (call) => emitToolCallProgress(call, emit),
-          onToolResult: (toolResult) => {
-            emitToolResultProgress(toolResult, emit, progress);
-            answerStream.setGate(canStreamAnswer(progress));
-          },
-          onText: (delta) => answerStream.push(delta),
+          onToolResult: (toolResult) => emitToolResultProgress(toolResult, emit, progress),
         },
       );
       await this.sessions.completeTurn(prepared, result);
@@ -241,7 +235,6 @@ export class LegalResearchService {
       turnContext: AiLawResearchTurnContext;
       onToolCall?: (call: DshToolCallEvent) => void;
       onToolResult?: (result: DshToolResultEvent) => void;
-      onText?: (delta: string) => void;
     },
   ): Promise<AiSearchExecutionResponse> {
     const correlationId = randomUUID();
@@ -274,7 +267,6 @@ export class LegalResearchService {
       );
       if (options.onToolCall) handle.on('tool_call', options.onToolCall);
       if (options.onToolResult) handle.on('tool_result', options.onToolResult);
-      if (options.onText) handle.on('research_text', options.onText);
       const result = await completionOf(handle);
       completedResult = result;
       const parsed = parseAiLawResearchReport(result.text, result.toolResults, query, options.turnContext);
@@ -554,13 +546,6 @@ function emitToolResultProgress(
   }
 }
 
-function canStreamAnswer(progress: AiResearchProgress): boolean {
-  // 零候选在轮次结束前仍可能触发第二次召回并命中，因此不提前开闸。
-  // 全程零候选的合法结果会在 completion 校验后通过最终结构化报告展示。
-  return progress.successfulSearchCount > 0
-    && progress.verifiedSourceIds.size > 0;
-}
-
 function thinkingCopy(prepared: PreparedAiResearchTurn): string {
   if (prepared.operation === 'correct') {
     return '正在识别本轮更正事实，并判断上一轮哪些结论和检索依据需要重新核验。';
@@ -594,29 +579,6 @@ function detailRequestCount(value: unknown): number {
   if (!value || typeof value !== 'object') return 1;
   const ids = (value as Record<string, unknown>).lawIds;
   return Array.isArray(ids) && ids.length ? Math.min(ids.length, 10) : 1;
-}
-
-class GatedAnswerStream {
-  private readonly parser = new JsonAnswerFieldStream();
-  private buffered = '';
-  private open = false;
-
-  constructor(private readonly emit: (delta: string) => void) {}
-
-  push(rawDelta: string): void {
-    const delta = this.parser.push(rawDelta);
-    if (!delta) return;
-    if (this.open) this.emit(delta);
-    else this.buffered += delta;
-  }
-
-  setGate(open: boolean): void {
-    this.open = open;
-    if (!open || !this.buffered) return;
-    const delta = this.buffered;
-    this.buffered = '';
-    this.emit(delta);
-  }
 }
 
 export function isCaseLikeTitle(title: string): boolean {

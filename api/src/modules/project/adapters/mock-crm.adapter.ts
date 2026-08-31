@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { CrmAdapter, CrmContext } from './adapter.interfaces';
+import { CrmAdapter, CrmContext, CrmReviewResultDelivery } from './adapter.interfaces';
 
 @Injectable()
 export class MockCrmAdapter implements CrmAdapter {
@@ -14,7 +14,13 @@ export class MockCrmAdapter implements CrmAdapter {
     };
   }
 
-  async writeBack(projectId: string, result: string): Promise<void> {
-    this.logger.log(`[CRM Mock] 回写成功 — 工单 ${projectId}，结果：${result.slice(0, 50)}...`);
+  async writeBack(delivery: CrmReviewResultDelivery): Promise<void> {
+    // 未显式开启 Mock 时必须失败，避免真实 CRM 未配置却误标“已送达”。
+    if (process.env.CRM_MOCK !== 'true' && process.env.NODE_ENV !== 'test') {
+      throw new Error('CRM 真实回传适配器未配置（本地演示需显式设置 CRM_MOCK=true）');
+    }
+    this.logger.log(
+      `[CRM Mock] 交付成功 — 任务 ${delivery.crmTaskId}，工单 ${delivery.projectId}，文件 ${delivery.file.originalName}`,
+    );
   }
 }

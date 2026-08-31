@@ -89,7 +89,7 @@ export class OutboxRepository {
     claimToken: string,
     errorMessage: string,
     attempts: number,
-  ): Promise<'pending' | 'dead'> {
+  ): Promise<'pending' | 'dead' | null> {
     const message = String(errorMessage).slice(0, 500);
     if (attempts >= this.maxAttempts) {
       const res = await this.prisma.outboxEvent.updateMany({
@@ -99,7 +99,7 @@ export class OutboxRepository {
       if (res.count === 1) {
         this.logger.error(`Outbox 事件 ${id} 连续失败 ${attempts} 次，已进入 dead`);
       }
-      return 'dead';
+      return res.count === 1 ? 'dead' : null;
     }
     // 指数退避：1s → 2s → 4s … 封顶 60s，加 0~500ms 抖动
     const backoffMs = Math.min(60_000, 1000 * 2 ** (attempts - 1)) + Math.floor(Math.random() * 500);
@@ -114,7 +114,7 @@ export class OutboxRepository {
     if (res.count === 1) {
       this.logger.warn(`Outbox 事件 ${id} 处理失败，${backoffMs}ms 后重试（${attempts}/${this.maxAttempts}）`);
     }
-    return 'pending';
+    return res.count === 1 ? 'pending' : null;
   }
 
   /** 运维统计：各状态数量 + 最近错误（管理接口，仅 admin/legal_lead） */

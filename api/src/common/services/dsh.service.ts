@@ -236,6 +236,7 @@ export class DshService implements OnModuleDestroy {
           researchCapability: options?.researchCapability,
           requireResearchTool: options?.requireResearchTool ?? Boolean(options?.researchCapability),
           resumeDshSessionId: options?.resumeDshSessionId,
+          lawDetailLimit: options?.lawDetailLimit,
         }),
       );
     } catch (e) {
@@ -255,7 +256,7 @@ export class DshService implements OnModuleDestroy {
    */
   private runTurn(
     prompt: string,
-    params: Pick<DshOptions, 'model' | 'sessionId' | 'researchCapability' | 'requireResearchTool' | 'resumeDshSessionId'>
+    params: Pick<DshOptions, 'model' | 'sessionId' | 'researchCapability' | 'requireResearchTool' | 'resumeDshSessionId' | 'lawDetailLimit'>
       & { timeout: number; abort: AbortSignal },
   ): { result: DshExecutionHandle; done: Promise<void> } {
     const handle = new DshExecutionHandle();
@@ -284,7 +285,7 @@ export class DshService implements OnModuleDestroy {
 
   private async driveAgent(
     prompt: string,
-    params: Pick<DshOptions, 'model' | 'sessionId' | 'researchCapability' | 'requireResearchTool' | 'resumeDshSessionId'>,
+    params: Pick<DshOptions, 'model' | 'sessionId' | 'researchCapability' | 'requireResearchTool' | 'resumeDshSessionId' | 'lawDetailLimit'>,
     handle: DshExecutionHandle,
     abort: AbortSignal,
   ): Promise<void> {
@@ -312,7 +313,9 @@ export class DshService implements OnModuleDestroy {
     // 业务 conversationId 仍用于队列串行化，不能直接冒充底层 dsh session id。
     const dshSessionId = SessionId(params.resumeDshSessionId ?? `legalos-${randomUUID()}`);
     const toolDefinitions = params.researchCapability
-      ? await this.baijianTools.createDefinitions(params.researchCapability)
+      ? await this.baijianTools.createDefinitions(params.researchCapability, {
+          lawDetailLimit: params.lawDetailLimit,
+        })
       : [];
 
     const agentConfig = {
@@ -379,7 +382,7 @@ export class DshService implements OnModuleDestroy {
           name: toolNamesByCallId.get(callId) ?? 'unknown',
           isError: Boolean(block?.isError),
           ...(canonicalResult ? { result: canonicalResult } : {}),
-          ...(event.data.error ? { error: event.data.error } : {}),
+          ...(event.data.error ? { error: normalizeToolError(event.data.error) } : {}),
         };
         toolResults.push(result);
         handle.emit('tool_result', result);
@@ -470,6 +473,22 @@ function parseToolArguments(value: unknown): unknown {
   } catch {
     return value.slice(0, 2_000);
   }
+}
+
+function normalizeToolError(value: unknown): { name: string; code: string; message?: string } {
+  if (value instanceof Error) {
+    const rawCode = (value as Error & { code?: unknown }).code;
+    const code = typeof rawCode === 'string' && rawCode ? rawCode : 'TOOL_EXECUTION_FAILED';
+    return { name: value.name || 'Error', code, ...(value.message ? { message: value.message } : {}) };
+  }
+  if (isRecord(value)) {
+    const name = typeof value.name === 'string' && value.name ? value.name : 'Error';
+    const code = typeof value.code === 'string' && value.code ? value.code : 'TOOL_EXECUTION_FAILED';
+    const message = typeof value.message === 'string' && value.message ? value.message : undefined;
+    return { name, code, ...(message ? { message } : {}) };
+  }
+  const message = String(value ?? '').trim();
+  return { name: 'Error', code: 'TOOL_EXECUTION_FAILED', ...(message ? { message } : {}) };
 }
 
 function readBaijianResultMeta(value: unknown): DshToolResultValue | undefined {

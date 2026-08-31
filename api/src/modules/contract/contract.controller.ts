@@ -13,7 +13,7 @@ import { Request, Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import * as multer from 'multer';
 import { join, extname } from 'path';
-import { mkdirSync } from 'fs';
+import { chmodSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -38,7 +38,8 @@ const storageDir = process.env.CONTRACT_STORAGE_DIR
 const contractStorage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     const dir = join(storageDir, '.staging');
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700);
     cb(null, dir);
   },
   filename: (_req, file, cb) => {

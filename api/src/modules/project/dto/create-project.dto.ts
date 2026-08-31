@@ -34,9 +34,11 @@ export class CreateProjectDto {
   @IsString()
   requesterDepartment?: string;
 
-  // CRM 上下文（可选，Adapter 自动带）
+  // 兼容旧入参。sourceAppId/crmTaskId/contractNo 只允许未来的 CRM 验签入站写入，
+  // 不向通用 /projects 开放，防止登录用户伪造 CRM 任务触发外部交付。
   @IsOptional()
   @IsString()
+  @MaxLength(256)
   crmReference?: string;
 
   // 幂等键（P1-03）：同一键只创建一个工单，防客户端/CRM 重试重复建单/建群
@@ -98,6 +100,12 @@ export class ReplyProjectDto {
   @MinLength(1)
   @MaxLength(5000)
   text: string;
+
+  /** CRM 合同任务完成时必填：由法务明确确认的回传文件。 */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  deliveryFileId?: string;
 }
 
 export class TransferProjectDto {

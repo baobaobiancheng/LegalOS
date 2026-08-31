@@ -38,6 +38,38 @@ describe('BaijianResultNormalizer', () => {
     });
   });
 
+  it('统一解码法规展示元数据的命名、十进制和十六进制实体，但保留机器 ID', () => {
+    const result = normalizer.normalize({
+      toolName: BAIJIAN_LAW_SEARCH_TOOL,
+      structuredContent: {
+        code: '200',
+        data: {
+          count: 1,
+          pageSize: 1,
+          totalPage: 1,
+          lawdata: [{
+            lawId: 'LAW&#49;',
+            lawName: '&#x4E2D;&#22269;&nbsp;<b>法</b>&amp;规',
+            issuingOrgan: '&#x56FD;家&#20154;大',
+            issuingNo: '&quot;主席令&#x7B2C;1号&quot;',
+            releaseYearMonthDate: '2026&#45;08&#45;31',
+            implementYearMonthDate: '2026-09-01',
+            timeliness: '&#29616;行&#x6709;效',
+          }],
+        },
+      },
+    });
+
+    expect(result.records[0]).toMatchObject({
+      recordId: 'LAW&#49;',
+      lawName: '中国 法&规',
+      issuingOrgan: '国家人大',
+      issuingNo: '"主席令第1号"',
+      releaseDate: '2026-08-31',
+      timeliness: '现行有效',
+    });
+  });
+
   it('区分成功零命中与供应商错误', () => {
     const empty = normalizer.normalize({
       toolName: BAIJIAN_LAW_SEARCH_TOOL,
@@ -82,6 +114,35 @@ describe('BaijianResultNormalizer', () => {
     expect(result.records[1]).toMatchObject({ recordId: 'CASE-2', url: null, score: null });
   });
 
+  it('统一解码案例展示元数据并保留 source_id 原值', () => {
+    const result = normalizer.normalize({
+      toolName: BAIJIAN_CASE_SEARCH_TOOL,
+      structuredContent: {
+        query: '违法&nbsp;解除',
+        total_hits: 1,
+        hits: [{
+          source: '&#x4E2D;国&nbsp;裁判文书网',
+          source_id: 'CASE&#45;1',
+          title: '&#20013;国&amp;案例',
+          court: '&#x67D0;人民法院',
+          case_number: '&quot;(2026)&quot;民初1号',
+        }],
+      },
+    });
+
+    expect(result).toMatchObject({
+      query: '违法 解除',
+      records: [{
+        recordId: 'CASE&#45;1',
+        sourceId: 'CASE&#45;1',
+        sourceName: '中国 裁判文书网',
+        title: '中国&案例',
+        court: '某人民法院',
+        caseNumber: '"(2026)"民初1号',
+      }],
+    });
+  });
+
   it('把 quota、timeout 和 auth 映射为稳定错误码', () => {
     expect(classifySupplierError({ code: -32029, message: 'free quota' }).code).toBe('BAIJIAN_QUOTA_EXHAUSTED');
     expect(classifySupplierError(new Error('request timed out')).code).toBe('BAIJIAN_TIMEOUT');
@@ -95,7 +156,10 @@ describe('BaijianResultNormalizer', () => {
         code: 200,
         data: {
           rjs8: 'D6592443DA000EF8D692CE667E947A69',
-          lawName: '中华人民共和国劳动合同法',
+          lawName: '&#x4E2D;华人民共和国劳动合同法',
+          issuingOrgan: '&#x5168;国人大常委会',
+          issuingNo: '主席令&#31532;73号',
+          timeliness: '&#x73B0;行有效',
           tocItem: [{ id: 'section0', text: '<b>第一章 总则</b>', indentLevel: 0, children: [] }],
           lawSourceContent: "<p id='section0' style='text-align:center'><strong>第一章 总则</strong></p><p>　　第一条 &lt;法规正文&gt;</p><script>alert(1)</script>",
         },
@@ -103,6 +167,10 @@ describe('BaijianResultNormalizer', () => {
     });
     expect(result).toMatchObject({
       toolName: BAIJIAN_LAW_DETAIL_TOOL,
+      lawName: '中华人民共和国劳动合同法',
+      issuingOrgan: '全国人大常委会',
+      issuingNo: '主席令第73号',
+      timeliness: '现行有效',
       toc: [{ id: 'section0', text: '第一章 总则' }],
       contentBlocks: [
         { kind: 'heading', text: '第一章 总则' },

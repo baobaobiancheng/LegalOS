@@ -48,8 +48,17 @@ export interface ProjectDetail extends ProjectListItem {
   skillName?: string;
   model?: string;
   result?: string;
+  sourceAppId?: string;
+  crmTaskId?: string;
+  contractNo?: string;
   crmReference?: string;
   crmCustomer?: string;
+  reviewStatus?: 'review_completed';
+  reviewCompletedAt?: string;
+  crmDeliveryStatus?: 'pending' | 'sending' | 'delivered' | 'failed' | 'dead';
+  crmDeliveryUpdatedAt?: string;
+  crmDeliveredAt?: string;
+  crmDeliveryFileId?: string;
   messages: MessageDto[];
   events: EventDto[];
 }

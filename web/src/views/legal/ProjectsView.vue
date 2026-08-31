@@ -7,13 +7,14 @@ import ErrorState from '../../components/ErrorState.vue'
 import LegalWorkspaceLayout from '../../components/LegalWorkspaceLayout.vue'
 import { useRemoteData } from '../../composables/useRemoteData'
 import { buildPagination } from '../../domain/legal-research'
+import { statusLabel } from '../../domain/project-status'
 import type { ProjectGroupKey, ProjectListItem, ProjectListResponse } from '../../types'
 
 const PAGE_SIZE = 10
 const GROUPS: Array<{ key: ProjectGroupKey; label: string }> = [
   { key: '待处理', label: '待处理' },
   { key: '合同协作', label: '合同协作' },
-  { key: '已回传', label: '已回传' },
+  { key: '已回传', label: '已完成' },
   { key: '数字分身处理', label: 'AI 处理' },
 ]
 
@@ -264,7 +265,7 @@ onBeforeUnmount(() => animationContext?.revert())
             <span
               class="status-cell"
               role="cell"
-            >{{ project.status }}</span>
+            >{{ statusLabel(project.status) }}</span>
           </button>
         </div>
 

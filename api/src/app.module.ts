@@ -18,6 +18,7 @@ import { AiExecutionModule } from './common/services/ai-execution.module';
 import { LegalResearchModule } from './modules/legal-research/legal-research.module';
 import { AuditModule } from './common/audit/audit.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { CrmIntegrationModule } from './modules/crm-integration/crm-integration.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     MembersModule,
     DashboardModule,
     LegalResearchModule,
+    CrmIntegrationModule,
   ],
   providers: [
     // 顺序即执行顺序：限流 → 认证 → 授权

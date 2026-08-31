@@ -135,7 +135,13 @@ export class ProjectQueryService {
     for (const row of mineStatusRows) statusCounts[row.status] = row._count._all;
 
     // 脱敏：extra（技能 prompt 快照）不随列表响应返回
-    const safeItems = items.map(({ extra: _extra, ...rest }) => rest);
+    const safeItems = items.map(({
+      extra: _extra,
+      crmDeliveryLastError: _crmDeliveryLastError,
+      crmPayloadSha256: _crmPayloadSha256,
+      crmFileManifestSha256: _crmFileManifestSha256,
+      ...rest
+    }) => rest);
 
     // 按状态分组
     const groups: Record<string, typeof safeItems> = { 待处理: [], 合同协作: [], 已回传: [], 数字分身处理: [] };
@@ -159,7 +165,10 @@ export class ProjectQueryService {
         legalBp: { select: userSelect },
         messages: { orderBy: { createdAt: 'asc' }, take: 200 },
         events: { orderBy: { createdAt: 'asc' }, take: 100 },
-        files: { include: { uploader: { select: { displayName: true } } }, orderBy: { createdAt: 'desc' } },
+        files: {
+          include: { uploader: { select: { id: true, displayName: true, role: true } } },
+          orderBy: { createdAt: 'desc' },
+        },
       },
     });
     if (!project) throw new NotFoundException('工单不存在');
@@ -186,7 +195,14 @@ export class ProjectQueryService {
       ...(traceByAnswerId.has(message.id) ? { research: traceByAnswerId.get(message.id) } : {}),
     }));
 
-    const { extra: _extra, messages: _messages, ...safeProject } = project;
+    const {
+      extra: _extra,
+      messages: _messages,
+      crmDeliveryLastError: _crmDeliveryLastError,
+      crmPayloadSha256: _crmPayloadSha256,
+      crmFileManifestSha256: _crmFileManifestSha256,
+      ...safeProject
+    } = project;
     return { ...safeProject, messages };
   }
 }

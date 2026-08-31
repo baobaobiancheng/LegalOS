@@ -9,6 +9,7 @@ import DownloadMenu from '../../components/DownloadMenu.vue'
 import type { ContractDocStyle } from '../../utils/markdown-to-docx'
 import type { ContractFile, ContractTemplate, ProjectDetail, MessageDto, EventDto } from '../../types'
 import ErrorState from '../../components/ErrorState.vue'
+import { crmDeliveryStatusLabel, statusLabel } from '../../domain/project-status'
 
 const route = useRoute()
 const router = useRouter()
@@ -26,11 +27,13 @@ const id = route.params.id as string
 const contractFiles = ref<ContractFile[]>([])
 const uploadingFinal = ref(false)
 const finalInput = ref<HTMLInputElement | null>(null)
+const selectedDeliveryFileId = ref('')
 
 onMounted(async () => {
   try {
     const data = await request<ProjectDetail>(`/projects/${id}`)
     project.value = data
+    selectedDeliveryFileId.value = data.crmDeliveryFileId ?? ''
     mergeTimeline(data)
     if (data.kind === 'contract') {
       loadFiles()
@@ -124,9 +127,29 @@ const canUploadFinal = computed(() =>
   project.value?.status !== '已回传' && project.value?.status !== '已取消'
 )
 
+const isCrmProject = computed(() => Boolean(project.value?.sourceAppId && project.value?.crmTaskId))
+const isLegalDeliveryFile = (file: ContractFile) =>
+  Boolean(
+    (file.kind === 'final' || file.kind === 'revised') &&
+    file.uploader &&
+    ['legal_bp', 'legal_lead', 'admin'].includes(file.uploader.role)
+  )
+const contractFileKindLabel = (kind: ContractFile['kind']) => ({
+  source: 'CRM 原始合同',
+  attachment: 'CRM 参考附件',
+  main_contract: 'CRM 主合同',
+  revised: '修订版',
+  final: '定稿',
+})[kind]
+
 const loadFiles = async () => {
   try {
     contractFiles.value = await request<ContractFile[]>(`/projects/${id}/files`)
+    if (!contractFiles.value.some(file => file.id === selectedDeliveryFileId.value && isLegalDeliveryFile(file))) {
+      const preferred = contractFiles.value.find(file => file.kind === 'final' && isLegalDeliveryFile(file))
+        ?? contractFiles.value.find(isLegalDeliveryFile)
+      selectedDeliveryFileId.value = preferred?.id ?? ''
+    }
   } catch (error) {
     actionError.value = error instanceof RequestError
       ? error
@@ -147,8 +170,9 @@ const handleFinalUpload = async (e: Event) => {
     const fd = new FormData()
     fd.append('file', file)
     fd.append('kind', 'final')
-    await requestForm(`/projects/${id}/files`, fd, { method: 'POST' })
+    const uploaded = await requestForm<{ fileId: string }>(`/projects/${id}/files`, fd, { method: 'POST' })
     await loadFiles()
+    selectedDeliveryFileId.value = uploaded.fileId
   } catch (error) {
     actionError.value = error instanceof RequestError
       ? error
@@ -169,10 +193,24 @@ const formatSize = (bytes: number): string => {
 
 const reply = async () => {
   if (!input.value.trim()) return
+  if (isCrmProject.value && !selectedDeliveryFileId.value) {
+    actionError.value = new RequestError({
+      error: '请先上传并选择一个由法务确认的回传文件',
+      code: 'CRM_DELIVERY_FILE_REQUIRED',
+      statusCode: 409,
+    })
+    return
+  }
   const text = input.value.trim()
   input.value = ''
   try {
-    await request(`/projects/${id}/reply`, { method: 'POST', body: { text } })
+    await request(`/projects/${id}/reply`, {
+      method: 'POST',
+      body: {
+        text,
+        ...(isCrmProject.value ? { deliveryFileId: selectedDeliveryFileId.value } : {}),
+      },
+    })
     await refreshMessages()
   } catch (error) {
     actionError.value = error instanceof RequestError
@@ -313,7 +351,11 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
               class="skill-chip"
             >{{ project.skillName }}</span>
             <span :class="['risk-chip', 'risk-' + project.risk + '-bg']">{{ project.risk }}</span>
-            <span :class="['status-chip', 'status-' + project.status]">{{ project.status }}</span>
+            <span :class="['status-chip', 'status-' + project.status]">{{ statusLabel(project.status) }}</span>
+            <span
+              v-if="project.crmDeliveryStatus"
+              class="status-chip"
+            >{{ crmDeliveryStatusLabel(project.crmDeliveryStatus) }}</span>
           </template>
         </div>
         <span
@@ -417,18 +459,37 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
             v-if="contractFiles.length"
             class="attach-list"
           >
-            <button
+            <div
               v-for="f in contractFiles"
               :key="f.id"
-              class="attach-item"
-              @click="downloadFile(f)"
+              :class="['attach-item', { 'attach-item-selected': selectedDeliveryFileId === f.id }]"
             >
-              <span class="att-icon">📄</span>
-              <span class="att-name">{{ f.originalName }}</span>
-              <span :class="['att-kind', 'att-kind-' + f.kind]">{{ f.kind === 'final' ? '定稿' : '修订版' }}</span>
-              <span class="att-size">{{ formatSize(f.size) }}</span>
-              <span class="att-uploader">{{ f.uploader?.displayName || '' }}</span>
-            </button>
+              <label
+                v-if="isCrmProject"
+                class="delivery-choice"
+                :title="!isLegalDeliveryFile(f) ? '仅法务角色上传的文件可回传' : canReply() ? '选择为 CRM 回传文件' : '审核已完成，回传文件不可变更'"
+              >
+                <input
+                  v-model="selectedDeliveryFileId"
+                  type="radio"
+                  name="crm-delivery-file"
+                  :value="f.id"
+                  :disabled="!isLegalDeliveryFile(f) || !canReply()"
+                >
+                <span>回传</span>
+              </label>
+              <button
+                type="button"
+                class="att-download"
+                @click="downloadFile(f)"
+              >
+                <span class="att-icon">📄</span>
+                <span class="att-name">{{ f.originalName }}</span>
+                <span :class="['att-kind', 'att-kind-' + f.kind]">{{ contractFileKindLabel(f.kind) }}</span>
+                <span class="att-size">{{ formatSize(f.size) }}</span>
+                <span class="att-uploader">{{ f.uploader?.displayName || '' }}</span>
+              </button>
+            </div>
           </div>
           <div
             v-else
@@ -451,7 +512,7 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
           <button
             v-if="canReply()"
             class="reply-btn"
-            :disabled="!input.trim() || sending"
+            :disabled="!input.trim() || sending || (isCrmProject && !selectedDeliveryFileId)"
             @click="reply"
           >
             回传
@@ -553,12 +614,18 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
 .attach-list { display: flex; flex-direction: column; gap: 6px; }
 .attach-item {
   display: flex; align-items: center; gap: 10px;
-  padding: 8px 12px; border: none; border-radius: 10px;
+  padding: 8px 12px; border: 1px solid transparent; border-radius: 10px;
   background: rgba(0,0,0,0.02); font-family: inherit;
-  cursor: pointer; text-align: left; transition: all 0.2s;
-  font-size: 12px;
+  transition: all 0.2s; font-size: 12px;
 }
 .attach-item:hover { background: rgba(0,113,227,0.06); }
+.attach-item-selected { border-color: rgba(0,113,227,0.35); background: rgba(0,113,227,0.06); }
+.delivery-choice { display: inline-flex; align-items: center; gap: 4px; color: #0055B3; font-size: 10px; cursor: pointer; }
+.delivery-choice:has(input:disabled) { color: var(--text-tertiary); cursor: not-allowed; }
+.att-download {
+  display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;
+  padding: 0; border: none; background: transparent; font: inherit; text-align: left; cursor: pointer;
+}
 .att-icon { font-size: 14px; flex-shrink: 0; }
 .att-name {
   font-weight: 600; color: var(--text); flex: 1; min-width: 0;

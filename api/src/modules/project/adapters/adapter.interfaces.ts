@@ -6,6 +6,25 @@ export interface CrmContext {
   businessType?: string;
 }
 
+export interface CrmDeliveryFile {
+  id: string;
+  originalName: string;
+  mimeType?: string | null;
+  size: number;
+  /** 适配器内部读取的服务端文件路径，不对外暴露。 */
+  path: string;
+}
+
+export interface CrmReviewResultDelivery {
+  sourceAppId: string;
+  crmTaskId: string;
+  contractNo: string | null;
+  projectId: string;
+  conclusion: string;
+  reviewCompletedAt: string;
+  file: CrmDeliveryFile;
+}
+
 // 钉钉群信息
 export interface DingTalkGroup {
   chatId: string;
@@ -46,7 +65,8 @@ export class DingTalkSyncIncompleteError extends Error {
 
 export interface CrmAdapter {
   getContext(customerId: string, params?: Record<string, string>): Promise<CrmContext>;
-  writeBack(projectId: string, result: string): Promise<void>;
+  /** 审核结果交付必须以 crmTaskId 幂等；返回即表示 CRM 已明确接收。 */
+  writeBack(delivery: CrmReviewResultDelivery): Promise<void>;
 }
 
 export interface DingTalkAdapter {

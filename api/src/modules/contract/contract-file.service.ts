@@ -1,19 +1,23 @@
-import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException, Optional } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { Response } from 'express';
 import {
-  closeSync,
   createReadStream,
+  chmodSync,
   existsSync,
   mkdirSync,
-  openSync,
-  readSync,
   renameSync,
   statSync,
   unlinkSync,
 } from 'fs';
 import { extname, join } from 'path';
 import { randomUUID } from 'crypto';
-import * as mammoth from 'mammoth';
 import { PrismaService } from '../../prisma/prisma.service';
 import { formatEventTime } from '../../common/utils/event-time';
 import { ProjectAccessPolicy } from '../project/domain/project-access.policy';
@@ -21,12 +25,13 @@ import { ProjectAction, ProjectActor } from '../project/domain/project-access.ty
 import { ContractDocumentWriter } from './application/contract-document.writer';
 import { AuditService } from '../../common/audit/audit.service';
 import { AuditRequestContext } from '../../common/audit/audit.types';
+import { ContractFileProcessor } from './application/contract-file.processor';
 
 /**
  * 合同文件服务（从 ContractService 抽出，2026-08-20 上帝类拆分）。
  *
  * 职责：合同附件的上传/列表/下载 + 磁盘文件管理（staging → 项目目录）+ 文件签名校验
- * + docx 正文抽取落库（createContractDocument，供上传和生成两条路径复用）。
+ * + DOCX/PDF/TXT/MD 正文抽取落库（createContractDocument，供上传和生成两条路径复用）。
  * ContractService 只保留生成/审查编排，不再持有任何文件系统逻辑。
  */
 @Injectable()
@@ -38,6 +43,7 @@ export class ContractFileService {
     private readonly prisma: PrismaService,
     private readonly accessPolicy: ProjectAccessPolicy,
     private readonly documentWriter: ContractDocumentWriter,
+    private readonly fileProcessor: ContractFileProcessor,
     @Optional() private readonly audit?: AuditService,
   ) {
     this.storageDir = process.env.CONTRACT_STORAGE_DIR
@@ -64,26 +70,24 @@ export class ContractFileService {
       throw e;
     }
 
-    // 类型白名单（不信任 mimetype，工程评审决策 #6）
     const ext = extname(file.originalname).toLowerCase();
-    const allowed = ['.docx', '.pdf', '.txt', '.md'];
-    if (!allowed.includes(ext)) {
-      this.tryCleanup(file.path);
-      throw new BadRequestException('不支持的文件类型，仅支持 .docx/.pdf/.txt/.md');
-    }
     if (file.size > 20 * 1024 * 1024) {
       this.tryCleanup(file.path);
       throw new BadRequestException('文件超过 20MB 限制');
     }
-    try {
-      this.assertFileSignature(file.path, ext);
-    } catch (e) {
-      this.tryCleanup(file.path);
-      throw e;
-    }
+    chmodSync(file.path, 0o600);
     if (kind !== 'revised' && kind !== 'final') {
       this.tryCleanup(file.path);
       throw new BadRequestException('kind 仅支持 revised / final');
+    }
+
+    // 四种格式都必须在 staging 阶段解析出非空正文；失败不进入业务目录/数据库。
+    let extractedText: string;
+    try {
+      extractedText = (await this.fileProcessor.validateAndExtract(file.path, file.originalname)).text;
+    } catch (e) {
+      this.tryCleanup(file.path);
+      throw e;
     }
 
     const storedName = file.filename || `${randomUUID()}${ext}`;
@@ -92,7 +96,8 @@ export class ContractFileService {
     try {
       // file.path 仍位于 staging；只有完成对象级鉴权和输入校验后才进入
       // projectId 目录，避免未授权请求先创建/污染业务目录。
-      mkdirSync(projectDir, { recursive: true });
+      mkdirSync(projectDir, { recursive: true, mode: 0o700 });
+      chmodSync(projectDir, 0o700);
       renameSync(file.path, finalPath);
     } catch (e) {
       this.tryCleanup(file.path);
@@ -102,53 +107,39 @@ export class ContractFileService {
 
     let record;
     try {
-      record = await this.prisma.contractFile.create({
-        data: {
+      record = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.contractFile.create({
+          data: {
+            projectId,
+            kind,
+            originalName: file.originalname,
+            storedName,
+            mimeType: file.mimetype,
+            size: file.size,
+            uploadedBy: actor.id,
+          },
+        });
+        await this.documentWriter.create(tx, {
           projectId,
-          kind,
-          originalName: file.originalname,
-          storedName,
-          mimeType: file.mimetype,
-          size: file.size,
-          uploadedBy: actor.id,
-        },
+          documentType: kind as 'revised' | 'final',
+          content: extractedText,
+          sourceFileId: created.id,
+          createdBy: actor.id,
+        });
+        await tx.projectMessage.create({
+          data: {
+            projectId,
+            role: 'assistant',
+            text: extractedText,
+            label: kind === 'revised' ? '修订版文本' : '终稿文本',
+          },
+        });
+        return created;
       });
     } catch (e) {
       this.tryCleanup(finalPath);
       this.logger.error(`附件记录落库失败：${e}`);
       throw new InternalServerErrorException('附件保存失败');
-    }
-
-    // revised/final + .docx：mammoth 抽取正文 → ContractDocument（9.3-2/9.3-3）。
-    // 抽取失败不得创建空文档，返回 textExtracted=false 让前端可识别"暂不可审查"。
-    let textExtracted = false;
-    if ((kind === 'revised' || kind === 'final') && ext === '.docx') {
-      try {
-        const result = await mammoth.extractRawText({ path: finalPath });
-        const text = result.value.trim();
-        if (text) {
-          textExtracted = true;
-          await this.prisma.$transaction(async (tx) => {
-            await this.documentWriter.create(tx, {
-              projectId,
-              documentType: kind as 'revised' | 'final',
-              content: text,
-              sourceFileId: record.id,
-              createdBy: actor.id,
-            });
-            await tx.projectMessage.create({
-              data: {
-                projectId,
-                role: 'assistant',
-                text,
-                label: kind === 'revised' ? '修订版文本' : '终稿文本',
-              },
-            });
-          });
-        }
-      } catch (e) {
-        this.logger.warn(`mammoth 抽取失败（不影响上传）：${e}`);
-      }
     }
 
     await this.addEvent(projectId, formatEventTime() + ` · 上传了合同文件：${file.originalname}`);
@@ -157,7 +148,8 @@ export class ContractFileService {
       originalName: record.originalName,
       size: record.size,
       kind: record.kind,
-      textExtracted,
+      textExtracted: true,
+      extractedChars: extractedText.length,
     };
   }
 
@@ -168,7 +160,7 @@ export class ContractFileService {
     this.accessPolicy.assertCan(actor, ProjectAction.ManageFile, project);
     return this.prisma.contractFile.findMany({
       where: { projectId },
-      include: { uploader: { select: { displayName: true } } },
+      include: { uploader: { select: { id: true, displayName: true, role: true } } },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -218,36 +210,6 @@ export class ContractFileService {
 
   private tryCleanup(path?: string) {
     if (path) { try { unlinkSync(path); } catch {} }
-  }
-
-  /**
-   * 校验常见文件头，避免仅凭扩展名把伪装的二进制文件送入后续解析链路。
-   * 文本格式只拒绝明显的二进制 NUL；DOCX/PDF 必须匹配 ZIP/PDF 文件签名。
-   */
-  private assertFileSignature(filePath: string, ext: string): void {
-    const fd = openSync(filePath, 'r');
-    const buffer = Buffer.alloc(4096);
-    let bytesRead = 0;
-    try {
-      bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
-    } finally {
-      closeSync(fd);
-    }
-    const sample = buffer.subarray(0, bytesRead);
-    const isPdf = sample.subarray(0, 5).toString('ascii') === '%PDF-';
-    const isZip = sample.length >= 4
-      && sample[0] === 0x50
-      && sample[1] === 0x4b
-      && (sample[2] === 0x03 || sample[2] === 0x05 || sample[2] === 0x07)
-      && (sample[3] === 0x04 || sample[3] === 0x06 || sample[3] === 0x08);
-    const hasNul = sample.includes(0);
-
-    const valid = ext === '.pdf'
-      ? isPdf
-      : ext === '.docx'
-        ? isZip
-        : !hasNul;
-    if (!valid) throw new BadRequestException('文件内容与扩展名不匹配');
   }
 
   private async addEvent(projectId: string, text: string) {

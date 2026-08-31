@@ -1,6 +1,7 @@
-import { ConflictException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ProjectKind, RiskLevel, Prisma } from '@prisma/client';
+import { createHash } from 'node:crypto';
 
 /**
  * 工单创建事务用例（P1-03）：
@@ -26,6 +27,11 @@ export interface CreateProjectCommand {
   skillName?: string | null;
   requesterName?: string | null;
   requesterDepartment?: string | null;
+  sourceAppId?: string | null;
+  crmTaskId?: string | null;
+  contractNo?: string | null;
+  crmPayloadSha256?: string | null;
+  crmFileManifestSha256?: string | null;
   crmReference?: string | null;
   idempotencyKey?: string | null;
   /** extra JSON（技能 prompt 快照等） */
@@ -63,6 +69,16 @@ export function dingtalkMemberOutboxDedupKey(projectId: string, userId: string):
 export const OUTBOX_EVENT_DINGTALK_GROUP_CREATE = 'dingtalk.group.create';
 export const OUTBOX_EVENT_DINGTALK_MEMBER_ADD = 'dingtalk.member.add';
 
+/** CRM 任务幂等键：以 sourceAppId + crmTaskId 命名空间派生，避免不同系统任务 ID 碰撞。 */
+export function crmTaskIdempotencyKey(sourceAppId: string, crmTaskId: string): string {
+  const digest = createHash('sha256')
+    .update(sourceAppId, 'utf8')
+    .update('\0')
+    .update(crmTaskId, 'utf8')
+    .digest('hex');
+  return `crm:${digest}`;
+}
+
 @Injectable()
 export class CreateProjectUseCase {
   private readonly logger = new Logger(CreateProjectUseCase.name);
@@ -75,10 +91,28 @@ export class CreateProjectUseCase {
    * - created=false：命中幂等键，返回已存在工单（已校验创建者一致）
    */
   async execute(cmd: CreateProjectCommand): Promise<{ project: any; created: boolean }> {
+    const hasCrmIdentity = Boolean(
+      cmd.sourceAppId
+      || cmd.crmTaskId
+      || cmd.contractNo
+      || cmd.crmPayloadSha256
+      || cmd.crmFileManifestSha256,
+    );
+    if (hasCrmIdentity && (!cmd.sourceAppId || !cmd.crmTaskId || !cmd.contractNo)) {
+      throw new BadRequestException('CRM 工单必须同时提供 sourceAppId、crmTaskId 和 contractNo');
+    }
+    const crmFingerprint = hasCrmIdentity
+      ? this.requireCrmFingerprint(cmd.crmPayloadSha256, cmd.crmFileManifestSha256)
+      : null;
+    const idempotencyKey = cmd.sourceAppId && cmd.crmTaskId
+      ? crmTaskIdempotencyKey(cmd.sourceAppId, cmd.crmTaskId)
+      : cmd.idempotencyKey;
+
     // 0. 幂等预查（P1-03）：同一 idempotencyKey 只创建一个工单
-    if (cmd.idempotencyKey) {
-      const existing = await this.findExistingByIdempotencyKey(cmd.idempotencyKey, cmd.creatorId);
+    if (idempotencyKey) {
+      const existing = await this.findExistingByIdempotencyKey(idempotencyKey, cmd.creatorId);
       if (existing) {
+        if (crmFingerprint) this.assertCrmReplayConsistency(existing, crmFingerprint);
         return { project: existing, created: false };
       }
     }
@@ -99,8 +133,13 @@ export class CreateProjectUseCase {
             skillName: cmd.skillName ?? null,
             requesterName: cmd.requesterName ?? null,
             requesterDepartment: cmd.requesterDepartment ?? null,
+            sourceAppId: cmd.sourceAppId ?? null,
+            crmTaskId: cmd.crmTaskId ?? null,
+            contractNo: cmd.contractNo ?? null,
+            crmPayloadSha256: crmFingerprint?.payloadSha256 ?? null,
+            crmFileManifestSha256: crmFingerprint?.fileManifestSha256 ?? null,
             crmReference: cmd.crmReference ?? null,
-            idempotencyKey: cmd.idempotencyKey ?? null,
+            idempotencyKey: idempotencyKey ?? null,
             contractTemplateSlug: cmd.contractTemplateSlug ?? null,
             extra: cmd.extra ?? Prisma.JsonNull,
           },
@@ -158,9 +197,10 @@ export class CreateProjectUseCase {
       return { project, created: true };
     } catch (e: any) {
       // 并发撞幂等键唯一约束（P2002）→ 重新读取返回已存在工单（先校验创建者）
-      if (cmd.idempotencyKey && e?.code === 'P2002') {
-        const existing = await this.findExistingByIdempotencyKey(cmd.idempotencyKey, cmd.creatorId);
+      if (idempotencyKey && e?.code === 'P2002') {
+        const existing = await this.findExistingByIdempotencyKey(idempotencyKey, cmd.creatorId);
         if (existing) {
+          if (crmFingerprint) this.assertCrmReplayConsistency(existing, crmFingerprint);
           return { project: existing, created: false };
         }
       }
@@ -185,6 +225,32 @@ export class CreateProjectUseCase {
     creator: { select: { id: true, username: true, displayName: true, role: true } },
     owner: { select: { id: true, username: true, displayName: true, role: true } },
   } as const;
+
+  private requireCrmFingerprint(
+    payloadSha256?: string | null,
+    fileManifestSha256?: string | null,
+  ): { payloadSha256: string; fileManifestSha256: string } {
+    const sha256 = /^[a-f0-9]{64}$/;
+    if (!payloadSha256 || !fileManifestSha256 || !sha256.test(payloadSha256) || !sha256.test(fileManifestSha256)) {
+      throw new BadRequestException('CRM 工单必须提供小写十六进制的 payload/file manifest SHA-256');
+    }
+    return { payloadSha256, fileManifestSha256 };
+  }
+
+  private assertCrmReplayConsistency(
+    project: any,
+    fingerprint: { payloadSha256: string; fileManifestSha256: string },
+  ): void {
+    if (
+      project.crmPayloadSha256 !== fingerprint.payloadSha256
+      || project.crmFileManifestSha256 !== fingerprint.fileManifestSha256
+    ) {
+      throw new ConflictException({
+        error: '同一 CRM 审核任务的请求内容与首次建单不一致',
+        code: 'IDEMPOTENCY_CONFLICT',
+      });
+    }
+  }
 
   /**
    * 幂等键碰撞时的创建者一致性校验：不同用户碰撞同一键返回 409，不能泄露他人工单。

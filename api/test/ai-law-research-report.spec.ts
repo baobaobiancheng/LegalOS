@@ -34,6 +34,16 @@ function toolResults() {
   ] as any;
 }
 
+function emptyToolResults() {
+  return [{
+    callId: 'search-empty', name: 'search_laws_semantic', isError: false,
+    result: {
+      toolName: 'lawstar_data_xl_query', status: 'success_empty', count: 0,
+      page: 1, pageSize: 0, totalPages: 0, records: [],
+    },
+  }] as any;
+}
+
 describe('AI 搜法结构化报告', () => {
   it('只用服务端已核验详情构造来源，并保留可审计指标', () => {
     const parsed = parseAiLawResearchReport(JSON.stringify({
@@ -58,23 +68,100 @@ describe('AI 搜法结构化报告', () => {
     expect(parsed.report.metrics).toEqual({ candidateCount: 1, verifiedSourceCount: 1, citedSourceCount: 1 });
   });
 
-  it('来源卡片只展示已读取详情正文，不展示模型生成的引文文字', () => {
+  it('拒绝未核验来源和与权威正文不一致的模型引文', () => {
     const unknown = 'E4A4956751D374FD35D0CEA47C041313';
     const fabricated = '正文中不存在的模型引文';
+    const modelReport = (recordId: string) => JSON.stringify({
+      title: '报告', scope: '范围', summary: '总结。', answer: `完整结论。ID: ${LAW_ID}`,
+      sections: [{ title: '分析', content: '具体分析。', sourceIds: [recordId] }],
+      evidenceQuotes: [{ recordId, article: '第一条', text: fabricated }],
+      limitations: [],
+    });
+
+    expect(() => parseAiLawResearchReport(modelReport(unknown), toolResults(), '问题'))
+      .toThrowError(/AI 搜法报告结构无效：引文来源未经正文核验/u);
+    expect(() => parseAiLawResearchReport(modelReport(LAW_ID), toolResults(), '问题'))
+      .toThrowError(/AI 搜法报告结构无效：引文与已读取的权威正文不一致/u);
+  });
+
+  it('普通段落中的法规直接引文也必须与已读取正文一致', () => {
+    const report = (quotedText: string) => JSON.stringify({
+      title: '报告',
+      scope: '范围',
+      summary: '已完成相关法规检索。',
+      answer: `《中华人民共和国民法典》第一千零六十二条明确规定：“${quotedText}”`,
+      sections: [{ title: '具体分析', content: '已核对共同财产范围。', sourceIds: [LAW_ID] }],
+      evidenceQuotes: [],
+      limitations: [],
+    });
+
+    expect(() => parseAiLawResearchReport(report('正文中不存在的直接引文。'), toolResults(), '问题'))
+      .toThrowError(/AI 搜法报告结构无效：展示内容中的法规直接引文/u);
+    expect(() => parseAiLawResearchReport(report(ORIGINAL), toolResults(), '问题'))
+      .not.toThrow();
+
+    const articleOnly = report('正文中不存在的直接引文。')
+      .replace('《中华人民共和国民法典》第一千零六十二条', '第1062条');
+    expect(() => parseAiLawResearchReport(articleOnly, toolResults(), '问题'))
+      .toThrowError(/法规直接引文/u);
+  });
+
+  it('不将普通业务术语引号误判为法规直接引文', () => {
+    expect(() => parseAiLawResearchReport(JSON.stringify({
+      title: '报告', scope: '范围', summary: '已完成检索。',
+      answer: '本报告围绕“红筹架构”的一般合规边界进行分析。',
+      sections: [{ title: '分析', content: '具体交易结构仍需单独核验。', sourceIds: [LAW_ID] }],
+      evidenceQuotes: [], limitations: [],
+    }), toolResults(), '红筹架构')).not.toThrow();
+  });
+
+  it('从分析段落的来源关联中过滤未核验 ID', () => {
+    const unknown = 'E4A4956751D374FD35D0CEA47C041313';
     const parsed = parseAiLawResearchReport(JSON.stringify({
-      title: '报告', scope: '范围', summary: '总结', answer: `ID: ${LAW_ID}`,
-      sections: [{ title: '分析', content: '内容', sourceIds: [unknown] }],
-      evidenceQuotes: [
-        { recordId: unknown, article: '第一条', text: fabricated },
-        { recordId: LAW_ID, article: '第二条', text: fabricated },
-      ],
+      title: '报告', scope: '范围', summary: '总结。', answer: `完整结论。ID: ${LAW_ID}`,
+      sections: [{ title: '分析', content: '具体分析。', sourceIds: [unknown, LAW_ID] }],
+      evidenceQuotes: [{ recordId: LAW_ID, article: '第一千零六十二条', text: ORIGINAL }],
       limitations: [],
     }), toolResults(), '问题');
 
-    expect(parsed.report.sections[0].sourceIds).toEqual([unknown.toLowerCase()]);
-    expect(parsed.report.sources[0].articles[0].text).toContain(ORIGINAL);
-    expect(parsed.report.sources[0].articles[0].text).not.toContain(fabricated);
+    expect(parsed.report.sections[0].sourceIds).toEqual([LAW_ID.toLowerCase()]);
     expect(parsed.report.metrics.citedSourceCount).toBe(1);
+  });
+
+  it('拒绝以引出符号或未完成标题结尾的疑似截断正文', () => {
+    const truncated = JSON.stringify({
+      title: '报告', scope: '范围', summary: '已完成相关法规检索。',
+      answer: '## 具体分析\n\n《某法》第七条明确规定：',
+      sections: [{ title: '具体分析', content: '已完成分析。', sourceIds: [LAW_ID] }],
+      evidenceQuotes: [], limitations: [],
+    });
+    expect(() => parseAiLawResearchReport(truncated, toolResults(), '通用法律问题'))
+      .toThrowError(/AI 搜法报告结构无效：模型报告正文疑似截断/u);
+
+    const headingOnly = JSON.stringify({
+      title: '报告', scope: '范围', summary: '已完成检索。',
+      answer: '## 结论\n\n已完成分析。\n\n### 适用边界',
+      sections: [], evidenceQuotes: [], limitations: [],
+    });
+    expect(() => parseAiLawResearchReport(headingOnly, toolResults(), '通用法律问题'))
+      .toThrowError(/AI 搜法报告结构无效：模型报告正文疑似截断/u);
+  });
+
+  it('零结果必须在正文和总结开头明确声明无可核验来源', () => {
+    const invalid = JSON.stringify({
+      title: '报告', scope: '范围', summary: '暂未找到相关内容。',
+      answer: '当前没有相关法规，可以继续尝试。', sections: [], evidenceQuotes: [], limitations: [],
+    });
+    expect(() => parseAiLawResearchReport(invalid, emptyToolResults(), '通用法律问题'))
+      .toThrowError(/AI 搜法报告结构无效：零结果时未明确声明/u);
+
+    const valid = parseAiLawResearchReport(JSON.stringify({
+      title: '报告', scope: '范围', summary: '未检索到可核验来源，本轮不输出确定性结论。',
+      answer: '## 未检索到可核验来源\n\n本轮未生成确定性法律结论，请调整检索条件后重试。',
+      sections: [], evidenceQuotes: [], limitations: [],
+    }), emptyToolResults(), '通用法律问题');
+    expect(valid.report.sources).toEqual([]);
+    expect(valid.report.metrics).toEqual({ candidateCount: 0, verifiedSourceCount: 0, citedSourceCount: 0 });
   });
 
   it('模型返回 Markdown 时保留正文并由服务端补全报告展示结构', () => {

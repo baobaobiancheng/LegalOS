@@ -71,7 +71,6 @@ describe('ProjectService 钉钉拉群链路', () => {
     service = new ProjectService(
       prisma as any,
       risk as any,
-      { writeBack: vi.fn() } as any,
       dingtalk as any,
       new CreateProjectUseCase(prisma) as any,
       new ProjectAccessPolicy() as any,

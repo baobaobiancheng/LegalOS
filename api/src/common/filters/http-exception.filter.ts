@@ -151,6 +151,7 @@ function classifySensitiveAction(method: string, rawPath: string): string | null
   if (method === 'GET' && /\/projects\/[^/]+\/files\/[^/]+$/.test(path)) return 'attachment.download';
   if (method === 'POST' && /\/projects\/[^/]+\/downloads$/.test(path)) return 'record.download';
   if (method === 'POST' && /\/contracts\/(generate|[^/]+\/(review|submit-review))$/.test(path)) return 'contract.operation';
+  if (method === 'POST' && path === '/crm/v1/contract-tasks') return 'crm.contract_task.ingest';
   if (/\/admin\/audit-logs/.test(path)) return 'audit.read';
   return null;
 }
@@ -162,6 +163,7 @@ function resourceTypeFor(rawPath: string): string {
   if (path.includes('/contracts')) return 'contract';
   if (path.includes('/audit-logs')) return 'audit_event';
   if (path.includes('/auth/')) return 'auth_session';
+  if (path.includes('/crm/v1/contract-tasks')) return 'crm_contract_task';
   return 'http_resource';
 }
 

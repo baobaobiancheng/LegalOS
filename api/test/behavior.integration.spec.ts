@@ -5,6 +5,13 @@ import { EscalateProjectToLegalUseCase } from '../src/modules/project/applicatio
 import { SkillService } from '../src/modules/skill/skill.service';
 import { MembersService } from '../src/modules/members/members.service';
 import { DeterministicRiskClassifier } from '../src/common/risk/deterministic-risk-classifier';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ContractFileProcessor } from '../src/modules/contract/application/contract-file.processor';
+import { CreateCrmContractTaskUseCase } from '../src/modules/crm-integration/create-crm-contract-task.use-case';
+import { AuditService } from '../src/common/audit/audit.service';
 
 /**
  * 行为级集成测试（P1-12 §11.4）：真实 use-case/服务 + MySQL 8，覆盖
@@ -68,6 +75,97 @@ describe.skipIf(!HAS_DB)('行为级集成（MySQL）', () => {
     expect(a.created).toBe(true);
     expect(b.created).toBe(false);
     expect(a.project.id).toBe(b.project.id);
+  });
+
+  it('CRM A1：真实事务原子写入工单、原文件、审查包和审计，重放返回同一工单', async () => {
+    const suffix = uniq();
+    const storage = mkdtempSync(join(tmpdir(), 'crm-a1-db-'));
+    process.env.CONTRACT_STORAGE_DIR = storage;
+    const stagingDir = join(storage, '.staging', suffix);
+    mkdirSync(stagingDir, { recursive: true });
+    const filePath = join(stagingDir, 'contract.txt');
+    const content = '真实数据库 CRM 合同正文';
+    writeFileSync(filePath, content, { mode: 0o600 });
+    const assignee = await prisma.user.create({
+      data: {
+        username: `crm-it-${suffix}`,
+        casUsername: `crm.legal.${suffix}`,
+        passwordHash: 'x',
+        displayName: 'CRM 集成法务',
+        role: 'legal_bp',
+      },
+    });
+    const audit = new AuditService(prisma as any, {
+      get: (_key: string, fallback?: string) => fallback,
+    } as any);
+    const useCase = new CreateCrmContractTaskUseCase(
+      prisma as any,
+      new ContractFileProcessor(),
+      audit,
+    );
+    const crmTaskId = `crm-task-${suffix}`;
+    const headers = {
+      appId: 'crm-integration-test',
+      timestamp: Math.floor(Date.now() / 1000),
+      nonce: `nonce-${suffix}`,
+      idempotencyKey: crmTaskId,
+      payloadSha256: createHash('sha256').update(`payload-${suffix}`).digest('hex'),
+      fileManifestSha256: createHash('sha256').update(`manifest-${suffix}`).digest('hex'),
+      signature: '0'.repeat(64),
+    };
+    const input = {
+      headers,
+      payload: {
+        crmTaskId,
+        contractNo: `HT-${suffix}`,
+        contractApplyType: 'NEW',
+        contractType: 'NORMAL',
+        currentAuditStatus: '法务审核中',
+        currentAuditNode: '法务审核',
+        currentNodeAssignee: assignee.casUsername!,
+        applicant: '集成测试申请人',
+        customerName: '集成测试客户',
+        signSubject: '集成测试签约主体',
+      } as any,
+      envelope: {
+        payloadText: '{}',
+        payloadSha256: headers.payloadSha256,
+        fileManifestSha256: headers.fileManifestSha256,
+        fileManifest: [],
+        stagingDir,
+        files: [{
+          partName: 'files' as const,
+          index: 0,
+          originalName: '合同.txt',
+          storedName: 'contract.txt',
+          mimeType: 'text/plain',
+          size: Buffer.byteLength(content),
+          sha256: createHash('sha256').update(content).digest('hex'),
+          path: filePath,
+        }],
+      },
+    };
+
+    try {
+      const first = await useCase.execute(input);
+      const replay = await useCase.execute(input);
+      expect(replay.data).toMatchObject({ projectId: first.data.projectId, duplicated: true });
+      const [project, messages, events, files, documents, audits] = await Promise.all([
+        prisma.project.findUnique({ where: { id: first.data.projectId } }),
+        prisma.projectMessage.count({ where: { projectId: first.data.projectId } }),
+        prisma.projectEvent.count({ where: { projectId: first.data.projectId } }),
+        prisma.contractFile.count({ where: { projectId: first.data.projectId } }),
+        prisma.contractDocument.count({ where: { projectId: first.data.projectId, documentType: 'source' } }),
+        prisma.auditEvent.count({ where: { projectId: first.data.projectId, action: 'crm.contract_task.ingest' } }),
+      ]);
+      expect(project).toMatchObject({ sourceAppId: headers.appId, crmTaskId, legalBpId: assignee.id });
+      expect({ messages, events, files, documents, audits }).toEqual({
+        messages: 1, events: 1, files: 1, documents: 1, audits: 1,
+      });
+    } finally {
+      delete process.env.CONTRACT_STORAGE_DIR;
+      rmSync(storage, { recursive: true, force: true });
+    }
   });
 
   it('P1-10：统一法务升级 use-case——升级 route+写事件+Outbox 建群，重复升级幂等', async () => {

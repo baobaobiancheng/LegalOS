@@ -101,7 +101,6 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
     service = new ProjectService(
       prisma as any,
       risk as any,
-      { writeBack: vi.fn() } as any,
       dingtalk as any,
       new CreateProjectUseCase(prisma) as any,
       new ProjectAccessPolicy() as any,

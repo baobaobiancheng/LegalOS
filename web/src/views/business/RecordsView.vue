@@ -7,7 +7,7 @@ import BusinessSidebarLayout from '../../components/BusinessSidebarLayout.vue'
 import ErrorState from '../../components/ErrorState.vue'
 import { useRemoteData } from '../../composables/useRemoteData'
 import { buildPagination } from '../../domain/legal-research'
-import { statusClass } from '../../domain/project-status'
+import { statusClass, statusLabel } from '../../domain/project-status'
 import type { ProjectKind, ProjectListResponse, ProjectStatus } from '../../types'
 
 const PAGE_SIZE = 10
@@ -54,7 +54,7 @@ const allCount = computed(() => Object.values(statusCounts.value).reduce((sum, c
 const groups = computed<Array<{ key: RecordGroup; label: string; count: number }>>(() => [
   { key: '', label: '全部', count: allCount.value },
   { key: 'processing', label: '处理中', count: processingCount.value },
-  { key: 'completed', label: '已回传', count: statusCounts.value.已回传 },
+  { key: 'completed', label: '已完成', count: statusCounts.value.已回传 },
   { key: 'cancelled', label: '已取消', count: statusCounts.value.已取消 },
 ])
 
@@ -334,7 +334,7 @@ onBeforeUnmount(() => animationContext?.revert())
             <span
               :class="['status-cell', statusClass(record.status)]"
               role="cell"
-            >{{ record.status }}</span>
+            >{{ statusLabel(record.status) }}</span>
             <span
               class="row-arrow"
               role="cell"

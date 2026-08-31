@@ -37,7 +37,6 @@ const answerPreview = ref('')
 const reportId = ref('')
 const degradedWarning = ref<{ code: string; message: string } | undefined>()
 const error = ref<RequestError | null>(null)
-const copied = ref(false)
 const followupInput = ref<HTMLTextAreaElement | null>(null)
 const conversationId = ref('')
 const contextVersion = ref(0)
@@ -512,13 +511,6 @@ function conversationPath(id: string) {
   return `/legal-research/ai/conversations/${encodeURIComponent(id)}`
 }
 
-async function copyReport() {
-  if (!downloadContent.value || !navigator.clipboard) return
-  await navigator.clipboard.writeText(downloadContent.value)
-  copied.value = true
-  window.setTimeout(() => { copied.value = false }, 1600)
-}
-
 function scrollTo(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
@@ -796,16 +788,12 @@ onBeforeUnmount(() => {
           class="report-document"
         >
           <AiLawReport :report="report" />
-          <div class="report-document-actions">
+          <div
+            v-if="loading || syncingConversation"
+            class="report-document-actions"
+          >
             <span v-if="loading">报告正在按结构逐段到达…</span>
             <span v-else-if="syncingConversation">正在同步上一轮检索结果…</span>
-            <button
-              type="button"
-              :disabled="conversationBusy"
-              @click="copyReport"
-            >
-              {{ copied ? '已复制' : '复制报告' }}
-            </button>
           </div>
         </div>
         <aside class="followup-panel">
@@ -966,11 +954,9 @@ onBeforeUnmount(() => {
 .ai-report-heading h2 { margin: 3px 0 0; color: #0b1222; font-size: 30px; letter-spacing: -.035em; }
 .ai-report-heading p { margin: 6px 0 0; color: #718096; font-size: 12px; }
 .report-heading-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.report-heading-actions > button,
-.report-document-actions button { height: 38px; padding: 0 14px; border: 1px solid #cfd8e6; border-radius: 6px; background: #fff; color: #3d4d65; font: inherit; font-size: 12px; font-weight: 620; cursor: pointer; }
+.report-heading-actions > button { height: 38px; padding: 0 14px; border: 1px solid #cfd8e6; border-radius: 6px; background: #fff; color: #3d4d65; font: inherit; font-size: 12px; font-weight: 620; cursor: pointer; }
 .report-heading-actions > button.primary { border-color: #0f5fff; background: #0f5fff; color: #fff; }
-.report-heading-actions > button:disabled,
-.report-document-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.report-heading-actions > button:disabled { opacity: .45; cursor: not-allowed; }
 .report-heading-actions :deep(.download-wrap) { margin: 0; }
 .report-heading-actions :deep(.dl-trigger) { height: 38px; padding: 0 14px; border-radius: 6px; background: #fff; color: #3d4d65; font-weight: 620; }
 .report-workspace { display: grid; grid-template-columns: 150px minmax(0, 1fr) minmax(320px, 380px); margin-top: 16px; align-items: start; gap: 16px; }

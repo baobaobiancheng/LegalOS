@@ -43,6 +43,8 @@ export type ApiError = {
 // ── 工单类型 ──
 export type ProjectKind = 'consult' | 'contract' | 'research' | 'draft'
 export type ProjectStatus = '分析中' | '待处理' | '待复核' | '已回传' | '已取消'
+export type CrmDeliveryStatus = 'pending' | 'sending' | 'delivered' | 'failed' | 'dead'
+export type ReviewStatus = 'review_completed'
 export type RiskLevel = 'P0' | 'P1' | 'P2'
 export type ProjectGroupKey = '待处理' | '合同协作' | '已回传' | '数字分身处理'
 
@@ -67,8 +69,17 @@ export type ProjectDetail = ProjectListItem & {
   skillName?: string
   model?: string
   result?: string
+  sourceAppId?: string
+  crmTaskId?: string
+  contractNo?: string
   crmReference?: string
   crmCustomer?: string
+  reviewStatus?: ReviewStatus
+  reviewCompletedAt?: string
+  crmDeliveryStatus?: CrmDeliveryStatus
+  crmDeliveryUpdatedAt?: string
+  crmDeliveredAt?: string
+  crmDeliveryFileId?: string
   contractTemplateSlug?: string
   files?: ContractFile[]
   messages: MessageDto[]
@@ -223,11 +234,11 @@ export type ContractTemplate = {
 
 export type ContractFile = {
   id: string
-  kind: 'revised' | 'final'
+  kind: 'source' | 'attachment' | 'main_contract' | 'revised' | 'final'
   originalName: string
   size: number
   createdAt: string
-  uploader?: { displayName: string }
+  uploader?: { id: string; displayName: string; role: Role }
 }
 
 // ── 技能库类型（2026-08-04 技能库模块） ──

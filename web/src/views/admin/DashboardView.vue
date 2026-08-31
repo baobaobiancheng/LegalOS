@@ -321,7 +321,7 @@ onBeforeUnmount(() => {
         <section class="dashboard-grid dashboard-grid-primary">
           <article class="dashboard-card trend-card">
             <div class="card-heading">
-              <div><h2>工单趋势</h2><span>新建与已回传工单的每日变化</span></div>
+              <div><h2>工单趋势</h2><span>新建与已完成工单的每日变化</span></div>
               <div
                 class="range-tabs"
                 aria-label="趋势周期"
@@ -343,7 +343,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div class="chart-legend">
-              <span><i class="created" />新建工单</span><span><i class="returned" />已回传</span>
+              <span><i class="created" />新建工单</span><span><i class="returned" />已完成</span>
             </div>
             <div class="chart-shell">
               <svg
@@ -418,7 +418,7 @@ onBeforeUnmount(() => {
                     :cx="point.x"
                     :cy="point.y"
                     r="2.4"
-                  ><title>{{ data?.trend[index]?.date }} 已回传 {{ point.value }}</title></circle>
+                  ><title>{{ data?.trend[index]?.date }} 已完成 {{ point.value }}</title></circle>
                 </g>
                 <g class="x-labels"><text
                   v-for="item in chart.xLabels"

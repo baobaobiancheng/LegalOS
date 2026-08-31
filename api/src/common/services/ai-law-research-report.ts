@@ -88,6 +88,12 @@ interface ParsedModelOutput {
   plainText?: string;
 }
 
+interface ParsedEvidenceQuote {
+  recordId: string;
+  article: string;
+  text: string;
+}
+
 export const AI_LAW_REPORT_OUTPUT_RULE = `最终只输出一个 JSON 对象，不要输出 Markdown 围栏或额外说明。结构必须是：
 {"query":"本轮问题","title":"不超过40字的报告标题","scope":"本轮检索范围","summary":"两段以内总结","understanding":{"queryType":"article_location|regulation_location|legal_issue","analysis":"面向用户展示的问题理解，不写内部思维链","retrievalPlan":"面向用户展示的检索与详情读取方案","knownFacts":["当前有效的已知事实"],"legalIssues":["需要处理的法律争点"],"factChanges":{"added":["本轮新增事实"],"corrected":[{"from":"被修正事实","to":"修正后事实"}],"removed":["本轮删除事实"]}},"answer":"供咨询对话直接展示的Markdown答复","sections":[{"title":"分析主题","content":"具体分析","sourceIds":["模型标注的法规ID"]}],"evidenceQuotes":[{"recordId":"模型标注的法规ID","article":"具体条号","text":"法规原文"}],"limitations":["适用边界"]}。
 summary 必须使用客观、正式的书面法律语言，直接概括结论与主要依据，不得出现“我已经”“现在”“下面输出”等过程性表述。answer 必须包含结论、具体分析、适用边界和来源名称；不得泄露内部推理过程。JSON 字符串内部需要使用引号时优先使用中文引号“”，如使用英文双引号必须正确转义。没有直接引用时 evidenceQuotes 可为空数组；一旦引用，text 必须逐字复制已读取的法规正文连续片段。`;
@@ -125,9 +131,26 @@ export function parseAiLawResearchReport(
   const value = parsedOutput.value;
   const query = bound(requestedQuery.trim() || optionalText(value.query, 1_000) || '', 1_000);
   const verifiedDetails = verifiedLawDetails(toolResults).slice(0, 10);
-  const evidenceQuotes = parseEvidenceQuotes(value.evidenceQuotes);
+  const verifiedDetailsById = new Map(
+    verifiedDetails.map((detail) => [detail.recordId.toLowerCase(), detail]),
+  );
+  const verifiedSourceIds = new Set(verifiedDetailsById.keys());
+  const evidenceQuotes = validateEvidenceQuotes(
+    parseEvidenceQuotes(value.evidenceQuotes),
+    verifiedDetailsById,
+  );
+  const candidateIds = new Set(toolResults.flatMap((result) => {
+    if (!result.result || !('records' in result.result)) return [];
+    return result.result.records.map((record) => record.recordId.toLowerCase());
+  }));
 
-  const sections = parseSections(value.sections);
+  const sections = parseSections(value.sections, verifiedSourceIds);
+  const hasModelBody = Boolean(
+    optionalText(value.answer, 60_000)
+      || parsedOutput.plainText
+      || optionalText(value.summary, 2_000)
+      || sections.length,
+  );
   const answer = normalizedAnswer(value, parsedOutput.plainText, query, verifiedDetails, sections);
   if (!sections.length) {
     sections.push(...sectionsFromAnswer(
@@ -149,16 +172,27 @@ export function parseAiLawResearchReport(
       articles: selectEvidenceBlocks(detail, query),
     };
   });
-  const candidateIds = new Set(toolResults.flatMap((result) => {
-    if (!result.result || !('records' in result.result)) return [];
-    return result.result.records.map((record) => record.recordId.toLowerCase());
-  }));
-  const sourceIds = new Set(sources.map((source) => source.recordId.toLowerCase()));
   const citedSourceCount = new Set(evidenceQuotes
-    .filter((quote) => sourceIds.has(quote.recordId))
     .map((quote) => quote.recordId)).size;
   const understanding = parseUnderstanding(value.understanding, query, sections, context);
   const limitations = parseStringArray(value.limitations, 5, 300);
+  const summary = normalizedSummary(value.summary, answer, query, verifiedDetails);
+  assertAiLawResearchReportComplete({
+    answer,
+    summary,
+    rawAnswer: value.answer,
+    hasModelBody,
+    candidateCount: candidateIds.size,
+    verifiedDetails,
+  });
+  validateDisplayedDirectQuotes([
+    answer,
+    summary,
+    ...sections.map((section) => section.content),
+    understanding.analysis,
+    understanding.retrievalPlan,
+    ...limitations,
+  ], verifiedDetails);
 
   return {
     answer,
@@ -168,7 +202,7 @@ export function parseAiLawResearchReport(
       query,
       title: optionalText(value.title, 100) ?? defaultReportTitle(query),
       scope: optionalText(value.scope, 500) ?? defaultReportScope(verifiedDetails),
-      summary: normalizedSummary(value.summary, answer, query, verifiedDetails),
+      summary,
       answer,
       understanding,
       sections,
@@ -588,13 +622,15 @@ function extractFirstJsonObject(value: string): string | undefined {
   return undefined;
 }
 
-function parseSections(value: unknown): AiLawResearchSectionV1[] {
+function parseSections(value: unknown, verifiedSourceIds: ReadonlySet<string>): AiLawResearchSectionV1[] {
   if (!Array.isArray(value)) return [];
   return value.slice(0, 6).flatMap((item, index) => {
     if (!isRecord(item)) return [];
     const content = optionalText(item.content, 3_000);
     if (!content) return [];
-    const sourceIds = parseStringArray(item.sourceIds, 10, 64).map((id) => id.toLowerCase());
+    const sourceIds = parseStringArray(item.sourceIds, 10, 64)
+      .map((id) => id.toLowerCase())
+      .filter((id) => verifiedSourceIds.has(id));
     return [{
       id: `analysis-${index + 1}`,
       title: optionalText(item.title, 80) ?? `分析 ${index + 1}`,
@@ -747,7 +783,7 @@ function splitBoundedText(value: string, maxLength: number): string[] {
   return chunks;
 }
 
-function parseEvidenceQuotes(value: unknown) {
+function parseEvidenceQuotes(value: unknown): ParsedEvidenceQuote[] {
   if (!Array.isArray(value)) return [];
   return value.slice(0, 30).flatMap((item) => {
     if (!isRecord(item)
@@ -758,11 +794,153 @@ function parseEvidenceQuotes(value: unknown) {
     const text = item.text.trim();
     if (!recordId || !text) return [];
     return {
-      recordId: bound(recordId, 64),
+      recordId,
       article: bound(item.article.trim() || '法规原文', 60),
-      text: bound(text, 1_000),
+      text,
     };
   });
+}
+
+function validateEvidenceQuotes(
+  quotes: ParsedEvidenceQuote[],
+  verifiedDetailsById: ReadonlyMap<string, BaijianLawDetail>,
+): ParsedEvidenceQuote[] {
+  return quotes.map((quote) => {
+    if (quote.recordId.length > 64 || quote.text.length > 1_000) {
+      invalidAiLawReport('模型引文超出长度限制');
+    }
+    const detail = verifiedDetailsById.get(quote.recordId);
+    if (!detail) invalidAiLawReport(`引文来源未经正文核验：${bound(quote.recordId, 64)}`);
+    if (!detail.contentBlocks.some((block) => evidenceTextContains(block.text, quote.text))) {
+      invalidAiLawReport(`引文与已读取的权威正文不一致：${bound(quote.recordId, 64)}`);
+    }
+    return {
+      recordId: bound(quote.recordId, 64),
+      article: quote.article,
+      text: bound(quote.text, 1_000),
+    };
+  });
+}
+
+function validateDisplayedDirectQuotes(texts: string[], details: BaijianLawDetail[]): void {
+  const quotes = texts.flatMap((text) => [
+    ...markdownBlockquotes(text),
+    ...attributedDirectQuotes(text),
+  ]);
+  if (!quotes.length) return;
+  const bodyBlocks = details.flatMap((detail) => detail.contentBlocks.map((block) => block.text));
+  for (const quote of quotes) {
+    if (!bodyBlocks.some((body) => evidenceTextContains(body, quote))) {
+      invalidAiLawReport('展示内容中的法规直接引文与已读取的权威正文不一致');
+    }
+  }
+}
+
+/**
+ * 识别普通段落里以法规名称/条号 + “规定：”引出的直接引文。
+ * 普通的业务术语引号不在此列，避免把“红筹架构”等用户措辞误判为法条原文。
+ */
+function attributedDirectQuotes(value: string): string[] {
+  const quotes: string[] = [];
+  const attribution = /(?:《[^》\r\n]{1,100}》|(?:第[0-9零〇一二三四五六七八九十百千万亿两]+条(?:之[0-9零〇一二三四五六七八九十百千万亿两]+)?))[^。！？\r\n]{0,120}(?:明确)?(?:规定|指出|载明|要求|原文)(?:如下|为)?\s*[：:]\s*(?:\r?\n\s*)?(?:[“"]([^”"\r\n]{4,1000})[”"]|([^\r\n]{8,1000}))/gu;
+  for (const match of value.matchAll(attribution)) {
+    const quote = (match[1] ?? match[2] ?? '')
+      .replace(/^[>*_`\s-]+/gu, '')
+      .replace(/[*_`\s]+$/gu, '')
+      .trim();
+    if (quote && !/^#{1,6}\s/u.test(quote)) quotes.push(quote);
+  }
+  return quotes;
+}
+
+function markdownBlockquotes(answer: string): string[] {
+  const quotes: string[] = [];
+  let current: string[] = [];
+  const flush = () => {
+    const quote = current.join(' ')
+      .replace(/[*_`]/gu, '')
+      .replace(/\[([^\]]+)\]\((?:[^()]|\([^()]*\))*\)/gu, '$1')
+      .replace(/\s+/gu, ' ')
+      .trim();
+    if (quote) quotes.push(quote);
+    current = [];
+  };
+  for (const line of answer.split(/\r?\n/u)) {
+    const match = line.match(/^\s*>+\s?(.*)$/u);
+    if (match) current.push(match[1]);
+    else flush();
+  }
+  flush();
+  return quotes;
+}
+
+function evidenceTextContains(body: string, quote: string): boolean {
+  const normalizedBody = normalizeEvidenceText(body);
+  const normalizedQuote = normalizeEvidenceText(quote);
+  return Boolean(normalizedQuote) && normalizedBody.includes(normalizedQuote);
+}
+
+function normalizeEvidenceText(value: string): string {
+  return value.normalize('NFKC').replace(/\s+/gu, '');
+}
+
+function assertAiLawResearchReportComplete(input: {
+  answer: string;
+  summary: string;
+  rawAnswer: unknown;
+  hasModelBody: boolean;
+  candidateCount: number;
+  verifiedDetails: BaijianLawDetail[];
+}): void {
+  if (!input.hasModelBody) invalidAiLawReport('模型未返回可展示的报告正文');
+  if (typeof input.rawAnswer === 'string' && input.rawAnswer.trim().length > 60_000) {
+    invalidAiLawReport('模型报告正文超出长度限制');
+  }
+  if (isIncompleteReportBody(input.answer)) invalidAiLawReport('模型报告正文疑似截断');
+
+  const hasVerifiedEvidence = input.verifiedDetails.length > 0;
+  const isEmptyResult = input.candidateCount === 0 && !hasVerifiedEvidence;
+  const answerDeclaresEmpty = startsWithNoVerifiedSource(input.answer);
+  const summaryDeclaresEmpty = startsWithNoVerifiedSource(input.summary);
+  if (isEmptyResult && (!answerDeclaresEmpty || !summaryDeclaresEmpty)) {
+    invalidAiLawReport('零结果时未明确声明“未检索到可核验来源”');
+  }
+  if (!isEmptyResult && answerDeclaresEmpty) {
+    invalidAiLawReport('已有候选或权威正文时仍声明零结果');
+  }
+  if (input.candidateCount > 0 && !hasVerifiedEvidence) {
+    invalidAiLawReport('已召回候选法规但报告没有已核验正文');
+  }
+}
+
+function isIncompleteReportBody(answer: string): boolean {
+  const fenceCount = answer.match(/```/gu)?.length ?? 0;
+  if (fenceCount % 2 !== 0) return true;
+  const lines = answer.split(/\r?\n/u).map((line) => line.trim());
+  while (lines.length && (!lines[lines.length - 1] || /^[-*_]{3,}$/u.test(lines[lines.length - 1]))) {
+    lines.pop();
+  }
+  const lastLine = lines.at(-1) ?? '';
+  if (!lastLine) return true;
+  if (/^#{1,6}\s+\S.*$/u.test(lastLine)) return true;
+  if (/^(?:[-*+]|\d+[.)、])\s*$/u.test(lastLine)) return true;
+  const terminal = lastLine.replace(/[\s*_`#]+$/gu, '');
+  return /[:：,，、;；…(（[{【《-]$/u.test(terminal)
+    || /(?:如下|具体为|分别为|主要包括|具体包括|明确规定|载明如下)$/u.test(terminal);
+}
+
+function startsWithNoVerifiedSource(value: string): boolean {
+  const firstLine = value.split(/\r?\n/u)
+    .map((line) => line.trim()
+      .replace(/^#{1,6}\s*/u, '')
+      .replace(/^[>*_`\s]+/u, '')
+      .trim())
+    .find(Boolean) ?? '';
+  return firstLine.startsWith('未检索到可核验来源');
+}
+
+function invalidAiLawReport(reason: string): never {
+  throw new Error(`dsh Agent AI 搜法报告结构无效：${reason}`);
 }
 
 function parseUnderstanding(

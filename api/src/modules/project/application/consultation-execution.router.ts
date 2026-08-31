@@ -95,7 +95,11 @@ export class ConsultationExecutionRouter {
         thinking.write('\n已获得候选法规，正在核验权威正文…');
       }
     });
-    handle.on('text', (delta) => stdout.write(delta));
+    // 法规搜法的模型文本必须等终态报告校验通过后才对用户可见。
+    // 类案检索没有结构化法规报告闸门，仍保留原有增量输出。
+    if (input.capability !== 'law_search') {
+      handle.on('text', (delta) => stdout.write(delta));
+    }
     handle.on('done', (result) => {
       try {
         const parsed = input.capability === 'law_search'

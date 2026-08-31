@@ -12,7 +12,7 @@ import MarkdownContent from '../../components/MarkdownContent.vue'
 import type { AttachedFile } from '../../composables/useFileUpload'
 import { useFileUpload } from '../../composables/useFileUpload'
 import { useSmoothStream } from '../../composables/useSmoothStream'
-import { statusClass } from '../../domain/project-status'
+import { crmDeliveryStatusLabel, statusClass, statusLabel } from '../../domain/project-status'
 import type { ContractTemplate, EventDto, MessageDto, ProjectDetail, ProjectKind } from '../../types'
 import type { ContractDocStyle } from '../../utils/markdown-to-docx'
 
@@ -249,7 +249,11 @@ onBeforeUnmount(() => {
             <div class="record-meta">
               <em :class="['kind-tag', kindClass(project.kind)]">{{ kindLabel(project.kind) }}</em>
               <em :class="['risk-tag', `risk-${project.risk}`]">{{ project.risk }}</em>
-              <span :class="['record-status', statusClass(project.status)]">{{ project.status }}</span>
+              <span :class="['record-status', statusClass(project.status)]">{{ statusLabel(project.status) }}</span>
+              <span
+                v-if="project.crmDeliveryStatus"
+                class="record-status"
+              >{{ crmDeliveryStatusLabel(project.crmDeliveryStatus) }}</span>
               <i />
               <span>创建于 {{ formatDateTime(project.createdAt) }}</span>
               <span>更新于 {{ formatDateTime(project.updatedAt) }}</span>
