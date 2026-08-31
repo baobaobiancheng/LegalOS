@@ -26,6 +26,7 @@ export type AiLegalResearchStreamEvent =
   | { type: 'research_session'; seq: number; runId: string; conversationId: string; turnId: string; contextVersion: number; operation: string; question: string; replayed?: boolean }
   | { type: 'research_stage'; seq: number; stage: 'understand' | 'recall' | 'verify' | 'answer'; status: 'running' | 'completed' | 'empty' | 'degraded'; title: string; detail: string }
   | { type: 'research_metrics'; seq: number; candidateCount?: number; verifiedSourceCount?: number; toolName?: string }
+  | { type: 'answer_delta'; seq: number; delta: string }
   | { type: 'report_start'; seq: number; report: Omit<import('../types').AiLawResearchReportV1, 'summary' | 'sections' | 'sources' | 'limitations'> }
   | { type: 'report_summary'; seq: number; summary: string }
   | { type: 'report_section'; seq: number; section: import('../types').AiLawResearchSectionV1 }

@@ -76,6 +76,55 @@ describe('AI 搜法结构化报告', () => {
     expect(parsed.report.metrics.citedSourceCount).toBe(1);
   });
 
+  it('模型返回 Markdown 时保留正文并由服务端补全报告展示结构', () => {
+    const parsed = parseAiLawResearchReport([
+      '## 结论',
+      '婚姻关系存续期间取得的工资、奖金通常属于夫妻共同财产。',
+      '## 适用边界',
+      '仍需结合财产取得时间、来源及双方约定判断。',
+    ].join('\n\n'), toolResults(), '离婚财产如何分割？');
+
+    expect(parsed.answer).toContain('婚姻关系存续期间');
+    expect(parsed.report).toMatchObject({
+      resultStatus: 'complete',
+      query: '离婚财产如何分割？',
+      metrics: { candidateCount: 1, verifiedSourceCount: 1 },
+    });
+    expect(parsed.report.title).toContain('离婚财产如何分割');
+    expect(parsed.report.sections.map((section) => section.title)).toEqual(['结论', '适用边界']);
+    expect(parsed.report.sources[0].articles[0].text).toContain(ORIGINAL);
+    expect(parsed.report.limitations).toContain('报告展示结构已由系统根据本轮模型输出和检索结果自动补全。');
+  });
+
+  it('从说明文字中提取 JSON，并容忍缺少非核心展示字段', () => {
+    const parsed = parseAiLawResearchReport(`以下为结构化结果：\n${JSON.stringify({
+      summary: '已完成共同财产范围检索。',
+      sections: [{ content: '工资、奖金通常属于共同财产。', sourceIds: [LAW_ID] }],
+    })}\n请查收。`, toolResults(), '共同财产范围');
+
+    expect(parsed.report.resultStatus).toBe('complete');
+    expect(parsed.report.summary).toBe('已完成共同财产范围检索。');
+    expect(parsed.report.sections[0]).toMatchObject({ title: '分析 1', content: '工资、奖金通常属于共同财产。' });
+    expect(parsed.answer).toContain('已完成共同财产范围检索');
+  });
+
+  it('非 JSON 长正文会分段完整进入报告，不在 3000 字处丢失', () => {
+    const longAnalysis = `共同财产分析：${'甲'.repeat(3_400)}。末尾结论应保留。`;
+    const parsed = parseAiLawResearchReport([
+      '## 具体分析',
+      longAnalysis,
+      '## 适用边界',
+      '还需核对财产取得时间与双方约定。',
+    ].join('\n\n'), toolResults(), '离婚财产如何分割？');
+
+    const visibleBody = parsed.report.sections.map((section) => section.content).join('\n');
+    expect(parsed.report.sections.length).toBeGreaterThan(2);
+    expect(parsed.report.sections.every((section) => section.content.length <= 3_000)).toBe(true);
+    expect(visibleBody).toContain('末尾结论应保留');
+    expect(visibleBody).toContain('还需核对财产取得时间');
+    expect(parsed.report.summary.length).toBeLessThanOrEqual(500);
+  });
+
   it('提示词明确最多3部批量读取与5次工具调用上限', () => {
     const prompt = buildStandaloneAiLawResearchPrompt('经济补偿如何计算', 5);
     expect(prompt).toContain('get_law_details');

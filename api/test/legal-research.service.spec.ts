@@ -4,10 +4,24 @@ import {
   DshResearchEvidenceError,
   validateResearchCompletion,
 } from '../src/common/services/dsh.service';
-import { isCaseLikeTitle, LegalResearchService } from '../src/modules/legal-research/legal-research.service';
+import {
+  isCaseLikeTitle,
+  JsonAnswerFieldStream,
+  LegalResearchService,
+} from '../src/modules/legal-research/legal-research.service';
 import { ConsultationExecutionRouter } from '../src/modules/project/application/consultation-execution.router';
 
 describe('LegalResearchService', () => {
+  it('流式 JSON 只解码顶层 answer，不泄露其他分析字段', () => {
+    const parser = new JsonAnswerFieldStream();
+    const chunks = [
+      '{"understanding":{"analysis":"不应展示的分析"},"answer":"结论\\n来源：',
+      '《劳动合同法》\\u3002","sections":[{"content":"不展示"}]}',
+    ];
+
+    expect(chunks.map((chunk) => parser.push(chunk)).join('')).toBe('结论\n来源：《劳动合同法》。');
+  });
+
   it('快捷检索如实传递用户关键词，不用硬编码规则冒充 AI 意图理解', async () => {
     const searchLaws = vi.fn().mockResolvedValue({
       toolName: 'lawstar_data_professional_query', status: 'success_hit', count: 1,
@@ -110,34 +124,63 @@ describe('LegalResearchService', () => {
 
   it('SSE 先输出真实检索进度，持久化成功后再逐段输出已校验报告', async () => {
     const lawId = 'D6592443DA000EF8D692CE667E947A69';
+    const secondLawId = 'E4A4956751D374FD35D0CEA47C041313';
     const original = '经济补偿按劳动者在本单位工作的年限，每满一年支付一个月工资。';
     const handle = new DshExecutionHandle();
     const timeline: string[] = [];
+    const candidateMetrics: number[] = [];
+    const verifiedMetrics: number[] = [];
+    const answerDeltas: string[] = [];
+    const modelOutput = JSON.stringify({
+      title: '经济补偿检索报告',
+      scope: '劳动合同法',
+      summary: '已核验经济补偿计算规则。',
+      understanding: {
+        queryType: 'legal_issue', analysis: '需要判断经济补偿的计算口径。', retrievalPlan: '检索劳动合同法并读取正文。',
+        knownFacts: ['劳动关系已解除'], legalIssues: ['经济补偿计算'],
+        factChanges: { added: [], corrected: [], removed: [] },
+      },
+      answer: '应依据已核验的劳动合同法计算。\n具体工资基数需结合个案确认。',
+      sections: [{ title: '计算规则', content: '按工作年限计算。', sourceIds: [lawId] }],
+      evidenceQuotes: [{ recordId: lawId, article: '第四十七条', text: original }],
+      limitations: ['工资基数需结合个案确认。'],
+    });
+    const earlySplit = modelOutput.indexOf('已核验的') + 3;
+    const verifiedSplit = modelOutput.indexOf('具体工资');
     const executeStream = vi.fn().mockImplementation(async () => {
       setImmediate(() => {
+        // 即使模型提前产生 answer，证据闸门通过前也不向 SSE 外发。
+        handle.emit('research_text', modelOutput.slice(0, earlySplit));
         handle.emit('tool_call', { callId: 's1', name: 'search_laws', arguments: { keyword: '经济补偿' } });
         handle.emit('tool_result', { callId: 's1', name: 'search_laws', isError: false, result: { records: [{ recordId: lawId, lawName: '劳动合同法' }] } });
+        handle.emit('research_text', modelOutput.slice(earlySplit, verifiedSplit));
+        handle.emit('tool_call', { callId: 's2', name: 'search_laws_semantic', arguments: { query: '解除劳动合同补偿' } });
+        handle.emit('tool_result', { callId: 's2', name: 'search_laws_semantic', isError: false, result: { records: [
+          { recordId: lawId, lawName: '劳动合同法' },
+          { recordId: secondLawId, lawName: '劳动合同法实施条例' },
+        ] } });
+        handle.emit('tool_call', { callId: 'd0', name: 'get_law_details', arguments: { lawIds: [secondLawId, lawId] } });
+        handle.emit('tool_result', { callId: 'd0', name: 'get_law_details', isError: false, result: { details: [
+          { recordId: secondLawId, lawName: '劳动合同法实施条例', contentBlocks: [] },
+          { recordId: lawId, lawName: '劳动合同法', contentBlocks: [{ text: original }] },
+        ] } });
+        handle.emit('research_text', modelOutput.slice(verifiedSplit));
         handle.emit('tool_call', { callId: 'd1', name: 'get_law_detail', arguments: { lawId } });
         handle.emit('tool_result', { callId: 'd1', name: 'get_law_detail', isError: false, result: { recordId: lawId, lawName: '劳动合同法', contentBlocks: [{ text: original }] } });
         handle.emit('done', {
-          text: JSON.stringify({
-            title: '经济补偿检索报告',
-            scope: '劳动合同法',
-            summary: '已核验经济补偿计算规则。',
-            understanding: {
-              queryType: 'legal_issue', analysis: '需要判断经济补偿的计算口径。', retrievalPlan: '检索劳动合同法并读取正文。',
-              knownFacts: ['劳动关系已解除'], legalIssues: ['经济补偿计算'],
-              factChanges: { added: [], corrected: [], removed: [] },
-            },
-            answer: '应依据已核验的劳动合同法计算。',
-            sections: [{ title: '计算规则', content: '按工作年限计算。', sourceIds: [lawId] }],
-            evidenceQuotes: [{ recordId: lawId, article: '第四十七条', text: original }],
-            limitations: ['工资基数需结合个案确认。'],
-          }),
+          text: modelOutput,
           dshSessionId: 'dsh-stream-1',
           toolCalls: [],
           toolResults: [
             { callId: 's1', name: 'search_laws', isError: false, result: { records: [{ recordId: lawId, lawName: '劳动合同法' }] } },
+            { callId: 's2', name: 'search_laws_semantic', isError: false, result: { records: [
+              { recordId: lawId, lawName: '劳动合同法' },
+              { recordId: secondLawId, lawName: '劳动合同法实施条例' },
+            ] } },
+            { callId: 'd0', name: 'get_law_details', isError: false, result: { details: [
+              { recordId: secondLawId, lawName: '劳动合同法实施条例', contentBlocks: [] },
+              { recordId: lawId, lawName: '劳动合同法', contentBlocks: [{ text: original }] },
+            ] } },
             { callId: 'd1', name: 'get_law_detail', isError: false, result: { recordId: lawId, lawName: '劳动合同法', contentBlocks: [{ text: original }] } },
           ],
         });
@@ -162,21 +205,88 @@ describe('LegalResearchService', () => {
       { id: 'legal-1', role: 'legal_bp' as any },
       undefined,
       new AbortController().signal,
-      (event) => timeline.push(event.type),
+      (event) => {
+        timeline.push(event.type);
+        if (event.type === 'research_metrics' && typeof event.candidateCount === 'number') {
+          candidateMetrics.push(event.candidateCount);
+        }
+        if (event.type === 'research_metrics' && typeof event.verifiedSourceCount === 'number') {
+          verifiedMetrics.push(event.verifiedSourceCount);
+          timeline.push('evidence_gate_open');
+        }
+        if (event.type === 'answer_delta') answerDeltas.push(event.delta);
+      },
     );
 
     expect(timeline).toContain('research_metrics');
     expect(timeline).toContain('report_summary');
     expect(timeline.indexOf('research_stage')).toBeLessThan(timeline.indexOf('persisted'));
     expect(timeline.indexOf('persisted')).toBeLessThan(timeline.indexOf('report_start'));
+    expect(candidateMetrics).toEqual([1, 2]);
+    expect(verifiedMetrics).toEqual([1]);
+    expect(answerDeltas.join('')).toBe('应依据已核验的劳动合同法计算。\n具体工资基数需结合个案确认。');
+    expect(timeline.indexOf('evidence_gate_open')).toBeLessThan(timeline.indexOf('answer_delta'));
+    expect(timeline.indexOf('answer_delta')).toBeLessThan(timeline.indexOf('persisted'));
     expect(timeline.at(-1)).toBe('report_completed');
   });
 
-  it('报告结构解析失败时，独立搜法降级展示已读取的权威原文', async () => {
+  it('零候选时不提前开放模型增量，等终态校验后输出结构化报告', async () => {
+    const handle = new DshExecutionHandle();
+    const modelOutput = JSON.stringify({
+      title: '零结果检索报告',
+      scope: '本轮检索范围',
+      summary: '未检索到可核验来源。',
+      answer: '未检索到可核验来源，建议补充关键事实。',
+      sections: [{ title: '检索结果', content: '本轮无候选法规。', sourceIds: [] }],
+      limitations: ['不形成确定性法律结论。'],
+    });
+    const executeStream = vi.fn().mockImplementation(async () => {
+      setImmediate(() => {
+        handle.emit('tool_result', {
+          callId: 's1', name: 'search_laws', isError: false,
+          result: { records: [] },
+        });
+        handle.emit('research_text', modelOutput);
+        handle.emit('done', {
+          text: modelOutput,
+          dshSessionId: 'dsh-empty-1',
+          toolCalls: [{ callId: 's1', name: 'search_laws', arguments: { keyword: '稀缺问题' } }],
+          toolResults: [{ callId: 's1', name: 'search_laws', isError: false, result: { records: [] } }],
+        });
+      });
+      return handle;
+    });
+    const sessions = {
+      prepareTurn: vi.fn().mockResolvedValue({
+        conversationId: 'conversation-empty', contextVersion: 1, runId: 'turn-empty', userMessageId: 'message-empty',
+        query: '稀缺问题', operation: 'new', turnContext: { operation: 'new', knownFacts: [], legalIssues: [] },
+      }),
+      completeTurn: vi.fn().mockResolvedValue(undefined),
+      failTurn: vi.fn(),
+    };
+    const service = new LegalResearchService({} as any, {
+      executeStream,
+      getToolCallLimit: () => 5,
+    } as any, { record: vi.fn().mockResolvedValue(undefined) } as any, sessions as any);
+    const events: string[] = [];
+
+    await service.streamAiSearch(
+      { query: '稀缺问题' },
+      { id: 'legal-1', role: 'legal_bp' as any },
+      undefined,
+      new AbortController().signal,
+      (event) => events.push(event.type),
+    );
+
+    expect(events).not.toContain('answer_delta');
+    expect(events.at(-1)).toBe('report_completed');
+  });
+
+  it('模型返回非 JSON 正文时补全报告结构，不把成功检索误判为降级', async () => {
     const lawId = 'D6592443DA000EF8D692CE667E947A69';
     const original = '有限责任公司股东认缴的出资额由股东按照公司章程的规定自公司成立之日起五年内缴足。';
     const partialResult = {
-      text: '这不是合法的结构化报告，绝不应展示。',
+      text: '已检索《中华人民共和国公司法》，注册资本认缴期限应结合公司成立时间及章程约定判断。',
       dshSessionId: 'dsh-degraded-1',
       toolCalls: [
         { callId: 's1', name: 'search_laws', arguments: { keyword: '公司法 认缴期限' } },
@@ -205,18 +315,15 @@ describe('LegalResearchService', () => {
 
     expect(result).toMatchObject({
       reportId: 'dsh-degraded-1',
-      degraded: true,
-      warning: {
-        code: 'RESEARCH_REPORT_INVALID',
-        message: expect.stringContaining('报告结构不完整'),
-      },
+      report: { resultStatus: 'complete', metrics: { candidateCount: 1, verifiedSourceCount: 1 } },
     });
-    expect(result.warning.message).not.toContain('本次回答未保存');
-    expect(result.report.summary).toContain('AI 生成内容未满足运行条件');
+    expect(result.degraded).toBeUndefined();
+    expect(result.warning).toBeUndefined();
+    expect(result.report.summary).toContain('已检索《中华人民共和国公司法》');
     expect(result.report.sources[0].articles[0].text).toBe(original);
-    expect(JSON.stringify(result)).not.toContain('这不是合法的结构化报告');
+    expect(result.report.limitations).toContain('报告展示结构已由系统根据本轮模型输出和检索结果自动补全。');
     expect(record).toHaveBeenLastCalledWith(expect.objectContaining({
-      action: 'ai.legal_research.degraded', outcome: 'partial', reasonCode: 'RESEARCH_REPORT_INVALID',
+      action: 'ai.legal_research.succeeded', outcome: 'success',
     }));
   });
 

@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { request, RequestError } from '../api/client'
 import { requestStreamOrJson, type AiLegalResearchStreamEvent } from '../api/sse'
+import { advanceAiLawReportDraft } from '../domain/legal-research'
 import type {
   AiLawResearchReportV1,
   AiLegalResearchConversation,
@@ -31,6 +32,8 @@ const followupOperation = ref<FollowupOperation>('auto')
 const loading = ref(false)
 const restoring = ref(false)
 const report = ref<AiLawResearchReportV1 | null>(null)
+const incomingReport = ref<AiLawResearchReportV1 | null>(null)
+const answerPreview = ref('')
 const reportId = ref('')
 const degradedWarning = ref<{ code: string; message: string } | undefined>()
 const error = ref<RequestError | null>(null)
@@ -44,10 +47,20 @@ const candidateCount = ref(0)
 const verifiedSourceCount = ref(0)
 const stages = ref<StageView[]>(freshStages())
 const lastRequest = ref<SearchRequest | null>(null)
+const syncingConversation = ref(false)
+const syncingRunId = ref('')
+const syncingQuestion = ref('')
+const syncingMessage = ref('正在同步最新状态…')
+const resumeNotice = ref<{ tone: 'warning' | 'info'; message: string } | null>(null)
 let activeAbort: AbortController | null = null
 let streamFailure: RequestError | null = null
+let conversationPollTimer: number | null = null
+let conversationPollAbort: AbortController | null = null
+let conversationPollGeneration = 0
+let componentUnmounted = false
 
 const recommended = ['离婚财产如何分割？', '员工解除劳动合同需要哪些补偿？', '供应商违约可以主张哪些责任？']
+const conversationBusy = computed(() => loading.value || syncingConversation.value)
 const generatedLabel = computed(() => report.value
   ? new Date(report.value.generatedAt).toLocaleString('zh-CN', { hour12: false })
   : '')
@@ -71,18 +84,33 @@ function createMessageId() {
   return window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+function isUncertainStreamFailure(failure: RequestError) {
+  return [
+    'SSE_CONNECTION_CLOSED',
+    'NETWORK_ERROR',
+    'REQUEST_TIMEOUT',
+    'AI_RESEARCH_TIMEOUT',
+    'ANSWER_GENERATION_TIMEOUT',
+    'BAD_SSE_EVENT',
+  ].includes(failure.payload.code)
+}
+
 async function runSearch(nextQuery?: string, operation: FollowupOperation = 'auto', replay?: SearchRequest) {
   const value = (replay?.query ?? nextQuery ?? query.value).trim()
-  if (!value || loading.value) return
+  if (!value || conversationBusy.value) return
+  stopConversationPolling()
   activeAbort?.abort()
   const abort = new AbortController()
   activeAbort = abort
   loading.value = true
   error.value = null
   streamFailure = null
+  incomingReport.value = null
+  answerPreview.value = ''
   stages.value = freshStages()
   candidateCount.value = 0
   verifiedSourceCount.value = 0
+  resumeNotice.value = null
   submittedQuery.value = value
   query.value = value
 
@@ -108,10 +136,24 @@ async function runSearch(nextQuery?: string, operation: FollowupOperation = 'aut
     }, handleStreamEvent)
     if (streamFailure) throw streamFailure
   } catch (cause) {
+    incomingReport.value = null
+    answerPreview.value = ''
     if (abort.signal.aborted) return
-    error.value = cause instanceof RequestError
+    const failure = cause instanceof RequestError
       ? cause
       : new RequestError({ error: 'AI 搜法失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+    if (failure.payload.code === 'AI_RESEARCH_CONTEXT_CONFLICT'
+      && conversationId.value) {
+      error.value = null
+      await synchronizeConversation(conversationId.value)
+      return
+    }
+    if (isUncertainStreamFailure(failure) && conversationId.value) {
+      error.value = null
+      await synchronizeConversation(conversationId.value)
+      if (report.value || syncingConversation.value) return
+    }
+    error.value = failure
   } finally {
     if (activeAbort === abort) activeAbort = null
     loading.value = false
@@ -135,27 +177,43 @@ function handleStreamEvent(event: AiLegalResearchStreamEvent) {
     if (typeof event.verifiedSourceCount === 'number') verifiedSourceCount.value = event.verifiedSourceCount
     return
   }
+  if (event.type === 'answer_delta') {
+    answerPreview.value += event.delta
+    return
+  }
   if (event.type === 'report_start') {
-    report.value = { ...event.report, summary: '', sections: [], sources: [], limitations: [] }
+    answerPreview.value = ''
+    incomingReport.value = advanceAiLawReportDraft(incomingReport.value, event).draft
     return
   }
-  if (event.type === 'report_summary' && report.value) {
-    report.value = { ...report.value, summary: event.summary }
+  if (event.type === 'report_summary') {
+    incomingReport.value = advanceAiLawReportDraft(incomingReport.value, event).draft
     return
   }
-  if (event.type === 'report_section' && report.value) {
-    report.value = { ...report.value, sections: [...report.value.sections, event.section] }
+  if (event.type === 'report_section') {
+    incomingReport.value = advanceAiLawReportDraft(incomingReport.value, event).draft
     return
   }
-  if (event.type === 'report_source' && report.value) {
-    report.value = { ...report.value, sources: [...report.value.sources, event.source] }
+  if (event.type === 'report_source') {
+    incomingReport.value = advanceAiLawReportDraft(incomingReport.value, event).draft
     return
   }
-  if (event.type === 'report_limitations' && report.value) {
-    report.value = { ...report.value, limitations: event.limitations }
+  if (event.type === 'report_limitations') {
+    incomingReport.value = advanceAiLawReportDraft(incomingReport.value, event).draft
     return
   }
   if (event.type === 'report_completed') {
+    const transition = advanceAiLawReportDraft(incomingReport.value, { type: 'report_completed' })
+    incomingReport.value = transition.draft
+    if (!transition.completed || transition.invalidCompletion) {
+      streamFailure = new RequestError({
+        error: '搜法报告流不完整，正在同步最新状态',
+        code: 'BAD_SSE_EVENT',
+        statusCode: 502,
+      })
+      return
+    }
+    report.value = transition.completed
     reportId.value = event.reportId
     contextVersion.value = event.contextVersion
     lastTurnId.value = event.turnId
@@ -178,6 +236,8 @@ function handleStreamEvent(event: AiLegalResearchStreamEvent) {
     return
   }
   if (event.type === 'error') {
+    incomingReport.value = null
+    answerPreview.value = ''
     streamFailure = new RequestError({
       error: event.message,
       code: event.code,
@@ -193,18 +253,14 @@ function normalizeTurnOperation(value: FollowupOperation | undefined): AiLegalRe
 
 function submitFollowup() {
   const value = followup.value.trim()
-  if (!value || !report.value || !conversationId.value) return
+  if (!value || !report.value || !conversationId.value || conversationBusy.value) return
   followup.value = ''
   void runSearch(value, followupOperation.value)
 }
 
 function retryLastRequest() {
   if (!lastRequest.value) return
-  const code = error.value?.payload.code
-  const transportUncertain = code === 'SSE_CONNECTION_CLOSED'
-    || code === 'NETWORK_ERROR'
-    || code === 'REQUEST_TIMEOUT'
-    || code === 'AI_RESEARCH_TIMEOUT'
+  const transportUncertain = error.value ? isUncertainStreamFailure(error.value) : false
   const retry = transportUncertain
     ? lastRequest.value
     : {
@@ -220,12 +276,15 @@ function retryLastRequest() {
 }
 
 function startNewConversation() {
+  stopConversationPolling()
   activeAbort?.abort()
   conversationId.value = ''
   contextVersion.value = 0
   lastTurnId.value = null
   turns.value = []
   report.value = null
+  incomingReport.value = null
+  answerPreview.value = ''
   reportId.value = ''
   submittedQuery.value = ''
   query.value = ''
@@ -233,6 +292,7 @@ function startNewConversation() {
   degradedWarning.value = undefined
   lastRequest.value = null
   stages.value = freshStages()
+  resumeNotice.value = null
   window.localStorage.removeItem(CONVERSATION_STORAGE_KEY)
 }
 
@@ -243,7 +303,12 @@ async function rerunAsNewConversation() {
 }
 
 function showTurn(turn: AiLegalResearchTurn) {
-  if (!turn.report || loading.value) return
+  if (!turn.report || conversationBusy.value) return
+  displayTurn(turn)
+}
+
+function displayTurn(turn: AiLegalResearchTurn) {
+  if (!turn.report) return
   report.value = turn.report
   reportId.value = turn.reportId ?? ''
   submittedQuery.value = turn.question
@@ -254,20 +319,165 @@ function showTurn(turn: AiLegalResearchTurn) {
 async function restoreConversation() {
   const storedId = window.localStorage.getItem(CONVERSATION_STORAGE_KEY)
   if (!storedId) return
-  restoring.value = true
+  await synchronizeConversation(storedId, true)
+}
+
+async function synchronizeConversation(id: string, initialRestore = false) {
+  stopConversationPolling(false)
+  const generation = conversationPollGeneration
+  if (initialRestore) restoring.value = true
+  const abort = new AbortController()
+  conversationPollAbort = abort
   try {
-    const value = await request<AiLegalResearchConversation>(`/legal-research/ai/conversations/${encodeURIComponent(storedId)}`)
-    conversationId.value = value.conversationId
-    contextVersion.value = value.contextVersion
-    lastTurnId.value = value.lastTurnId
-    turns.value = value.turns
-    const latest = [...value.turns].reverse().find(turn => turn.status === 'succeeded' && turn.report)
-    if (latest?.report) showTurn(latest)
-  } catch {
-    window.localStorage.removeItem(CONVERSATION_STORAGE_KEY)
+    const value = await request<AiLegalResearchConversation>(conversationPath(id), {
+      signal: abort.signal,
+      timeoutMs: 10_000,
+    })
+    if (componentUnmounted || generation !== conversationPollGeneration) return
+    const active = applyConversation(value)
+    if (active.runId) {
+      beginConversationPolling(value.conversationId, active.runId, active.turn, generation)
+    } else {
+      finishConversationSync(value)
+    }
+  } catch (cause) {
+    if (abort.signal.aborted || componentUnmounted || generation !== conversationPollGeneration) return
+    if (cause instanceof RequestError && cause.payload.code === 'AI_RESEARCH_CONVERSATION_NOT_FOUND') {
+      window.localStorage.removeItem(CONVERSATION_STORAGE_KEY)
+      stopConversationPolling()
+      return
+    }
+    syncingConversation.value = true
+    syncingRunId.value = ''
+    syncingQuestion.value = ''
+    syncingMessage.value = '暂时未能读取最新状态，正在自动重试…'
+    scheduleConversationPoll(id, generation)
   } finally {
-    restoring.value = false
+    if (conversationPollAbort === abort) conversationPollAbort = null
+    if (initialRestore) restoring.value = false
   }
+}
+
+function applyConversation(value: AiLegalResearchConversation) {
+  conversationId.value = value.conversationId
+  contextVersion.value = value.contextVersion
+  lastTurnId.value = value.lastTurnId
+  turns.value = value.turns
+  window.localStorage.setItem(CONVERSATION_STORAGE_KEY, value.conversationId)
+
+  const latestSucceeded = [...value.turns].reverse()
+    .find(turn => turn.status === 'succeeded' && turn.report)
+  if (latestSucceeded?.report) displayTurn(latestSucceeded)
+  else report.value = null
+
+  const declaredActiveTurn = value.activeRunId
+    ? value.turns.find(turn => turn.turnId === value.activeRunId)
+    : undefined
+  const declaredActiveRunId = value.activeRunId
+    && (!declaredActiveTurn || declaredActiveTurn.status === 'running')
+    ? value.activeRunId
+    : ''
+  return {
+    runId: declaredActiveRunId,
+    turn: declaredActiveTurn,
+  }
+}
+
+function beginConversationPolling(
+  id: string,
+  runId: string,
+  turn: AiLegalResearchTurn | undefined,
+  generation: number,
+) {
+  syncingConversation.value = true
+  syncingRunId.value = runId
+  syncingQuestion.value = turn?.question ?? ''
+  syncingMessage.value = '正在同步最新状态；本页不会重复发起检索。'
+  resumeNotice.value = null
+  scheduleConversationPoll(id, generation)
+}
+
+function scheduleConversationPoll(id: string, generation: number) {
+  if (componentUnmounted || generation !== conversationPollGeneration) return
+  if (conversationPollTimer !== null) window.clearTimeout(conversationPollTimer)
+  conversationPollTimer = window.setTimeout(() => {
+    conversationPollTimer = null
+    void pollConversation(id, generation)
+  }, 4_000)
+}
+
+async function pollConversation(id: string, generation: number) {
+  if (componentUnmounted || generation !== conversationPollGeneration) return
+  const abort = new AbortController()
+  conversationPollAbort = abort
+  try {
+    const value = await request<AiLegalResearchConversation>(conversationPath(id), {
+      signal: abort.signal,
+      timeoutMs: 10_000,
+    })
+    if (componentUnmounted || generation !== conversationPollGeneration) return
+    const active = applyConversation(value)
+    if (active.runId) {
+      syncingConversation.value = true
+      syncingRunId.value = active.runId
+      syncingQuestion.value = active.turn?.question ?? syncingQuestion.value
+      syncingMessage.value = '正在同步最新状态；检索完成后将自动展示报告。'
+      scheduleConversationPoll(id, generation)
+    } else {
+      finishConversationSync(value)
+    }
+  } catch (cause) {
+    if (abort.signal.aborted || componentUnmounted || generation !== conversationPollGeneration) return
+    if (cause instanceof RequestError && cause.payload.code === 'AI_RESEARCH_CONVERSATION_NOT_FOUND') {
+      window.localStorage.removeItem(CONVERSATION_STORAGE_KEY)
+      stopConversationPolling()
+      return
+    }
+    syncingConversation.value = true
+    syncingMessage.value = '状态同步短暂中断，正在自动重试…'
+    scheduleConversationPoll(id, generation)
+  } finally {
+    if (conversationPollAbort === abort) conversationPollAbort = null
+  }
+}
+
+function finishConversationSync(value: AiLegalResearchConversation) {
+  const targetRunId = syncingRunId.value
+  const target = targetRunId
+    ? value.turns.find(turn => turn.turnId === targetRunId)
+    : [...value.turns].reverse()[0]
+  syncingConversation.value = false
+  syncingRunId.value = ''
+  syncingQuestion.value = ''
+  syncingMessage.value = '正在同步最新状态…'
+  if (target?.status === 'failed') {
+    resumeNotice.value = { tone: 'warning', message: '上一轮检索未完成，您可以重新发起检索。' }
+  } else if (target?.status === 'cancelled') {
+    resumeNotice.value = { tone: 'info', message: '上一轮检索已取消，您可以继续使用当前会话。' }
+  } else if (target?.status === 'succeeded' && !target.report) {
+    resumeNotice.value = { tone: 'warning', message: '上一轮已结束，但暂未读取到完整报告，请重新发起检索。' }
+  } else {
+    resumeNotice.value = null
+  }
+}
+
+function stopConversationPolling(resetState = true) {
+  conversationPollGeneration += 1
+  if (conversationPollTimer !== null) {
+    window.clearTimeout(conversationPollTimer)
+    conversationPollTimer = null
+  }
+  conversationPollAbort?.abort()
+  conversationPollAbort = null
+  if (resetState) {
+    syncingConversation.value = false
+    syncingRunId.value = ''
+    syncingQuestion.value = ''
+  }
+}
+
+function conversationPath(id: string) {
+  return `/legal-research/ai/conversations/${encodeURIComponent(id)}`
 }
 
 async function copyReport() {
@@ -314,8 +524,16 @@ function reportToMarkdown(value: AiLawResearchReportV1) {
   return `# ${value.title}\n\n检索问题：${value.query}\n\n${thinking}\n\n## 总结\n\n${value.summary}\n\n${sections}\n\n## 权威来源\n\n${sources}${limitations ? `\n\n## 适用边界\n\n${limitations}` : ''}`
 }
 
-onMounted(restoreConversation)
-onBeforeUnmount(() => activeAbort?.abort())
+onMounted(() => {
+  componentUnmounted = false
+  void restoreConversation()
+})
+onBeforeUnmount(() => {
+  componentUnmounted = true
+  stopConversationPolling()
+  // 模块切换只销毁当前视图：保留已发起的 SSE，让服务端会话继续执行。
+  // 返回页面后由 GET 轮询接管，避免 abort 与服务端释放 activeRunId 产生竞态。
+})
 </script>
 
 <template>
@@ -327,7 +545,29 @@ onBeforeUnmount(() => activeAbort?.abort())
       正在恢复上次检索会话…
     </div>
 
-    <template v-if="!report && !loading && !restoring">
+    <div
+      v-if="syncingConversation && !restoring"
+      class="conversation-syncing"
+      aria-live="polite"
+    >
+      <span class="loading-mark" />
+      <div>
+        <strong>{{ syncingRunId ? '上一轮仍在处理中' : '正在同步上次检索会话' }}</strong>
+        <p>{{ syncingMessage }}</p>
+        <small v-if="syncingQuestion">检索问题：{{ syncingQuestion }}</small>
+      </div>
+      <span class="session-badge">自动同步</span>
+    </div>
+
+    <div
+      v-if="resumeNotice && !restoring && !syncingConversation"
+      :class="['conversation-resume-notice', `notice-${resumeNotice.tone}`]"
+      role="status"
+    >
+      {{ resumeNotice.message }}
+    </div>
+
+    <template v-if="!report && !conversationBusy && !restoring">
       <div class="ai-search-intro">
         <h2>用自然语言检索并读取法律依据</h2>
         <p>AI 将展示实时检索过程，读取命中法规的权威详情正文后再流式生成结构化报告。</p>
@@ -401,6 +641,16 @@ onBeforeUnmount(() => activeAbort?.abort())
           <small>{{ stageStatusLabel(stage.status) }}</small>
         </div>
       </div>
+      <section
+        v-if="answerPreview"
+        class="live-answer-preview"
+      >
+        <div>
+          <strong>AI 正文正在生成</strong>
+          <small>已通过检索与正文读取闸门；完成后将替换为结构化报告</small>
+        </div>
+        <p>{{ answerPreview }}<i aria-hidden="true" /></p>
+      </section>
       <footer>
         <span>候选法规 {{ candidateCount }} 部</span>
         <span>已读取正文 {{ verifiedSourceCount }} 部</span>
@@ -443,12 +693,12 @@ onBeforeUnmount(() => activeAbort?.abort())
             class="conversation-label"
           >连续检索会话 · {{ turns.length }} 轮</span>
           <h2>{{ report.title }}</h2>
-          <p>{{ degradedWarning ? '检索运行条件未完全满足' : loading ? '正在流式生成' : '检索完成' }} · 已读取 {{ report.metrics.verifiedSourceCount }} 部权威法规正文 · 生成于 {{ generatedLabel }}</p>
+          <p>{{ degradedWarning ? '检索运行条件未完全满足' : syncingConversation ? '上一轮仍在处理' : loading ? '正在流式生成' : '检索完成' }} · 已读取 {{ report.metrics.verifiedSourceCount }} 部权威法规正文 · 生成于 {{ generatedLabel }}</p>
         </div>
         <div class="report-heading-actions">
           <button
             type="button"
-            :disabled="loading"
+            :disabled="conversationBusy"
             @click="rerunAsNewConversation"
           >
             重新检索
@@ -462,14 +712,14 @@ onBeforeUnmount(() => activeAbort?.abort())
           <button
             class="primary"
             type="button"
-            :disabled="loading"
+            :disabled="conversationBusy"
             @click="focusFollowup"
           >
             继续追问
           </button>
           <button
             type="button"
-            :disabled="loading"
+            :disabled="conversationBusy"
             @click="startNewConversation"
           >
             新建会话
@@ -487,7 +737,7 @@ onBeforeUnmount(() => activeAbort?.abort())
             v-for="(turn, index) in turns"
             :key="turn.turnId"
             type="button"
-            :disabled="!turn.report || loading"
+            :disabled="!turn.report || conversationBusy"
             @click="showTurn(turn)"
           >
             第 {{ index + 1 }} 轮 · {{ operationLabel(turn.operation) }}
@@ -526,9 +776,10 @@ onBeforeUnmount(() => activeAbort?.abort())
           <AiLawReport :report="report" />
           <div class="report-document-actions">
             <span v-if="loading">报告正在按结构逐段到达…</span>
+            <span v-else-if="syncingConversation">正在同步上一轮检索结果…</span>
             <button
               type="button"
-              :disabled="loading"
+              :disabled="conversationBusy"
               @click="copyReport"
             >
               {{ copied ? '已复制' : '复制报告' }}
@@ -574,10 +825,10 @@ onBeforeUnmount(() => activeAbort?.abort())
             ref="followupInput"
             v-model="followup"
             :placeholder="followupOperation === 'correct' ? '例如：不是 2024 年签约，是 2023 年' : '基于本检索会话继续追问...'"
-            :disabled="loading"
+            :disabled="conversationBusy"
           >
           <button
-            :disabled="!followup.trim() || loading"
+            :disabled="!followup.trim() || conversationBusy"
             type="submit"
           >
             发送
@@ -591,6 +842,14 @@ onBeforeUnmount(() => activeAbort?.abort())
 <style scoped>
 .ai-research-panel { min-height: 420px; }
 .conversation-restoring { display: grid; min-height: 360px; place-items: center; color: #657188; font-size: 14px; }
+.conversation-syncing { display: flex; margin: 18px 0; padding: 18px 20px; align-items: center; gap: 13px; border: 1px solid #cddcf5; border-radius: 9px; background: linear-gradient(180deg, #f8fbff 0%, #fff 100%); box-shadow: 0 8px 28px rgba(37, 78, 138, .07); }
+.conversation-syncing > div { min-width: 0; flex: 1; }
+.conversation-syncing strong { color: #172943; font-size: 16px; }
+.conversation-syncing p { margin: 3px 0 0; color: #708099; font-size: 12px; }
+.conversation-syncing small { display: block; margin-top: 7px; overflow: hidden; color: #526b91; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-resume-notice { margin: 16px 0; padding: 11px 14px; border-radius: 7px; font-size: 12px; line-height: 1.6; }
+.conversation-resume-notice.notice-warning { border: 1px solid #f2c98a; background: #fff9ef; color: #81500c; }
+.conversation-resume-notice.notice-info { border: 1px solid #cddcf5; background: #f7faff; color: #526b91; }
 .ai-search-intro { margin-top: 34px; }
 .ai-search-intro h2 { margin: 0; color: #0b1222; font-size: 30px; letter-spacing: -.035em; }
 .ai-search-intro p { margin: 8px 0 0; color: #657188; font-size: 14px; }
@@ -635,6 +894,12 @@ onBeforeUnmount(() => activeAbort?.abort())
 .live-stage.stage-completed small { color: #159957; }
 .live-stage.stage-degraded .stage-number { border-color: #e0a04d; background: #fff6e8; color: #a45d08; }
 .live-stage.stage-degraded small { color: #a45d08; }
+.live-answer-preview { margin: 4px 20px 16px; padding: 14px 16px 16px; border: 1px solid #d9e5f7; border-radius: 7px; background: #fff; }
+.live-answer-preview > div { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.live-answer-preview strong { color: #20334f; font-size: 13px; }
+.live-answer-preview small { color: #7a899f; font-size: 10px; }
+.live-answer-preview p { margin: 10px 0 0; color: #28384e; font-size: 13px; line-height: 1.8; white-space: pre-wrap; }
+.live-answer-preview p i { display: inline-block; width: 2px; height: 1.05em; margin-left: 2px; vertical-align: -.12em; background: #1768f2; animation: cursor-blink .8s steps(1) infinite; }
 .live-research > footer { display: flex; padding: 10px 20px; align-items: center; gap: 18px; border-top: 1px solid #e7edf5; background: #fbfcfe; color: #64748b; font-size: 11px; }
 .live-research footer button { margin-left: auto; padding: 4px 10px; border: 1px solid #cbd5e1; border-radius: 5px; background: #fff; color: #475569; font: inherit; cursor: pointer; }
 .ai-report-heading { display: flex; margin-top: 18px; align-items: flex-start; justify-content: space-between; gap: 24px; }
@@ -670,6 +935,7 @@ onBeforeUnmount(() => activeAbort?.abort())
 .followup-input-row > button { width: 70px; border: 0; border-radius: 6px; background: #0f5fff; color: #fff; font: inherit; font-weight: 650; cursor: pointer; }
 .followup-input-row > button:disabled { opacity: .45; cursor: not-allowed; }
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes cursor-blink { 50% { opacity: 0; } }
 
 @media (max-width: 900px) {
   .ai-report-heading { flex-direction: column; }

@@ -124,8 +124,12 @@ describe('DshService 法律检索执行契约', () => {
     });
     const calls: any[] = [];
     const results: any[] = [];
+    const researchText: string[] = [];
+    const displayText: string[] = [];
     handle.on('tool_call', (event) => calls.push(event));
     handle.on('tool_result', (event) => results.push(event));
+    handle.on('research_text', (delta) => researchText.push(delta));
+    handle.on('text', (delta) => displayText.push(delta));
     const completion = await completionOf(handle);
 
     expect(harness.register).toHaveBeenCalledTimes(2);
@@ -135,6 +139,8 @@ describe('DshService 法律检索执行契约', () => {
     ]);
     expect(results[0]).toMatchObject({ callId: 'call-1', name: 'search_laws', isError: false, result: normalized });
     expect(completion.text).toBe(`> [法规原文｜ID:${lawId}｜条文:第八十七条] 应当支付赔偿金。`);
+    expect(researchText).toEqual([`> [法规原文｜ID:${lawId}｜条文:第八十七条] 应当支付赔偿金。`]);
+    expect(displayText).toEqual([]);
     expect(completion.toolResults[0].result).toEqual(normalized);
     expect(harness.dispose).toHaveBeenCalledOnce();
   });

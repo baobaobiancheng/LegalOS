@@ -74,7 +74,7 @@ export class DshBaijianToolsService {
         parameters: {
           keyword: { type: 'string', required: true, description: '法规关键词，不要包含姓名、手机号等个人信息。' },
           page: { type: 'integer', description: '页码，默认 1。' },
-          rows: { type: 'integer', description: '返回数量，默认 5，最多 5。' },
+          rows: { type: 'integer', description: '返回数量，默认 10，最多 10。' },
         },
         output: this.outputDefinition(),
         timeoutMs: 60_000,
@@ -83,7 +83,7 @@ export class DshBaijianToolsService {
           const result = await baijian.searchLaws({
             keyword: args.keyword,
             page: clamp(args.page, 1, 10, 1),
-            rows: clamp(args.rows, 1, 5, 5),
+            rows: clamp(args.rows, 1, 10, 10),
           }, exec.signal);
           rememberCandidates(result.records, candidates);
           return result as any;
@@ -96,7 +96,7 @@ export class DshBaijianToolsService {
           issuingOrgan: { type: 'string', description: '可选发文机关，例如国务院。' },
           timeliness: { type: 'string', enum: ['0', '1', '2', '3', '4'], description: '0尚未实施、1现行有效、2已失效、3已修改、4草案。' },
           page: { type: 'integer', description: '页码，默认1。' },
-          rows: { type: 'integer', description: '返回数量，默认5，最多5。' },
+          rows: { type: 'integer', description: '返回数量，默认10，最多10。' },
         },
         output: this.outputDefinition(),
         timeoutMs: 60_000,
@@ -107,7 +107,7 @@ export class DshBaijianToolsService {
             issuingOrgan: args.issuingOrgan,
             timeliness: args.timeliness,
             page: clamp(args.page, 1, 10, 1),
-            rows: clamp(args.rows, 1, 5, 5),
+            rows: clamp(args.rows, 1, 10, 10),
           }, exec.signal);
           rememberCandidates(result.records, candidates);
           return result as any;
@@ -120,7 +120,7 @@ export class DshBaijianToolsService {
           keyword: { type: 'string', description: '可选法规标题关键词。' },
           issuingOrgan: { type: 'string', description: '可选发文机关。' },
           timeliness: { type: 'string', enum: ['0', '1', '2', '4'], description: '0尚未实施、1现行有效、2已失效、4已修改。' },
-          rows: { type: 'integer', description: '返回数量，默认5，最多5。' },
+          rows: { type: 'integer', description: '返回数量，默认10，最多10。' },
         },
         output: this.outputDefinition(),
         timeoutMs: 60_000,
@@ -131,7 +131,7 @@ export class DshBaijianToolsService {
             keyword: args.keyword,
             issuingOrgan: args.issuingOrgan,
             timeliness: args.timeliness,
-            rows: clamp(args.rows, 1, 5, 5),
+            rows: clamp(args.rows, 1, 10, 10),
           }, exec.signal);
           rememberCandidates(result.records, candidates);
           return result as any;
@@ -156,15 +156,36 @@ export class DshBaijianToolsService {
           const sharedQuery = boundedText(args.query, 300);
           if (!sharedQuery) throw new Error('批量法规详情必须提供 query 以定位目标正文');
           reserveLawDetails(lawIds);
-          const details = await mapWithConcurrency(lawIds, 3, async (lawId) => {
-            const candidate = candidates.get(lawId.toLowerCase())!;
-            const detail = await baijian.getLawDetail({ lawId }, exec.signal);
-            return projectLawDetail(detail, {
-              articleHint: candidate.articleNumber || undefined,
-              query: candidate.matchedContent || sharedQuery,
-            }, { maxBytes: 14 * 1024, maxBlocks: 24, maxRankedBlocks: 4, radius: 1 });
+          const settled = await mapWithConcurrency(lawIds, 3, async (lawId) => {
+            try {
+              const candidate = candidates.get(lawId.toLowerCase())!;
+              const detail = await baijian.getLawDetail({ lawId }, exec.signal);
+              return {
+                lawId,
+                detail: projectLawDetail(detail, {
+                  articleHint: candidate.articleNumber || undefined,
+                  query: candidate.matchedContent || sharedQuery,
+                }, { maxBytes: 14 * 1024, maxBlocks: 24, maxRankedBlocks: 4, radius: 1 }),
+              };
+            } catch (error) {
+              return { lawId, error };
+            }
           });
-          return { toolName: DSH_LAW_BATCH_DETAIL_TOOL, details } as any;
+          if (exec.signal.aborted) {
+            throw exec.signal.reason instanceof Error
+              ? exec.signal.reason
+              : new Error('批量法规详情读取已取消');
+          }
+          const details = settled.flatMap((item) => item.detail ? [item.detail] : []);
+          const failedLawIds = settled.flatMap((item) => item.error ? [item.lawId] : []);
+          if (!details.length) {
+            throw new Error(`批量法规详情读取失败，${failedLawIds.length} 部候选法规均未成功读取正文`);
+          }
+          return {
+            toolName: DSH_LAW_BATCH_DETAIL_TOOL,
+            details,
+            ...(failedLawIds.length ? { failedLawIds } : {}),
+          } as any;
         },
       }), defineTool({
         name: DSH_LAW_DETAIL_TOOL,

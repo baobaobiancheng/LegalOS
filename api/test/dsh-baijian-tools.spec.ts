@@ -8,12 +8,13 @@ import {
   DSH_LAW_SEARCH_TOOL,
   DSH_LAW_SEMANTIC_SEARCH_TOOL,
 } from '../src/common/services/dsh-agent.types';
+import { validateResearchEvidence } from '../src/common/services/dsh.service';
 
 describe('DshBaijianToolsService', () => {
   it('法规 Agent 工具限制页码/条数并持久标准化结果投影', async () => {
     const normalized = {
       toolName: 'lawstar_data_professional_query', status: 'success_hit', count: 1,
-      page: 1, pageSize: 5, totalPages: 1,
+      page: 1, pageSize: 10, totalPages: 1,
       records: [{ source: 'lawstar', recordId: 'law-1', lawName: '劳动合同法' }],
     };
     const baijian = { searchLaws: vi.fn().mockResolvedValue(normalized), searchCases: vi.fn() };
@@ -25,7 +26,7 @@ describe('DshBaijianToolsService', () => {
       { signal: new AbortController().signal } as any,
     );
     expect(baijian.searchLaws).toHaveBeenCalledWith(
-      { keyword: '劳动合同', page: 10, rows: 5 },
+      { keyword: '劳动合同', page: 10, rows: 10 },
       expect.any(AbortSignal),
     );
     expect(result).toBe(normalized);
@@ -111,6 +112,58 @@ describe('DshBaijianToolsService', () => {
     expect(baijian.getLawDetail).toHaveBeenCalledTimes(3);
     expect(maxActive).toBeLessThanOrEqual(3);
     expect(result.details.every((detail: any) => Buffer.byteLength(JSON.stringify(detail.contentBlocks), 'utf8') < 15 * 1024)).toBe(true);
+  });
+
+  it('批量详情局部失败时保留已读取正文，仍满足证据闸门', async () => {
+    const lawIds = Array.from({ length: 3 }, (_, index) => index.toString(16).padStart(32, '0').toUpperCase());
+    const baijian = {
+      searchLaws: vi.fn().mockResolvedValue({
+        records: lawIds.map((recordId) => ({ recordId, matchedContent: '经济补偿' })),
+      }),
+      searchLawsAdvanced: vi.fn(),
+      searchLawsSemantic: vi.fn(),
+      getLawDetail: vi.fn().mockImplementation(async ({ lawId }: { lawId: string }) => {
+        if (lawId === lawIds[1]) throw new Error('供应商单条详情失败');
+        return {
+          toolName: 'lawstar_data_professional_detail',
+          recordId: lawId,
+          lawName: `法规-${lawId}`,
+          toc: [],
+          contentBlocks: [{ id: null, kind: 'paragraph', text: '第四十七条 经济补偿按工作年限计算。' }],
+        };
+      }),
+    };
+    const definitions = await new DshBaijianToolsService(baijian as any).createDefinitions('law_search');
+    const signal = new AbortController().signal;
+    const search = definitions.find((item) => item.name === DSH_LAW_SEARCH_TOOL);
+    const searchResult = await search.execute({ keyword: '经济补偿' }, { signal } as any);
+    const batch = definitions.find((item) => item.name === DSH_LAW_BATCH_DETAIL_TOOL);
+    const detailResult = await batch.execute({ lawIds, query: '经济补偿' }, { signal } as any);
+
+    expect(detailResult.details.map((detail: any) => detail.recordId)).toEqual([lawIds[0], lawIds[2]]);
+    expect(detailResult.failedLawIds).toEqual([lawIds[1].toLowerCase()]);
+    expect(() => validateResearchEvidence('law_search', '', [], [
+      { callId: 's1', name: DSH_LAW_SEARCH_TOOL, isError: false, result: searchResult },
+      { callId: 'd1', name: DSH_LAW_BATCH_DETAIL_TOOL, isError: false, result: detailResult },
+    ])).not.toThrow();
+  });
+
+  it('批量详情全部失败时才将整个工具调用判为失败', async () => {
+    const lawIds = Array.from({ length: 2 }, (_, index) => index.toString(16).padStart(32, '0').toUpperCase());
+    const baijian = {
+      searchLaws: vi.fn().mockResolvedValue({ records: lawIds.map((recordId) => ({ recordId })) }),
+      searchLawsAdvanced: vi.fn(),
+      searchLawsSemantic: vi.fn(),
+      getLawDetail: vi.fn().mockRejectedValue(new Error('供应商详情失败')),
+    };
+    const definitions = await new DshBaijianToolsService(baijian as any).createDefinitions('law_search');
+    const signal = new AbortController().signal;
+    await definitions.find((item) => item.name === DSH_LAW_SEARCH_TOOL)
+      .execute({ keyword: '经济补偿' }, { signal } as any);
+
+    await expect(definitions.find((item) => item.name === DSH_LAW_BATCH_DETAIL_TOOL)
+      .execute({ lawIds, query: '经济补偿' }, { signal } as any))
+      .rejects.toThrow('候选法规均未成功读取正文');
   });
 
   it('各类法规召回合计最多2次，第3次在供应商调用前拒绝', async () => {

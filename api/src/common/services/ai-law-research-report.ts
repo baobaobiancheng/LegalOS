@@ -81,6 +81,12 @@ interface ModelReport {
   limitations?: unknown;
 }
 
+interface ParsedModelOutput {
+  value: ModelReport;
+  plainText?: string;
+  repaired: boolean;
+}
+
 export const AI_LAW_REPORT_OUTPUT_RULE = `最终只输出一个 JSON 对象，不要输出 Markdown 围栏或额外说明。结构必须是：
 {"query":"本轮问题","title":"不超过40字的报告标题","scope":"本轮检索范围","summary":"两段以内总结","understanding":{"queryType":"article_location|regulation_location|legal_issue","analysis":"面向用户展示的问题理解，不写内部思维链","retrievalPlan":"面向用户展示的检索与详情读取方案","knownFacts":["当前有效的已知事实"],"legalIssues":["需要处理的法律争点"],"factChanges":{"added":["本轮新增事实"],"corrected":[{"from":"被修正事实","to":"修正后事实"}],"removed":["本轮删除事实"]}},"answer":"供咨询对话直接展示的Markdown答复","sections":[{"title":"分析主题","content":"具体分析","sourceIds":["模型标注的法规ID"]}],"evidenceQuotes":[{"recordId":"模型标注的法规ID","article":"具体条号","text":"法规原文"}],"limitations":["适用边界"]}。
 answer 必须包含结论、具体分析、适用边界和来源名称；不得泄露内部推理过程。没有直接引用时 evidenceQuotes 可为空数组；一旦引用，text 必须逐字复制已读取的法规正文连续片段。`;
@@ -114,8 +120,9 @@ export function parseAiLawResearchReport(
   requestedQuery = '',
   context: AiLawResearchTurnContext = {},
 ): ParsedAiLawResearchReport {
-  const value = parseModelJson(text);
-  const answer = requiredText(value.answer, 'answer', 20_000);
+  const parsedOutput = parseModelOutput(text);
+  const value = parsedOutput.value;
+  const query = bound(requestedQuery.trim() || optionalText(value.query, 1_000) || '', 1_000);
   const verifiedDetails = verifiedLawDetails(toolResults).slice(0, 10);
   const evidenceQuotes = parseEvidenceQuotes(value.evidenceQuotes);
   const quotesBySource = new Map<string, Array<{ article: string; text: string }>>();
@@ -126,17 +133,28 @@ export function parseAiLawResearchReport(
   }
 
   const sections = parseSections(value.sections);
-  const sources = verifiedDetails.map((detail) => ({
-    recordId: bound(detail.recordId, 64),
-    lawName: bound(detail.lawName, 300),
-    issuingOrgan: nullableText(detail.issuingOrgan, 200),
-    issuingNo: nullableText(detail.issuingNo, 200),
-    releaseDate: nullableText(detail.releaseDate, 40),
-    implementDate: nullableText(detail.implementDate, 40),
-    timeliness: nullableText(detail.timeliness, 40),
-    lastVerifiedAt: lawDetailLastVerifiedAt(detail),
-    articles: (quotesBySource.get(detail.recordId.toLowerCase()) ?? []).slice(0, 3),
-  }));
+  const hadParsedSections = sections.length > 0;
+  const answer = normalizedAnswer(value, parsedOutput.plainText, query, verifiedDetails, sections);
+  if (!sections.length) {
+    sections.push(...sectionsFromAnswer(
+      answer,
+      verifiedDetails.slice(0, 3).map((detail) => detail.recordId.toLowerCase()),
+    ));
+  }
+  const sources = verifiedDetails.map((detail) => {
+    const quotedArticles = (quotesBySource.get(detail.recordId.toLowerCase()) ?? []).slice(0, 3);
+    return {
+      recordId: bound(detail.recordId, 64),
+      lawName: bound(detail.lawName, 300),
+      issuingOrgan: nullableText(detail.issuingOrgan, 200),
+      issuingNo: nullableText(detail.issuingNo, 200),
+      releaseDate: nullableText(detail.releaseDate, 40),
+      implementDate: nullableText(detail.implementDate, 40),
+      timeliness: nullableText(detail.timeliness, 40),
+      lastVerifiedAt: lawDetailLastVerifiedAt(detail),
+      articles: quotedArticles.length ? quotedArticles : selectEvidenceBlocks(detail, query),
+    };
+  });
   const candidateIds = new Set(toolResults.flatMap((result) => {
     if (!result.result || !('records' in result.result)) return [];
     return result.result.records.map((record) => record.recordId.toLowerCase());
@@ -145,8 +163,17 @@ export function parseAiLawResearchReport(
   const citedSourceCount = new Set(evidenceQuotes
     .filter((quote) => sourceIds.has(quote.recordId))
     .map((quote) => quote.recordId)).size;
-  const query = bound(requestedQuery.trim() || optionalText(value.query, 1_000) || '', 1_000);
   const understanding = parseUnderstanding(value.understanding, query, sections, context);
+  const presentationRepaired = parsedOutput.repaired
+    || !optionalText(value.answer, 20_000)
+    || !optionalText(value.title, 100)
+    || !optionalText(value.scope, 500)
+    || !optionalText(value.summary, 2_000)
+    || !hadParsedSections;
+  const limitations = parseStringArray(value.limitations, 5, 300);
+  if (presentationRepaired && limitations.length < 5) {
+    limitations.push('报告展示结构已由系统根据本轮模型输出和检索结果自动补全。');
+  }
 
   return {
     answer,
@@ -154,13 +181,13 @@ export function parseAiLawResearchReport(
       schemaVersion: 1,
       resultStatus: 'complete',
       query,
-      title: requiredText(value.title, 'title', 100),
-      scope: requiredText(value.scope, 'scope', 500),
-      summary: requiredText(value.summary, 'summary', 2_000),
+      title: optionalText(value.title, 100) ?? defaultReportTitle(query),
+      scope: optionalText(value.scope, 500) ?? defaultReportScope(verifiedDetails),
+      summary: optionalText(value.summary, 2_000) ?? summaryFromAnswer(answer),
       understanding,
       sections,
       sources,
-      limitations: parseStringArray(value.limitations, 5, 300),
+      limitations,
       generatedAt: new Date().toISOString(),
       metrics: {
         candidateCount: candidateIds.size,
@@ -362,34 +389,193 @@ function queryTerms(query: string): string[] {
   return [...terms];
 }
 
-function parseModelJson(text: string): ModelReport {
+function parseModelOutput(text: string): ParsedModelOutput {
   const trimmed = text.trim();
   const withoutFence = trimmed.startsWith('```')
     ? trimmed.replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '').trim()
     : trimmed;
+  const direct = parseJsonRecord(withoutFence);
+  if (direct) return { value: direct, repaired: false };
+
+  const fenced = [...trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/giu)]
+    .map((match) => parseJsonRecord(match[1]))
+    .find((value): value is ModelReport => Boolean(value));
+  if (fenced) return { value: fenced, repaired: true };
+
+  const embedded = extractFirstJsonObject(trimmed);
+  const embeddedValue = embedded ? parseJsonRecord(embedded) : undefined;
+  if (embeddedValue) return { value: embeddedValue, repaired: true };
+
+  const plainText = withoutFence && !withoutFence.startsWith('{') && !withoutFence.startsWith('[')
+    ? bound(withoutFence, 20_000)
+    : undefined;
+  return { value: {}, ...(plainText ? { plainText } : {}), repaired: true };
+}
+
+function parseJsonRecord(value: string): ModelReport | undefined {
   try {
-    const parsed = JSON.parse(withoutFence);
-    if (!isRecord(parsed)) throw new Error('not object');
-    return parsed;
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : undefined;
   } catch {
-    throw new Error('dsh Agent AI 搜法报告结构无效：不是合法 JSON 对象');
+    return undefined;
   }
 }
 
-function parseSections(value: unknown): AiLawResearchSectionV1[] {
-  if (!Array.isArray(value) || !value.length) {
-    throw new Error('dsh Agent AI 搜法报告结构无效：sections 不能为空');
+function extractFirstJsonObject(value: string): string | undefined {
+  const start = value.indexOf('{');
+  if (start < 0) return undefined;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < value.length; index += 1) {
+    const char = value[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return value.slice(start, index + 1);
+    }
   }
-  return value.slice(0, 6).map((item, index) => {
-    if (!isRecord(item)) throw new Error('dsh Agent AI 搜法报告结构无效：section 不是对象');
+  return undefined;
+}
+
+function parseSections(value: unknown): AiLawResearchSectionV1[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 6).flatMap((item, index) => {
+    if (!isRecord(item)) return [];
+    const content = optionalText(item.content, 3_000);
+    if (!content) return [];
     const sourceIds = parseStringArray(item.sourceIds, 10, 64).map((id) => id.toLowerCase());
-    return {
+    return [{
       id: `analysis-${index + 1}`,
-      title: requiredText(item.title, 'section.title', 80),
-      content: requiredText(item.content, 'section.content', 3_000),
+      title: optionalText(item.title, 80) ?? `分析 ${index + 1}`,
+      content,
       sourceIds,
-    };
+    }];
   });
+}
+
+function normalizedAnswer(
+  value: ModelReport,
+  plainText: string | undefined,
+  query: string,
+  details: BaijianLawDetail[],
+  sections: AiLawResearchSectionV1[],
+): string {
+  const modelAnswer = optionalText(value.answer, 20_000);
+  if (modelAnswer) return modelAnswer;
+  if (plainText) return plainText;
+
+  const summary = optionalText(value.summary, 2_000);
+  if (summary || sections.length) {
+    return [
+      summary ? `## 总结\n\n${summary}` : '',
+      ...sections.map((section) => `## ${section.title}\n\n${section.content}`),
+    ].filter(Boolean).join('\n\n');
+  }
+
+  const lawNames = details.slice(0, 5).map((detail) => `《${detail.lawName}》`).join('、');
+  return [
+    '## 检索结果',
+    `已围绕“${bound(query || '本轮问题', 160)}”完成法规检索${lawNames ? `，并读取${lawNames}的权威详情正文` : ''}。`,
+    '模型未返回完整的展示字段，系统已保留本轮检索结果和权威来源，供进一步核对。',
+  ].join('\n\n');
+}
+
+function defaultReportTitle(query: string): string {
+  const compact = query.replace(/\s+/gu, ' ').trim();
+  return compact ? `${bound(compact, 32)}法律检索报告` : 'AI 法律检索报告';
+}
+
+function defaultReportScope(details: BaijianLawDetail[]): string {
+  const names = [...new Set(details.map((detail) => detail.lawName).filter(Boolean))].slice(0, 5);
+  return names.length ? `本轮已读取：${names.join('、')}` : '本轮法规检索及权威详情读取范围';
+}
+
+function summaryFromAnswer(answer: string): string {
+  const plain = answer
+    .replace(/^#{1,6}\s*/gmu, '')
+    .replace(/^>\s*/gmu, '')
+    .replace(/[*_`]/gu, '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  return bound(plain || '本轮已完成法规检索与权威详情正文读取。', 500);
+}
+
+function sectionsFromAnswer(answer: string, sourceIds: string[]): AiLawResearchSectionV1[] {
+  const blocks: Array<{ title: string; content: string }> = [];
+  let currentTitle = '具体分析';
+  let currentLines: string[] = [];
+  const flush = () => {
+    const content = currentLines.join('\n').trim();
+    if (content) blocks.push({ title: currentTitle, content });
+    currentLines = [];
+  };
+  for (const line of answer.split(/\r?\n/u)) {
+    const heading = line.match(/^#{1,6}\s+(.+?)\s*$/u);
+    if (heading) {
+      flush();
+      currentTitle = bound(heading[1], 80);
+    } else {
+      currentLines.push(line);
+    }
+  }
+  flush();
+  if (!blocks.length && answer.trim()) blocks.push({ title: '具体分析', content: answer.trim() });
+
+  const sections: AiLawResearchSectionV1[] = [];
+  for (const block of blocks) {
+    const chunks = splitBoundedText(block.content, 3_000);
+    for (let index = 0; index < chunks.length; index += 1) {
+      if (sections.length >= 12) break;
+      sections.push({
+        id: `analysis-${sections.length + 1}`,
+        title: index ? bound(`${block.title}（续 ${index + 1}）`, 80) : block.title,
+        content: chunks[index],
+        sourceIds,
+      });
+    }
+    if (sections.length >= 12) break;
+  }
+  return sections.length ? sections : [{
+    id: 'analysis-1',
+    title: '具体分析',
+    content: '本轮已完成法规检索与详情正文读取。',
+    sourceIds,
+  }];
+}
+
+function splitBoundedText(value: string, maxLength: number): string[] {
+  const chunks: string[] = [];
+  let current = '';
+  const pushCurrent = () => {
+    const text = current.trim();
+    if (text) chunks.push(text);
+    current = '';
+  };
+  for (const paragraph of value.split(/\n{2,}/u).map((item) => item.trim()).filter(Boolean)) {
+    if (paragraph.length > maxLength) {
+      pushCurrent();
+      for (let start = 0; start < paragraph.length; start += maxLength) {
+        chunks.push(paragraph.slice(start, start + maxLength));
+      }
+      continue;
+    }
+    const candidate = current ? `${current}\n\n${paragraph}` : paragraph;
+    if (candidate.length > maxLength) pushCurrent();
+    current = current ? `${current}\n\n${paragraph}` : paragraph;
+  }
+  pushCurrent();
+  return chunks;
 }
 
 function parseEvidenceQuotes(value: unknown) {
@@ -507,12 +693,6 @@ function parseStringArray(value: unknown, maxItems: number, maxLength: number): 
     .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
     .slice(0, maxItems)
     .map((item) => bound(item.trim(), maxLength));
-}
-
-function requiredText(value: unknown, field: string, maxLength: number): string {
-  const text = optionalText(value, maxLength);
-  if (!text) throw new Error(`dsh Agent AI 搜法报告结构无效：${field} 不能为空`);
-  return text;
 }
 
 function optionalText(value: unknown, maxLength: number): string | undefined {

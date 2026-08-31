@@ -36,12 +36,14 @@ interface DshContext {
  * 直接对应 dsh 的 session 事件模型（assistant/chunk 文本增量 + turn/end 结果）。
  * 事件：
  *   'text'      (delta: string)               — 模型输出的文本增量
+ *   'research_text' (delta: string)            — 检索模式的原始结构化文本，只能经证据闸门解析后展示
  *   'done'      (result: { text: string })     — turn 正常完成，text 为最终完整文本
  *   'cancelled' ()                             — 排队中或执行中被取消（调用方应跳过落库，视为"未完成"而非"失败"）
  *   'error'     (error: Error)                 — turn 异常结束（超时/网关错误/AI 禁用等）
  */
 export class DshExecutionHandle extends EventEmitter {
   override on(event: 'text', listener: (delta: string) => void): this;
+  override on(event: 'research_text', listener: (delta: string) => void): this;
   override on(event: 'tool_call', listener: (call: DshToolCallEvent) => void): this;
   override on(event: 'tool_result', listener: (result: DshToolResultEvent) => void): this;
   override on(event: 'done', listener: (result: DshExecutionResult) => void): this;
@@ -346,7 +348,10 @@ export class DshService implements OnModuleDestroy {
         const chunk = event.data.chunk;
         if (chunk.type === 'text-delta' && chunk.text) {
           fullText += chunk.text;
-          if (!params.researchCapability) handle.emit('text', chunk.text);
+          // 检索模式的文本是机器可读 JSON，不能经普通 `text` 事件直接外发。
+          // 上层会在法规检索/正文闸门通过后，仅解析 answer 字段的增量。
+          if (params.researchCapability) handle.emit('research_text', chunk.text);
+          else handle.emit('text', chunk.text);
         }
         return;
       }

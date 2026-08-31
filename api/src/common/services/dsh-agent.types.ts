@@ -18,6 +18,8 @@ export type DshResearchToolName = typeof DSH_LAW_SEARCH_TOOL
 export interface DshLawBatchDetailResult {
   toolName: typeof DSH_LAW_BATCH_DETAIL_TOOL;
   details: BaijianLawDetail[];
+  /** 批量读取的局部失败；成功详情仍可用于证据闸门。 */
+  failedLawIds?: string[];
 }
 
 export type DshToolResultValue = BaijianNormalizedToolResult | DshLawBatchDetailResult;

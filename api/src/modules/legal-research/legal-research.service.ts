@@ -59,6 +59,7 @@ export type AiLegalResearchStreamEvent =
     detail: string;
   }
   | { type: 'research_metrics'; candidateCount?: number; verifiedSourceCount?: number; toolName?: string }
+  | { type: 'answer_delta'; delta: string }
   | { type: 'report_start'; report: Omit<AiLawResearchReportV1, 'summary' | 'sections' | 'sources' | 'limitations'> }
   | { type: 'report_summary'; summary: string }
   | { type: 'report_section'; section: AiLawResearchReportV1['sections'][number] }
@@ -82,6 +83,12 @@ interface AiSearchExecutionResponse {
   answer: string;
   degraded?: boolean;
   warning?: { code: string; message: string };
+}
+
+interface AiResearchProgress {
+  candidateIds: Set<string>;
+  verifiedSourceIds: Set<string>;
+  successfulSearchCount: number;
 }
 
 @Injectable()
@@ -186,6 +193,12 @@ export class LegalResearchService {
       detail: thinkingCopy(prepared),
     });
     try {
+      const progress: AiResearchProgress = {
+        candidateIds: new Set<string>(),
+        verifiedSourceIds: new Set<string>(),
+        successfulSearchCount: 0,
+      };
+      const answerStream = new GatedAnswerStream((delta) => emit({ type: 'answer_delta', delta }));
       const result = await this.executeAiSearch(
         prepared.query,
         actor,
@@ -196,7 +209,11 @@ export class LegalResearchService {
           resumeDshSessionId: prepared.resumeDshSessionId,
           turnContext: prepared.turnContext,
           onToolCall: (call) => emitToolCallProgress(call, emit),
-          onToolResult: (toolResult) => emitToolResultProgress(toolResult, emit),
+          onToolResult: (toolResult) => {
+            emitToolResultProgress(toolResult, emit, progress);
+            answerStream.setGate(canStreamAnswer(progress));
+          },
+          onText: (delta) => answerStream.push(delta),
         },
       );
       await this.sessions.completeTurn(prepared, result);
@@ -223,6 +240,7 @@ export class LegalResearchService {
       turnContext: AiLawResearchTurnContext;
       onToolCall?: (call: DshToolCallEvent) => void;
       onToolResult?: (result: DshToolResultEvent) => void;
+      onText?: (delta: string) => void;
     },
   ): Promise<AiSearchExecutionResponse> {
     const correlationId = randomUUID();
@@ -255,6 +273,7 @@ export class LegalResearchService {
       );
       if (options.onToolCall) handle.on('tool_call', options.onToolCall);
       if (options.onToolResult) handle.on('tool_result', options.onToolResult);
+      if (options.onText) handle.on('research_text', options.onText);
       const result = await completionOf(handle);
       completedResult = result;
       const parsed = parseAiLawResearchReport(result.text, result.toolResults, query, options.turnContext);
@@ -467,6 +486,7 @@ function emitToolCallProgress(
 function emitToolResultProgress(
   toolResult: DshToolResultEvent,
   emit: (event: AiLegalResearchStreamEvent) => void,
+  progress: AiResearchProgress,
 ) {
   if (toolResult.isError) {
     emit({
@@ -480,7 +500,14 @@ function emitToolResultProgress(
   }
   const value = toolResult.result;
   if (value && 'records' in value) {
-    const candidateCount = value.records.length;
+    if ([DSH_LAW_SEARCH_TOOL, DSH_LAW_ADVANCED_SEARCH_TOOL, DSH_LAW_SEMANTIC_SEARCH_TOOL]
+      .includes(toolResult.name as any)) {
+      progress.successfulSearchCount += 1;
+    }
+    for (const record of value.records) {
+      if (record.recordId) progress.candidateIds.add(record.recordId.toLowerCase());
+    }
+    const candidateCount = progress.candidateIds.size;
     emit({ type: 'research_metrics', candidateCount, toolName: toolResult.name });
     emit({
       type: 'research_stage',
@@ -493,10 +520,18 @@ function emitToolResultProgress(
     });
     return;
   }
-  const verifiedSourceCount = value && 'details' in value
-    ? value.details.length
-    : value && 'contentBlocks' in value ? 1 : 0;
-  if (verifiedSourceCount) {
+  const previousVerifiedSourceCount = progress.verifiedSourceIds.size;
+  if (value && 'details' in value) {
+    for (const detail of value.details) {
+      if (detail.recordId && detail.contentBlocks?.length) {
+        progress.verifiedSourceIds.add(detail.recordId.toLowerCase());
+      }
+    }
+  } else if (value && 'contentBlocks' in value && value.recordId && value.contentBlocks.length) {
+    progress.verifiedSourceIds.add(value.recordId.toLowerCase());
+  }
+  const verifiedSourceCount = progress.verifiedSourceIds.size;
+  if (verifiedSourceCount > previousVerifiedSourceCount) {
     emit({ type: 'research_metrics', verifiedSourceCount, toolName: toolResult.name });
     emit({
       type: 'research_stage',
@@ -513,6 +548,13 @@ function emitToolResultProgress(
       detail: '正在基于检索结果和已读取的法规详情整理报告。',
     });
   }
+}
+
+function canStreamAnswer(progress: AiResearchProgress): boolean {
+  // 零候选在轮次结束前仍可能触发第二次召回并命中，因此不提前开闸。
+  // 全程零候选的合法结果会在 completion 校验后通过最终结构化报告展示。
+  return progress.successfulSearchCount > 0
+    && progress.verifiedSourceIds.size > 0;
 }
 
 function thinkingCopy(prepared: PreparedAiResearchTurn): string {
@@ -548,6 +590,166 @@ function detailRequestCount(value: unknown): number {
   if (!value || typeof value !== 'object') return 1;
   const ids = (value as Record<string, unknown>).lawIds;
   return Array.isArray(ids) && ids.length ? Math.min(ids.length, 10) : 1;
+}
+
+/**
+ * 模型输出仍是最终报告 JSON。这里只解码顶层 `answer` 字符串，
+ * 不会把 JSON 外壳、understanding/analysis 或其他模型字段作为正文外发。
+ */
+export class JsonAnswerFieldStream {
+  private readonly containers: Array<'object' | 'array'> = [];
+  private stringKind: 'key' | 'answer' | 'other' | undefined;
+  private keyBuffer = '';
+  private pendingKey = '';
+  private rootToken = '';
+  private escaped = false;
+  private unicodeDigits = '';
+  private completed = false;
+
+  push(chunk: string): string {
+    if (!chunk || this.completed) return '';
+    const answer: string[] = [];
+    for (const char of chunk) {
+      if (this.completed) break;
+      if (this.stringKind) {
+        this.consumeStringCharacter(char, answer);
+      } else {
+        this.consumeStructuralCharacter(char);
+      }
+    }
+    return answer.join('');
+  }
+
+  private consumeStructuralCharacter(char: string): void {
+    if (/\s/u.test(char)) return;
+    const atRootObject = this.containers.length === 1 && this.containers[0] === 'object';
+    if (char === '"') {
+      this.escaped = false;
+      this.unicodeDigits = '';
+      this.keyBuffer = '';
+      this.stringKind = atRootObject && (this.rootToken === '{' || this.rootToken === ',')
+        ? 'key'
+        : atRootObject && this.rootToken === ':' && this.pendingKey === 'answer'
+          ? 'answer'
+          : 'other';
+      return;
+    }
+    if (char === '{') {
+      this.containers.push('object');
+      if (this.containers.length === 1) {
+        this.rootToken = '{';
+        this.pendingKey = '';
+      }
+      return;
+    }
+    if (char === '[') {
+      this.containers.push('array');
+      return;
+    }
+    if (char === '}' || char === ']') {
+      if (this.containers.length) this.containers.pop();
+      if (this.containers.length === 1 && this.containers[0] === 'object') {
+        this.rootToken = 'value';
+      } else if (!this.containers.length) {
+        this.rootToken = '';
+        this.pendingKey = '';
+      }
+      return;
+    }
+    if (!atRootObject) return;
+    if (char === ':') {
+      this.rootToken = ':';
+      return;
+    }
+    if (char === ',') {
+      this.rootToken = ',';
+      this.pendingKey = '';
+      return;
+    }
+    if (this.rootToken === ':') this.rootToken = 'value';
+  }
+
+  private consumeStringCharacter(char: string, answer: string[]): void {
+    if (this.unicodeDigits) {
+      if (/^[0-9a-f]$/iu.test(char)) {
+        this.unicodeDigits += char;
+        if (this.unicodeDigits.length === 5) {
+          this.appendDecoded(String.fromCharCode(Number.parseInt(this.unicodeDigits.slice(1), 16)), answer);
+          this.unicodeDigits = '';
+        }
+      } else {
+        this.appendDecoded(`\\${this.unicodeDigits}${char}`, answer);
+        this.unicodeDigits = '';
+      }
+      return;
+    }
+    if (this.escaped) {
+      this.escaped = false;
+      if (char === 'u') {
+        this.unicodeDigits = 'u';
+        return;
+      }
+      const decoded: Record<string, string> = {
+        '"': '"',
+        '\\': '\\',
+        '/': '/',
+        b: '\b',
+        f: '\f',
+        n: '\n',
+        r: '\r',
+        t: '\t',
+      };
+      this.appendDecoded(decoded[char] ?? char, answer);
+      return;
+    }
+    if (char === '\\') {
+      this.escaped = true;
+      return;
+    }
+    if (char !== '"') {
+      this.appendDecoded(char, answer);
+      return;
+    }
+
+    if (this.stringKind === 'key') {
+      this.pendingKey = this.keyBuffer;
+      this.rootToken = 'key';
+    } else if (this.stringKind === 'answer') {
+      this.completed = true;
+      this.rootToken = 'value';
+    } else if (this.containers.length === 1 && this.containers[0] === 'object') {
+      this.rootToken = 'value';
+    }
+    this.stringKind = undefined;
+  }
+
+  private appendDecoded(value: string, answer: string[]): void {
+    if (this.stringKind === 'key') this.keyBuffer += value;
+    else if (this.stringKind === 'answer') answer.push(value);
+  }
+}
+
+class GatedAnswerStream {
+  private readonly parser = new JsonAnswerFieldStream();
+  private buffered = '';
+  private open = false;
+
+  constructor(private readonly emit: (delta: string) => void) {}
+
+  push(rawDelta: string): void {
+    const delta = this.parser.push(rawDelta);
+    if (!delta) return;
+    if (this.open) this.emit(delta);
+    else this.buffered += delta;
+  }
+
+  setGate(open: boolean): void {
+    this.open = open;
+    if (!open || !this.buffered) return;
+    const delta = this.buffered;
+    this.buffered = '';
+    this.emit(delta);
+  }
 }
 
 export function isCaseLikeTitle(title: string): boolean {

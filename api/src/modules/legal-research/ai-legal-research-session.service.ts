@@ -1,4 +1,5 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Prisma, Role } from '@prisma/client';
 import { createHash, randomUUID } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -10,6 +11,18 @@ import { ResearchTraceV1 } from '../project/application/research-trace';
 import { AiLawResearchDto } from './dto/legal-research.dto';
 
 export type AiResearchTurnOperation = 'new' | 'continue' | 'correct' | 'new_issue';
+
+const AI_RESEARCH_EXECUTION_TIMEOUT_MS = 180_000;
+const AI_RESEARCH_RUN_LEASE_BUFFER_MS = 60_000;
+
+interface ActiveAiResearchRun {
+  id: string;
+  projectId: string;
+  capability: string;
+  status: string;
+  startedAt: Date;
+  updatedAt: Date;
+}
 
 interface AiResearchConversationStateV1 {
   schemaVersion: 1;
@@ -40,7 +53,24 @@ export interface PreparedAiResearchTurn {
 
 @Injectable()
 export class AiLegalResearchSessionService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly runLeaseMs: number;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    config: ConfigService,
+  ) {
+    const configuredQueueTimeout = Number(
+      config.get<string>('AI_EXECUTION_QUEUE_TIMEOUT_MS')
+      ?? config.get<string>('CODEX_QUEUE_TIMEOUT_MS')
+      ?? 120_000,
+    );
+    const queueTimeoutMs = Number.isFinite(configuredQueueTimeout)
+      ? Math.max(0, configuredQueueTimeout)
+      : 120_000;
+    this.runLeaseMs = queueTimeoutMs
+      + AI_RESEARCH_EXECUTION_TIMEOUT_MS
+      + AI_RESEARCH_RUN_LEASE_BUFFER_MS;
+  }
 
   async prepareTurn(dto: AiLawResearchDto, actor: { id: string; role: Role }): Promise<PreparedAiResearchTurn> {
     const query = dto.query.trim();
@@ -58,7 +88,20 @@ export class AiLegalResearchSessionService {
     });
     if (!project) throw new NotFoundException({ error: '检索会话不存在或无权访问', code: 'AI_RESEARCH_CONVERSATION_NOT_FOUND' });
     const state = readState(project.extra);
-    if (state.activeRunId) {
+    const activeRun = state.activeRunId
+      ? await this.prisma.consultationRun.findUnique({
+        where: { id: state.activeRunId },
+        select: {
+          id: true,
+          projectId: true,
+          capability: true,
+          status: true,
+          startedAt: true,
+          updatedAt: true,
+        },
+      })
+      : null;
+    if (isBlockingActiveRun(activeRun, project.id, this.runLeaseMs)) {
       throw conflict('上一轮仍在处理中，请等待完成后继续追问', state.contextVersion, state.lastTurnId);
     }
     if (dto.contextVersion !== undefined && dto.contextVersion !== state.contextVersion) {
@@ -85,6 +128,25 @@ export class AiLegalResearchSessionService {
       : null;
 
     await this.prisma.$transaction(async (tx) => {
+      if (isExpiredActiveRun(activeRun, project.id, this.runLeaseMs)) {
+        const retired = await tx.consultationRun.updateMany({
+          where: {
+            id: activeRun.id,
+            projectId: project.id,
+            capability: 'law_search',
+            status: 'running',
+            updatedAt: activeRun.updatedAt,
+          },
+          data: {
+            status: 'failed',
+            errorMessage: 'AI 搜法运行租约已过期，已自动释放会话。',
+            completedAt: new Date(),
+          },
+        });
+        if (retired.count !== 1) {
+          throw conflict('检索会话运行状态已更新，请刷新后重试', state.contextVersion, state.lastTurnId);
+        }
+      }
       const claimed = await tx.project.updateMany({
         where: { id: project.id, updatedAt: project.updatedAt },
         data: { extra: mergeState(project.extra, claimedState) },
@@ -140,25 +202,70 @@ export class AiLegalResearchSessionService {
       warning?: { code: string; message: string };
     },
   ): Promise<void> {
-    const project = await this.prisma.project.findUnique({
-      where: { id: prepared.conversationId },
-      select: { extra: true },
-    });
-    if (!project) return;
-    const state = readState(project.extra);
-    const nextState: AiResearchConversationStateV1 = state.activeRunId === prepared.runId
-      ? {
+    const answerMessageId = randomUUID();
+    const outputHash = createHash('sha256').update(result.answer).digest('hex');
+    const committed = await this.prisma.$transaction(async (tx) => {
+      // consultationRun.status 是终态写入的 CAS 锁：过期回收、成功和失败只能有一方获胜。
+      const finalized = await tx.consultationRun.updateMany({
+        where: {
+          id: prepared.runId,
+          projectId: prepared.conversationId,
+          capability: 'law_search',
+          status: 'running',
+        },
+        data: { status: 'succeeded' },
+      });
+      if (finalized.count !== 1) return false;
+
+      const retireLateResult = async () => {
+        await tx.consultationRun.updateMany({
+          where: {
+            id: prepared.runId,
+            projectId: prepared.conversationId,
+            status: 'succeeded',
+          },
+          data: {
+            status: 'failed',
+            errorMessage: 'AI 搜法结果返回时会话已进入新一轮，已丢弃迟到结果。',
+            completedAt: new Date(),
+          },
+        });
+      };
+
+      // MySQL 默认 REPEATABLE READ 下不在同一快照内循环重读；
+      // 按 consultationRun -> project 的统一顺序锁住项目行，再读取最新会话状态。
+      await tx.$queryRaw`SELECT id FROM projects WHERE id = ${prepared.conversationId} FOR UPDATE`;
+      const project = await tx.project.findUnique({
+        where: { id: prepared.conversationId },
+        select: { extra: true },
+      });
+      if (!project) {
+        await retireLateResult();
+        return false;
+      }
+      const state = readState(project.extra);
+      if (state.activeRunId !== prepared.runId) {
+        await retireLateResult();
+        return false;
+      }
+      const nextState: AiResearchConversationStateV1 = {
         ...state,
         knownFacts: result.report.understanding.knownFacts.slice(0, 20),
         legalIssues: result.report.understanding.legalIssues.slice(0, 12),
         lastTurnId: prepared.runId,
         activeRunId: null,
-      }
-      : state;
-    const answerMessageId = randomUUID();
-    const outputHash = createHash('sha256').update(result.answer).digest('hex');
-    await this.prisma.$transaction([
-      this.prisma.projectMessage.create({
+      };
+      await tx.project.update({
+        where: { id: prepared.conversationId },
+        data: {
+          status: '已回传',
+          isFailed: false,
+          result: result.report.summary,
+          extra: mergeState(project.extra, nextState),
+        },
+      });
+
+      await tx.projectMessage.create({
         data: {
           id: answerMessageId,
           projectId: prepared.conversationId,
@@ -166,11 +273,14 @@ export class AiLegalResearchSessionService {
           text: result.answer,
           label: 'ai_law_report',
         },
-      }),
-      this.prisma.consultationRun.update({
-        where: { id: prepared.runId },
-        data: {
+      });
+      const stored = await tx.consultationRun.updateMany({
+        where: {
+          id: prepared.runId,
+          projectId: prepared.conversationId,
           status: 'succeeded',
+        },
+        data: {
           answerMessageId,
           dshSessionId: result.reportId,
           researchTrace: result.trace as unknown as Prisma.InputJsonValue,
@@ -182,40 +292,45 @@ export class AiLegalResearchSessionService {
           outputHash,
           completedAt: new Date(),
         },
-      }),
-      this.prisma.project.update({
-        where: { id: prepared.conversationId },
-        data: {
-          status: '已回传',
-          isFailed: false,
-          result: result.report.summary,
-          extra: mergeState(project.extra, nextState),
-        },
-      }),
-    ]);
+      });
+      if (stored.count !== 1) throw new Error('AI 搜法终态写入失败');
+      return true;
+    });
+    if (!committed) {
+      throw conflict('该轮检索已过期或会话已进入新一轮，正在同步最新状态', prepared.contextVersion, null);
+    }
   }
 
   async failTurn(prepared: PreparedAiResearchTurn, error: Error, cancelled = false): Promise<void> {
-    const project = await this.prisma.project.findUnique({
-      where: { id: prepared.conversationId },
-      select: { extra: true },
-    }).catch(() => null);
-    const state = readState(project?.extra);
-    const nextState = state.activeRunId === prepared.runId ? { ...state, activeRunId: null } : state;
-    await this.prisma.$transaction([
-      this.prisma.consultationRun.update({
-        where: { id: prepared.runId },
+    await this.prisma.$transaction(async (tx) => {
+      const finalized = await tx.consultationRun.updateMany({
+        where: {
+          id: prepared.runId,
+          projectId: prepared.conversationId,
+          capability: 'law_search',
+          status: 'running',
+        },
         data: {
           status: cancelled ? 'cancelled' : 'failed',
           errorMessage: error.message.slice(0, 2_000),
           completedAt: new Date(),
         },
-      }),
-      ...(project ? [this.prisma.project.update({
+      });
+      if (finalized.count !== 1) return;
+
+      await tx.$queryRaw`SELECT id FROM projects WHERE id = ${prepared.conversationId} FOR UPDATE`;
+      const project = await tx.project.findUnique({
         where: { id: prepared.conversationId },
-        data: { extra: mergeState(project.extra, nextState) },
-      })] : []),
-    ]).catch(() => undefined);
+        select: { extra: true },
+      });
+      if (!project) return;
+      const state = readState(project.extra);
+      if (state.activeRunId !== prepared.runId) return;
+      await tx.project.update({
+        where: { id: prepared.conversationId },
+        data: { extra: mergeState(project.extra, { ...state, activeRunId: null }) },
+      });
+    });
   }
 
   async getConversation(conversationId: string, actorId: string) {
@@ -233,11 +348,20 @@ export class AiLegalResearchSessionService {
       where: { projectId: conversationId, capability: 'law_search' },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
+    const state = readState(project.extra);
+    const activeRun = state.activeRunId
+      ? runs.find((run) => run.id === state.activeRunId) ?? null
+      : null;
+    const expiredActiveRunId = isExpiredActiveRun(activeRun, project.id, this.runLeaseMs) ? activeRun.id : null;
+    const activeRunId = activeRun && isBlockingActiveRun(activeRun, project.id, this.runLeaseMs) ? activeRun.id : null;
     const messages = new Map(project.messages.map((message) => [message.id, message]));
     return {
       conversationId: project.id,
       title: project.title,
-      ...readState(project.extra),
+      ...state,
+      // GET 恢复时不让终态、丢失或租约过期的 activeRunId 把前端永久锁住。
+      // 真正发起下一轮时 prepareTurn 会在事务中持久化清理。
+      activeRunId,
       turns: runs.map((run) => {
         const trace = asRecord(run.researchTrace) as unknown as ResearchTraceV1 | undefined;
         const toolSummary = asRecord(run.toolSummary);
@@ -246,7 +370,7 @@ export class AiLegalResearchSessionService {
           turnId: run.id,
           question: message?.text ?? '',
           operation: message?.label ?? 'continue',
-          status: run.status,
+          status: run.id === expiredActiveRunId ? 'failed' : run.status,
           reportId: run.dshSessionId,
           report: trace?.report,
           degraded: toolSummary?.degraded === true,
@@ -416,6 +540,36 @@ function positiveInt(value: unknown, fallback: number): number {
 function isWarning(value: unknown): value is { code: string; message: string } {
   const record = asRecord(value);
   return typeof record?.code === 'string' && typeof record.message === 'string';
+}
+
+function isBlockingActiveRun(
+  run: ActiveAiResearchRun | null,
+  projectId: string,
+  runLeaseMs: number,
+): boolean {
+  return isMatchingRunningRun(run, projectId) && !isRunLeaseExpired(run, runLeaseMs);
+}
+
+function isExpiredActiveRun(
+  run: ActiveAiResearchRun | null,
+  projectId: string,
+  runLeaseMs: number,
+): run is ActiveAiResearchRun {
+  return isMatchingRunningRun(run, projectId) && isRunLeaseExpired(run, runLeaseMs);
+}
+
+function isMatchingRunningRun(run: ActiveAiResearchRun | null, projectId: string): run is ActiveAiResearchRun {
+  return Boolean(
+    run
+    && run.projectId === projectId
+    && run.capability === 'law_search'
+    && run.status === 'running',
+  );
+}
+
+function isRunLeaseExpired(run: ActiveAiResearchRun, runLeaseMs: number): boolean {
+  const lastActivityAt = Math.max(run.startedAt.getTime(), run.updatedAt.getTime());
+  return !Number.isFinite(lastActivityAt) || Date.now() - lastActivityAt > runLeaseMs;
 }
 
 function conflict(error: string, currentVersion: number, lastTurnId: string | null) {
