@@ -410,8 +410,14 @@ export class DshService implements OnModuleDestroy {
         }
         handle.emit('done', completion);
       } else if (reason?.kind === 'aborted') {
-        if (policyFailure) handle.emit('error', policyFailure);
-        else handle.emit('cancelled');
+        if (policyFailure) {
+          handle.emit('error', new DshResearchEvidenceError(policyFailure.message, {
+            text: this.readFinalAssistantText(agent.session.events) || fullText,
+            dshSessionId: String(dshSessionId),
+            toolCalls,
+            toolResults,
+          }));
+        } else handle.emit('cancelled');
       } else {
         const message = describeTurnFailure(reason);
         handle.emit('error', new Error(message));

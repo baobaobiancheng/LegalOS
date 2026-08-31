@@ -15,24 +15,46 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{ toggleFull: [] }>()
 const visibleSources = computed(() => props.compact ? props.report.sources.slice(0, 4) : props.report.sources)
-const processSteps = [
-  { key: 'understand', label: '理解问题' },
-  { key: 'recall', label: '法规召回' },
-  { key: 'verify', label: '正文核验' },
-  { key: 'answer', label: props.compact ? '生成回答' : '生成报告' },
-]
+type ProcessStatus = 'completed' | 'empty' | 'incomplete' | 'skipped' | 'degraded'
+const isDegraded = computed(() => props.report.resultStatus === 'degraded')
+const processSteps = computed<Array<{ key: string; label: string; status: ProcessStatus; statusLabel: string }>>(() => [
+  { key: 'understand', label: '理解问题', status: 'completed', statusLabel: '已完成' },
+  props.report.metrics.candidateCount > 0
+    ? { key: 'recall', label: '法规召回', status: 'completed', statusLabel: '已完成' }
+    : { key: 'recall', label: '法规召回', status: 'empty', statusLabel: '无结果' },
+  props.report.metrics.verifiedSourceCount > 0
+    ? { key: 'verify', label: '正文核验', status: 'completed', statusLabel: '已完成' }
+    : props.report.metrics.candidateCount > 0
+      ? { key: 'verify', label: '正文核验', status: 'incomplete', statusLabel: '未完成' }
+      : { key: 'verify', label: '正文核验', status: 'skipped', statusLabel: '已跳过' },
+  isDegraded.value
+    ? { key: 'answer', label: props.compact ? '生成回答' : '生成报告', status: 'degraded', statusLabel: '已降级' }
+    : { key: 'answer', label: props.compact ? '生成回答' : '生成报告', status: 'completed', statusLabel: '已完成' },
+])
+const overallStatus = computed(() => {
+  if (isDegraded.value) return { label: '已生成安全降级结果', tone: 'degraded' }
+  if (props.report.metrics.candidateCount === 0) return { label: '未检索到可核验来源', tone: 'empty' }
+  if (props.report.metrics.verifiedSourceCount === 0) return { label: '已完成法规召回', tone: 'unverified' }
+  return { label: '已完成 AI 搜法', tone: 'complete' }
+})
 const sourceById = computed(() => new Map(props.report.sources.map(source => [source.recordId.toLowerCase(), source])))
 
 function sourceLabel(id: string) {
   return sourceById.value.get(id.toLowerCase())?.lawName ?? '已核验法规'
 }
+
+function formatVerifiedAt(value: string | null | undefined) {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+}
 </script>
 
 <template>
   <article :class="['ai-law-report', { compact }]">
-    <header class="report-status">
+    <header :class="['report-status', `status-${overallStatus.tone}`]">
       <div>
-        <strong><i />已完成 AI 搜法</strong>
+        <strong><i />{{ overallStatus.label }}</strong>
         <span>
           已核验 {{ report.metrics.verifiedSourceCount }} 部权威法规
           <template v-if="compact"> · 本次引用 {{ report.metrics.citedSourceCount }} 部</template>
@@ -60,7 +82,7 @@ function sourceLabel(id: string) {
           class="process-step"
         >
           <span class="step-icon">{{ index + 1 }}</span>
-          <span><strong>{{ step.label }}</strong><small><i />已完成</small></span>
+          <span><strong>{{ step.label }}</strong><small :class="`step-${step.status}`"><i />{{ step.statusLabel }}</small></span>
         </div>
       </div>
       <p>检索范围：{{ report.scope }}</p>
@@ -119,7 +141,7 @@ function sourceLabel(id: string) {
             <span class="source-document">法</span>
             <span class="source-heading">
               <strong>{{ source.lawName }}</strong>
-              <small>{{ source.issuingOrgan || '未标注发布机关' }}<template v-if="source.issuingNo"> · {{ source.issuingNo }}</template></small>
+              <small>{{ source.issuingOrgan || '未标注发布机关' }}<template v-if="source.issuingNo"> · {{ source.issuingNo }}</template><template v-if="source.lastVerifiedAt"> · 核验于 {{ formatVerifiedAt(source.lastVerifiedAt) }}</template></small>
             </span>
             <span
               v-if="source.timeliness"
@@ -180,6 +202,15 @@ function sourceLabel(id: string) {
 .report-status strong { display: inline-flex; align-items: center; gap: 8px; color: #159957; font-size: 14px; }
 .report-status strong i { width: 15px; height: 15px; border: 2px solid #1aaa63; border-radius: 50%; }
 .report-status strong i::after { display: block; width: 6px; height: 3px; margin: 3px 0 0 3px; border-bottom: 1.5px solid #1aaa63; border-left: 1.5px solid #1aaa63; content: ''; transform: rotate(-45deg); }
+.report-status.status-degraded strong,
+.report-status.status-unverified strong { color: #a15c08; }
+.report-status.status-degraded strong i,
+.report-status.status-unverified strong i { border-color: #d98a24; }
+.report-status.status-degraded strong i::after,
+.report-status.status-unverified strong i::after { border-color: #d98a24; }
+.report-status.status-empty strong { color: #64748b; }
+.report-status.status-empty strong i { border-color: #94a3b8; }
+.report-status.status-empty strong i::after { display: none; }
 .report-status span { color: #718096; font-size: 12px; }
 .full-report-button { padding: 5px 0; border: 0; background: transparent; color: #0f5fff; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; }
 .research-process { overflow: hidden; margin: 0 0 14px; border: 1px solid #dce4ef; border-radius: 7px; background: #fbfcfe; }
@@ -192,6 +223,14 @@ function sourceLabel(id: string) {
 .process-step strong { color: #2a3850; font-size: 12px; }
 .process-step small { display: flex; align-items: center; gap: 5px; color: #16a05d; font-size: 11px; }
 .process-step small i { width: 7px; height: 7px; border-radius: 50%; background: #18aa61; }
+.process-step small.step-empty,
+.process-step small.step-skipped { color: #7b8798; }
+.process-step small.step-empty i,
+.process-step small.step-skipped i { background: #a7b1bf; }
+.process-step small.step-incomplete,
+.process-step small.step-degraded { color: #aa620b; }
+.process-step small.step-incomplete i,
+.process-step small.step-degraded i { background: #dc8b27; }
 .research-process > p { margin: 4px 18px 10px; color: #6b7890; font-size: 11px; text-align: center; }
 .report-section { scroll-margin-top: 20px; }
 .report-section h2 { margin: 14px 0 6px; color: #101827; font-size: 18px; font-weight: 700; letter-spacing: -.02em; }

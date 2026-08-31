@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { AiExecutionQueueService } from '../src/common/services/ai-execution-queue.service';
-import { DshExecutionHandle, DshService, validateResearchEvidence } from '../src/common/services/dsh.service';
+import {
+  DshExecutionHandle,
+  DshResearchEvidenceError,
+  DshService,
+  validateResearchEvidence,
+} from '../src/common/services/dsh.service';
 import { DSH_BAIJIAN_RESULT_META_KIND } from '../src/common/services/dsh-baijian-tools.service';
 
 const homes: string[] = [];
@@ -229,7 +234,16 @@ describe('DshService 法律检索执行契约', () => {
       requireResearchTool: true,
     });
 
-    await expect(completionOf(handle)).rejects.toThrow('工具调用超过上限（5）');
+    const failure = await completionOf(handle).then(() => undefined, (error) => error);
+    expect(failure).toBeInstanceOf(DshResearchEvidenceError);
+    expect(failure).toMatchObject({
+      message: 'dsh Agent 工具调用超过上限（5）',
+      result: {
+        dshSessionId: expect.any(String),
+        toolCalls: expect.arrayContaining([{ callId: 'call-1', name: 'search_laws', arguments: {} }]),
+        toolResults: [],
+      },
+    });
     expect(harness.cancel).toHaveBeenCalledWith({
       kind: 'hook',
       reason: 'dsh Agent 工具调用超过上限（5）',

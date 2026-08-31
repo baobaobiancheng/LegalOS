@@ -119,11 +119,13 @@ export type AiLawResearchSourceV1 = {
   releaseDate: string | null
   implementDate: string | null
   timeliness: string | null
+  lastVerifiedAt: string | null
   articles: Array<{ article: string; text: string }>
 }
 
 export type AiLawResearchReportV1 = {
   schemaVersion: 1
+  resultStatus: 'complete' | 'degraded'
   query: string
   title: string
   scope: string

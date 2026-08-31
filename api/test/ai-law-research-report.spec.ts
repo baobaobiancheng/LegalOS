@@ -26,6 +26,7 @@ function toolResults() {
           lawName: '中华人民共和国民法典', issuingOrgan: '全国人民代表大会',
           issuingNo: null, releaseDate: '2020-05-28', implementDate: '2021-01-01',
           timeliness: '现行有效', toc: [],
+          cache: { status: 'hit', fetchedAt: '2026-08-30T08:00:00.000Z', lastVerifiedAt: '2026-08-30T08:00:00.000Z' },
           contentBlocks: [{ id: null, kind: 'paragraph', text: `第一千零六十二条 ${ORIGINAL}` }],
         }],
       },
@@ -47,9 +48,11 @@ describe('AI 搜法结构化报告', () => {
     }), toolResults(), '我想离婚，进行财产分割');
 
     expect(parsed.report.query).toBe('我想离婚，进行财产分割');
+    expect(parsed.report.resultStatus).toBe('complete');
     expect(parsed.report.sources).toEqual([expect.objectContaining({
       recordId: LAW_ID,
       lawName: '中华人民共和国民法典',
+      lastVerifiedAt: '2026-08-30T08:00:00.000Z',
       articles: [{ article: '第一千零六十二条', text: ORIGINAL }],
     })]);
     expect(parsed.report.metrics).toEqual({ candidateCount: 1, verifiedSourceCount: 1, citedSourceCount: 1 });
@@ -67,10 +70,11 @@ describe('AI 搜法结构化报告', () => {
     expect(parsed.report.sources[0].articles).toEqual([{ article: '第一千零六十二条', text: ORIGINAL }]);
   });
 
-  it('提示词明确批量读取与5次工具调用上限', () => {
+  it('提示词明确最多3部批量读取与5次工具调用上限', () => {
     const prompt = buildStandaloneAiLawResearchPrompt('经济补偿如何计算', 5);
     expect(prompt).toContain('get_law_details');
-    expect(prompt).toContain('批量读取最多10部');
+    expect(prompt).toContain('批量读取最多3部');
+    expect(prompt).toContain('本轮最多两次');
     expect(prompt).toContain('最多调用工具 5 次');
   });
 });

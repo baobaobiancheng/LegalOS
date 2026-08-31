@@ -24,11 +24,13 @@ export interface AiLawResearchSourceV1 {
   releaseDate: string | null;
   implementDate: string | null;
   timeliness: string | null;
+  lastVerifiedAt: string | null;
   articles: Array<{ article: string; text: string }>;
 }
 
 export interface AiLawResearchReportV1 {
   schemaVersion: 1;
+  resultStatus: 'complete' | 'degraded';
   query: string;
   title: string;
   scope: string;
@@ -70,7 +72,7 @@ answer 必须包含结论、具体分析、适用边界和来源名称；不得�
 
 export function buildStandaloneAiLawResearchPrompt(query: string, toolCallLimit: number): string {
   return `你是企业法律检索 Agent。围绕用户问题完成一份可审计的 AI 搜法报告。
-先用 search_laws_semantic、search_laws 或 search_laws_advanced 召回候选；为覆盖不同规范层级，最多使用两次召回。如需直接引用法规原文，优先只调用一次 get_law_details 批量读取最多10部最相关法规；仅在单条精确定位时使用 get_law_detail。
+默认只用 search_laws_semantic、search_laws 或 search_laws_advanced 中的一种召回候选；仅在首次零结果或明显缺少规范层级时补充第二次召回，本轮最多两次。如需直接引用法规原文，优先只调用一次 get_law_details 批量读取最多3部最相关法规；仅在单条精确定位时使用 get_law_detail，且本轮不得连续调用多个单条详情。
 本轮最多调用工具 ${toolCallLimit} 次；获得足以回答的证据后立即停止。若全部召回为零结果，answer、summary 必须以“未检索到可核验来源”开头，sources 与 evidenceQuotes 为空，不得生成确定性法规结论。
 ${AI_LAW_REPORT_OUTPUT_RULE}
 
@@ -104,6 +106,7 @@ export function parseAiLawResearchReport(
     releaseDate: nullableText(detail.releaseDate, 40),
     implementDate: nullableText(detail.implementDate, 40),
     timeliness: nullableText(detail.timeliness, 40),
+    lastVerifiedAt: lawDetailLastVerifiedAt(detail),
     articles: (quotesBySource.get(detail.recordId.toLowerCase()) ?? []).slice(0, 3),
   }));
   const candidateIds = new Set(toolResults.flatMap((result) => {
@@ -117,6 +120,7 @@ export function parseAiLawResearchReport(
     answer,
     report: {
       schemaVersion: 1,
+      resultStatus: 'complete',
       query,
       title: requiredText(value.title, 'title', 100),
       scope: requiredText(value.scope, 'scope', 500),
@@ -190,6 +194,7 @@ export function buildAiLawResearchFallback(
       releaseDate: nullableText(detail.releaseDate, 40),
       implementDate: nullableText(detail.implementDate, 40),
       timeliness: nullableText(detail.timeliness, 40),
+      lastVerifiedAt: lawDetailLastVerifiedAt(detail),
       articles: selectEvidenceBlocks(detail, normalizedQuery),
     }));
     const quotedSources = sources.filter((source) => source.articles.length > 0);
@@ -211,6 +216,7 @@ export function buildAiLawResearchFallback(
       answer,
       report: {
         schemaVersion: 1,
+        resultStatus: 'degraded',
         query: normalizedQuery,
         title: '已保留的权威法规证据',
         scope: '本轮已成功读取的法规详情正文',
@@ -246,6 +252,7 @@ export function buildAiLawResearchFallback(
       ].join('\n\n'),
       report: {
         schemaVersion: 1,
+        resultStatus: 'degraded',
         query: normalizedQuery,
         title: '候选法规已召回，正文待核验',
         scope: '本轮法规检索召回结果',
@@ -264,6 +271,7 @@ export function buildAiLawResearchFallback(
     answer: '## 未检索到可核验来源\n\n本轮法规检索已完成，但未召回候选法规。系统未生成确定性法律结论，请更换关键词或缩小问题范围后重试。',
     report: {
       schemaVersion: 1,
+      resultStatus: 'degraded',
       query: normalizedQuery,
       title: '未检索到可核验法规',
       scope: '本轮法规检索',
@@ -379,6 +387,13 @@ function parseEvidenceQuotes(value: unknown, verifiedDetails: BaijianLawDetail[]
 
 function normalizeEvidenceText(value: string): string {
   return value.normalize('NFKC').replace(/\s+/gu, '');
+}
+
+function lawDetailLastVerifiedAt(detail: BaijianLawDetail): string | null {
+  const cache = (detail as BaijianLawDetail & { cache?: { lastVerifiedAt?: unknown } }).cache;
+  return typeof cache?.lastVerifiedAt === 'string' && cache.lastVerifiedAt.trim()
+    ? bound(cache.lastVerifiedAt.trim(), 40)
+    : null;
 }
 
 function parseStringArray(value: unknown, maxItems: number, maxLength: number): string[] {

@@ -17,6 +17,11 @@ import {
 
 export const DSH_BAIJIAN_RESULT_META_KIND = 'baijian-result-v1';
 
+const LAW_RECALL_CALL_MAX = 2;
+const LAW_VERIFIED_DOCUMENT_MAX = 3;
+const LAW_SUPPLIER_REQUEST_MAX = 5;
+const LAW_SINGLE_DETAIL_CALL_MAX = 1;
+
 /**
  * 将现有百鉴 SDK + normalizer 适配为 dsh 原生工具。
  * 该层不处理 Agent 会话或 prompt，也不暴露百鉴凭证。
@@ -34,9 +39,38 @@ export class DshBaijianToolsService {
     const baijian = this.baijian;
     if (capability === 'law_search') {
       const candidates = new Map<string, Pick<BaijianLawRecord, 'articleNumber' | 'matchedContent'>>();
+      let recallCalls = 0;
+      let supplierRequests = 0;
+      let singleDetailCalls = 0;
+      const detailDocumentIds = new Set<string>();
+      const reserveSupplierRequests = (count: number) => {
+        if (supplierRequests + count > LAW_SUPPLIER_REQUEST_MAX) {
+          throw new Error(`本轮百鉴请求最多允许 ${LAW_SUPPLIER_REQUEST_MAX} 次`);
+        }
+        supplierRequests += count;
+      };
+      const reserveRecall = () => {
+        if (recallCalls >= LAW_RECALL_CALL_MAX) {
+          throw new Error(`法规召回最多允许 ${LAW_RECALL_CALL_MAX} 次`);
+        }
+        reserveSupplierRequests(1);
+        recallCalls += 1;
+      };
+      const reserveLawDetails = (lawIds: string[]) => {
+        const normalizedIds = lawIds.map((lawId) => lawId.toLowerCase());
+        const repeated = normalizedIds.find((lawId) => detailDocumentIds.has(lawId));
+        if (repeated) {
+          throw new Error(`法规详情已在本轮读取，不得重复调用：${repeated}`);
+        }
+        if (detailDocumentIds.size + normalizedIds.length > LAW_VERIFIED_DOCUMENT_MAX) {
+          throw new Error(`本轮最多核验 ${LAW_VERIFIED_DOCUMENT_MAX} 部候选法规`);
+        }
+        reserveSupplierRequests(normalizedIds.length);
+        for (const lawId of normalizedIds) detailDocumentIds.add(lawId);
+      };
       return [defineTool({
         name: DSH_LAW_SEARCH_TOOL,
-        description: '用简短关键词召回中国法规候选；适合法规名、主题或文号。仅返回元数据，命中后必须用 get_law_detail 核验正文。',
+        description: '用简短关键词召回中国法规候选；适合法规名、主题或文号。本轮各类召回合计最多2次。仅返回元数据，命中后优先用 get_law_details 批量核验正文。',
         parameters: {
           keyword: { type: 'string', required: true, description: '法规关键词，不要包含姓名、手机号等个人信息。' },
           page: { type: 'integer', description: '页码，默认 1。' },
@@ -45,6 +79,7 @@ export class DshBaijianToolsService {
         output: this.outputDefinition(),
         timeoutMs: 60_000,
         async execute(args, exec) {
+          reserveRecall();
           const result = await baijian.searchLaws({
             keyword: args.keyword,
             page: clamp(args.page, 1, 10, 1),
@@ -55,7 +90,7 @@ export class DshBaijianToolsService {
         },
       }), defineTool({
         name: DSH_LAW_ADVANCED_SEARCH_TOOL,
-        description: '按关键词、发文机关和时效性组合精准检索法规；适合用户明确要求现行有效或特定机关的任务。命中后必须读取详情。',
+        description: '按关键词、发文机关和时效性组合精准检索法规；适合用户明确要求现行有效或特定机关的任务。本轮各类召回合计最多2次，命中后优先批量读取详情。',
         parameters: {
           keyword: { type: 'string', required: true, description: '1–200 字法规关键词组合。' },
           issuingOrgan: { type: 'string', description: '可选发文机关，例如国务院。' },
@@ -66,6 +101,7 @@ export class DshBaijianToolsService {
         output: this.outputDefinition(),
         timeoutMs: 60_000,
         async execute(args, exec) {
+          reserveRecall();
           const result = await baijian.searchLawsAdvanced({
             keyword: args.keyword,
             issuingOrgan: args.issuingOrgan,
@@ -78,7 +114,7 @@ export class DshBaijianToolsService {
         },
       }), defineTool({
         name: DSH_LAW_SEMANTIC_SEARCH_TOOL,
-        description: '用去识别化的自然语言法律问题做法规语义召回；适合法律问题和事实型输入。结果含匹配片段但不是完整正文，命中后必须读取详情。',
+        description: '用去识别化的自然语言法律问题做法规语义召回；适合法律问题和事实型输入。本轮各类召回合计最多2次。结果含匹配片段但不是完整正文，命中后优先批量读取详情。',
         parameters: {
           query: { type: 'string', required: true, description: '不含姓名、电话等个人信息的完整法律问题。' },
           keyword: { type: 'string', description: '可选法规标题关键词。' },
@@ -89,6 +125,7 @@ export class DshBaijianToolsService {
         output: this.outputDefinition(),
         timeoutMs: 60_000,
         async execute(args, exec) {
+          reserveRecall();
           const result = await baijian.searchLawsSemantic({
             query: args.query,
             keyword: args.keyword,
@@ -101,9 +138,9 @@ export class DshBaijianToolsService {
         },
       }), defineTool({
         name: DSH_LAW_BATCH_DETAIL_TOOL,
-        description: '批量读取最多10部候选法规的权威正文，并分别定位与本案相关条文。lawIds 必须全部来自本轮搜索结果；一次调用完成批量核验，避免逐部法规反复调用。',
+        description: '批量读取最多3部最相关候选法规的权威正文，并分别定位与本案相关条文。lawIds 必须全部来自本轮搜索结果；一次调用完成批量核验，不要再逐部调用单条详情。',
         parameters: {
-          lawIds: { type: 'array', required: true, items: { type: 'string' }, description: '搜索结果返回的法规ID数组，去重后最多10个。' },
+          lawIds: { type: 'array', required: true, items: { type: 'string' }, description: '搜索结果返回的法规ID数组，去重后最多3个。' },
           query: { type: 'string', required: true, description: '需要在各部法规正文中定位的法律问题或制度关键词。' },
         },
         output: this.outputDefinition(),
@@ -111,12 +148,14 @@ export class DshBaijianToolsService {
         async execute(args, exec) {
           const lawIds = [...new Set((Array.isArray(args.lawIds) ? args.lawIds : [])
             .map((value: unknown) => String(value ?? '').trim())
-            .filter(Boolean))].slice(0, 10);
+            .filter(Boolean)
+            .map((lawId) => lawId.toLowerCase()))].slice(0, LAW_VERIFIED_DOCUMENT_MAX);
           if (!lawIds.length) throw new Error('批量法规详情至少需要一个候选法规ID');
           const unknown = lawIds.find((lawId) => !candidates.has(lawId.toLowerCase()));
           if (unknown) throw new Error(`法规详情 ID 必须来自本轮搜索结果：${unknown}`);
           const sharedQuery = boundedText(args.query, 300);
           if (!sharedQuery) throw new Error('批量法规详情必须提供 query 以定位目标正文');
+          reserveLawDetails(lawIds);
           const details = await mapWithConcurrency(lawIds, 3, async (lawId) => {
             const candidate = candidates.get(lawId.toLowerCase())!;
             const detail = await baijian.getLawDetail({ lawId }, exec.signal);
@@ -129,7 +168,7 @@ export class DshBaijianToolsService {
         },
       }), defineTool({
         name: DSH_LAW_DETAIL_TOOL,
-        description: '读取候选法规的权威正文，并从完整法规中定位目标条文。lawId 必须来自本轮搜索结果；传 articleHint（如第八十七条）或 query（如违法解除赔偿金），不要通读无关正文。',
+        description: '仅用于单条精确定位，本轮最多调用1次。读取候选法规的权威正文，并从完整法规中定位目标条文。lawId 必须来自本轮搜索结果；传 articleHint（如第八十七条）或 query（如违法解除赔偿金）。',
         parameters: {
           lawId: { type: 'string', required: true, description: '搜索结果返回的32位法规ID。' },
           articleHint: { type: 'string', description: '目标条号，优先传入语义搜索结果的 articleNumber。' },
@@ -148,6 +187,11 @@ export class DshBaijianToolsService {
           if (!articleHint && !query) {
             throw new Error('法规详情必须提供 articleHint 或 query 以定位目标正文');
           }
+          if (singleDetailCalls >= LAW_SINGLE_DETAIL_CALL_MAX) {
+            throw new Error('单条法规详情本轮最多允许 1 次，请使用 get_law_details 批量核验');
+          }
+          reserveLawDetails([lawId]);
+          singleDetailCalls += 1;
           const detail = await baijian.getLawDetail({ lawId }, exec.signal);
           return projectLawDetail(detail, { articleHint, query }) as any;
         },

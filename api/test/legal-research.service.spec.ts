@@ -166,6 +166,56 @@ describe('LegalResearchService', () => {
     }));
   });
 
+  it('工具超限时使用已完成的召回结果返回安全降级报告', async () => {
+    const lawId = 'D6592443DA000EF8D692CE667E947A69';
+    const partialResult = {
+      text: '',
+      dshSessionId: 'dsh-tool-limit',
+      toolCalls: [
+        { callId: 's1', name: 'search_laws_semantic', arguments: { query: '员工解除劳动合同如何补偿' } },
+        { callId: 's2', name: 'search_laws', arguments: { keyword: '经济补偿' } },
+      ],
+      toolResults: [{
+        callId: 's1', name: 'search_laws_semantic', isError: false,
+        result: {
+          records: [{ recordId: lawId, lawName: '中华人民共和国劳动合同法', issuingOrgan: '全国人大常委会', timeliness: '现行有效' }],
+        },
+      }],
+    } as any;
+    const handle = new DshExecutionHandle();
+    const executeStream = vi.fn().mockImplementation(async () => {
+      setImmediate(() => handle.emit('error', new DshResearchEvidenceError(
+        'dsh Agent 工具调用超过上限（3）',
+        partialResult,
+      )));
+      return handle;
+    });
+    const record = vi.fn().mockResolvedValue(undefined);
+    const service = new LegalResearchService({} as any, {
+      executeStream,
+      getToolCallLimit: () => 3,
+    } as any, { record } as any);
+
+    const result = await service.aiSearch(
+      { query: '员工解除劳动合同需要哪些补偿？' },
+      { id: 'legal-1', role: 'legal_bp' as any },
+    );
+
+    expect(result).toMatchObject({
+      reportId: 'dsh-tool-limit',
+      degraded: true,
+      warning: { code: 'RESEARCH_TOOL_LIMIT_REACHED' },
+      report: {
+        resultStatus: 'degraded',
+        metrics: { candidateCount: 1, verifiedSourceCount: 0 },
+      },
+    });
+    expect(result.report.title).toContain('候选法规');
+    expect(record).toHaveBeenLastCalledWith(expect.objectContaining({
+      action: 'ai.legal_research.degraded', reasonCode: 'RESEARCH_TOOL_LIMIT_REACHED',
+    }));
+  });
+
   it('业务端 AI 搜法核验失败时保存安全降级结果，不将未核验模型文本写入对话', async () => {
     const partialResult = {
       text: '未核验模型结论',

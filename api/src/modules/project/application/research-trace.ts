@@ -29,20 +29,23 @@ export function buildResearchTrace(
     const call = result.toolCalls.find((item) => item.callId === toolResult.callId)
       ?? result.toolCalls[index];
     const normalized = toolResult.result;
+    const batchDetails = normalized && 'details' in normalized ? normalized.details : [];
     const sourceRecords = normalized && 'records' in normalized
       ? (capability === 'law_search' && detailedLawIds.size
         ? normalized.records.filter((record) => detailedLawIds.has(record.recordId.toLowerCase()))
         : normalized.records)
-      : [];
-    const records = sourceRecords.slice(0, 5).map((record) => boundRecord(record));
+      : batchDetails;
+    const records = sourceRecords.slice(0, 5).map((record) =>
+      'contentBlocks' in record ? boundLawDetail(record) : boundRecord(record));
     const detailId = normalized && 'contentBlocks' in normalized ? normalized.recordId : '';
+    const batchDetailIds = batchDetails.map((detail) => detail.recordId);
     return {
       tool: bound(String(toolResult.name), 80),
       query: extractQuery(call?.arguments),
-      recordIds: [detailId, ...records
+      recordIds: [...batchDetailIds, detailId, ...records
         .map((record: any) => String(record.recordId ?? record.sourceId ?? ''))
         .filter(Boolean)]
-        .filter(Boolean)
+        .filter((recordId, recordIndex, all) => Boolean(recordId) && all.indexOf(recordId) === recordIndex)
         .slice(0, 5),
       records,
     };
@@ -123,6 +126,7 @@ function compactReport(report: AiLawResearchReportV1, aggressive: boolean): AiLa
       releaseDate: source.releaseDate ? bound(source.releaseDate, 40) : null,
       implementDate: source.implementDate ? bound(source.implementDate, 40) : null,
       timeliness: source.timeliness ? bound(source.timeliness, 40) : null,
+      lastVerifiedAt: source.lastVerifiedAt ? bound(source.lastVerifiedAt, 40) : null,
       articles: source.articles.slice(0, 1).map((article) => ({
         article: bound(article.article, 40),
         text: bound(article.text, textLimit),
@@ -146,6 +150,29 @@ function compactRecord(value: unknown): Record<string, unknown> {
       key,
       typeof record[key] === 'string' ? bound(String(record[key]), 256) : record[key],
     ]));
+}
+
+function boundLawDetail(value: {
+  recordId: string;
+  lawName: string;
+  issuingOrgan?: string | null;
+  issuingNo?: string | null;
+  releaseDate?: string | null;
+  implementDate?: string | null;
+  timeliness?: string | null;
+  cache?: { lastVerifiedAt?: string };
+}): Record<string, unknown> {
+  return {
+    source: 'lawstar',
+    recordId: bound(value.recordId, 64),
+    lawName: bound(value.lawName, 256),
+    issuingOrgan: value.issuingOrgan ? bound(value.issuingOrgan, 160) : null,
+    issuingNo: value.issuingNo ? bound(value.issuingNo, 160) : null,
+    releaseDate: value.releaseDate ? bound(value.releaseDate, 40) : null,
+    implementDate: value.implementDate ? bound(value.implementDate, 40) : null,
+    timeliness: value.timeliness ? bound(value.timeliness, 40) : null,
+    lastVerifiedAt: value.cache?.lastVerifiedAt ? bound(value.cache.lastVerifiedAt, 40) : null,
+  };
 }
 
 function extractQuery(value: unknown): string {

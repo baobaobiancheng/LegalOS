@@ -72,7 +72,7 @@ describe('DshBaijianToolsService', () => {
     expect(result.contentBlocks.some((block: any) => block.text.includes('第1条'))).toBe(false);
   });
 
-  it('批量详情一次核验最多10部本轮候选法规，并限制并发与正文体积', async () => {
+  it('批量详情一次核验最多3部本轮候选法规，并限制并发与正文体积', async () => {
     const lawIds = Array.from({ length: 12 }, (_, index) => index.toString(16).padStart(32, '0').toUpperCase());
     let active = 0;
     let maxActive = 0;
@@ -107,10 +107,57 @@ describe('DshBaijianToolsService', () => {
     const batch = definitions.find((item) => item.name === DSH_LAW_BATCH_DETAIL_TOOL);
     const result = await batch.execute({ lawIds, query: '经济补偿' }, { signal } as any);
 
-    expect(result.details).toHaveLength(10);
-    expect(baijian.getLawDetail).toHaveBeenCalledTimes(10);
+    expect(result.details).toHaveLength(3);
+    expect(baijian.getLawDetail).toHaveBeenCalledTimes(3);
     expect(maxActive).toBeLessThanOrEqual(3);
     expect(result.details.every((detail: any) => Buffer.byteLength(JSON.stringify(detail.contentBlocks), 'utf8') < 15 * 1024)).toBe(true);
+  });
+
+  it('各类法规召回合计最多2次，第3次在供应商调用前拒绝', async () => {
+    const empty = { records: [] };
+    const baijian = {
+      searchLaws: vi.fn().mockResolvedValue(empty),
+      searchLawsAdvanced: vi.fn().mockResolvedValue(empty),
+      searchLawsSemantic: vi.fn().mockResolvedValue(empty),
+      getLawDetail: vi.fn(),
+    };
+    const definitions = await new DshBaijianToolsService(baijian as any).createDefinitions('law_search');
+    const signal = new AbortController().signal;
+
+    await definitions.find((item) => item.name === DSH_LAW_SEARCH_TOOL)
+      .execute({ keyword: '劳动合同' }, { signal } as any);
+    await definitions.find((item) => item.name === DSH_LAW_SEMANTIC_SEARCH_TOOL)
+      .execute({ query: '员工解除劳动合同如何补偿' }, { signal } as any);
+    await expect(definitions.find((item) => item.name === DSH_LAW_ADVANCED_SEARCH_TOOL)
+      .execute({ keyword: '经济补偿' }, { signal } as any))
+      .rejects.toThrow('法规召回最多允许 2 次');
+    expect(baijian.searchLaws).toHaveBeenCalledOnce();
+    expect(baijian.searchLawsSemantic).toHaveBeenCalledOnce();
+    expect(baijian.searchLawsAdvanced).not.toHaveBeenCalled();
+  });
+
+  it('单条详情最多调用1次，且全部详情合计不超过3部', async () => {
+    const lawIds = Array.from({ length: 4 }, (_, index) => index.toString(16).padStart(32, '0').toUpperCase());
+    const baijian = {
+      searchLaws: vi.fn().mockResolvedValue({ records: lawIds.map((recordId) => ({ recordId, matchedContent: '经济补偿' })) }),
+      searchLawsAdvanced: vi.fn(), searchLawsSemantic: vi.fn(),
+      getLawDetail: vi.fn().mockImplementation(async ({ lawId }: { lawId: string }) => ({
+        toolName: 'lawstar_data_professional_detail', recordId: lawId, lawName: `法规-${lawId}`,
+        toc: [], contentBlocks: [{ id: null, kind: 'paragraph', text: '第一条 经济补偿。' }],
+      })),
+    };
+    const definitions = await new DshBaijianToolsService(baijian as any).createDefinitions('law_search');
+    const signal = new AbortController().signal;
+    await definitions.find((item) => item.name === DSH_LAW_SEARCH_TOOL)
+      .execute({ keyword: '经济补偿' }, { signal } as any);
+    const single = definitions.find((item) => item.name === DSH_LAW_DETAIL_TOOL);
+    await single.execute({ lawId: lawIds[0], query: '经济补偿' }, { signal } as any);
+    await expect(single.execute({ lawId: lawIds[1], query: '经济补偿' }, { signal } as any))
+      .rejects.toThrow('单条法规详情本轮最多允许 1 次');
+    const batch = definitions.find((item) => item.name === DSH_LAW_BATCH_DETAIL_TOOL);
+    await expect(batch.execute({ lawIds: lawIds.slice(1), query: '经济补偿' }, { signal } as any))
+      .rejects.toThrow('本轮最多核验 3 部候选法规');
+    expect(baijian.getLawDetail).toHaveBeenCalledOnce();
   });
 
   it('详情工具在未提供定位信息时拒绝通读整部法规', async () => {

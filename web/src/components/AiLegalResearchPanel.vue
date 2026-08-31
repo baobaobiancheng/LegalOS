@@ -89,7 +89,10 @@ function reportToMarkdown(value: AiLawResearchReportV1) {
   const sections = value.sections.map(section => `## ${section.title}\n\n${section.content}`).join('\n\n')
   const sources = value.sources.map(source => {
     const articles = source.articles.map(article => `- ${article.article}：${article.text}`).join('\n')
-    return `### ${source.lawName}\n\n${source.issuingOrgan || ''}${source.timeliness ? ` · ${source.timeliness}` : ''}${articles ? `\n\n${articles}` : ''}`
+    const verifiedAt = source.lastVerifiedAt
+      ? ` · 核验于 ${new Date(source.lastVerifiedAt).toLocaleString('zh-CN', { hour12: false })}`
+      : ''
+    return `### ${source.lawName}\n\n${source.issuingOrgan || ''}${source.timeliness ? ` · ${source.timeliness}` : ''}${verifiedAt}${articles ? `\n\n${articles}` : ''}`
   }).join('\n\n')
   const limitations = value.limitations.map(item => `- ${item}`).join('\n')
   return `# ${value.title}\n\n检索问题：${value.query}\n\n## 总结\n\n${value.summary}\n\n${sections}\n\n## 权威来源\n\n${sources}${limitations ? `\n\n## 适用边界\n\n${limitations}` : ''}`
