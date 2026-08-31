@@ -143,6 +143,8 @@ export type AiLawResearchReportV1 = {
   title: string
   scope: string
   summary: string
+  /** 新报告与 answer_delta 同源；历史报告可能没有。 */
+  answer?: string
   understanding: AiLawResearchUnderstandingV1
   sections: AiLawResearchSectionV1[]
   sources: AiLawResearchSourceV1[]

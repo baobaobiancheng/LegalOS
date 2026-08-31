@@ -53,12 +53,12 @@ describe('AI 搜法结构化报告', () => {
       recordId: LAW_ID,
       lawName: '中华人民共和国民法典',
       lastVerifiedAt: '2026-08-30T08:00:00.000Z',
-      articles: [{ article: '第一千零六十二条', text: ORIGINAL }],
+      articles: [{ article: '第一千零六十二条', text: `第一千零六十二条 ${ORIGINAL}` }],
     })]);
     expect(parsed.report.metrics).toEqual({ candidateCount: 1, verifiedSourceCount: 1, citedSourceCount: 1 });
   });
 
-  it('保留模型标注来源，不再校验来源关联或引文文字', () => {
+  it('来源卡片只展示已读取详情正文，不展示模型生成的引文文字', () => {
     const unknown = 'E4A4956751D374FD35D0CEA47C041313';
     const fabricated = '正文中不存在的模型引文';
     const parsed = parseAiLawResearchReport(JSON.stringify({
@@ -72,7 +72,8 @@ describe('AI 搜法结构化报告', () => {
     }), toolResults(), '问题');
 
     expect(parsed.report.sections[0].sourceIds).toEqual([unknown.toLowerCase()]);
-    expect(parsed.report.sources[0].articles).toEqual([{ article: '第二条', text: fabricated }]);
+    expect(parsed.report.sources[0].articles[0].text).toContain(ORIGINAL);
+    expect(parsed.report.sources[0].articles[0].text).not.toContain(fabricated);
     expect(parsed.report.metrics.citedSourceCount).toBe(1);
   });
 
@@ -93,7 +94,8 @@ describe('AI 搜法结构化报告', () => {
     expect(parsed.report.title).toContain('离婚财产如何分割');
     expect(parsed.report.sections.map((section) => section.title)).toEqual(['结论', '适用边界']);
     expect(parsed.report.sources[0].articles[0].text).toContain(ORIGINAL);
-    expect(parsed.report.limitations).toContain('报告展示结构已由系统根据本轮模型输出和检索结果自动补全。');
+    expect(parsed.report.answer).toBe(parsed.answer);
+    expect(parsed.report.limitations).toEqual([]);
   });
 
   it('从说明文字中提取 JSON，并容忍缺少非核心展示字段', () => {
@@ -106,6 +108,27 @@ describe('AI 搜法结构化报告', () => {
     expect(parsed.report.summary).toBe('已完成共同财产范围检索。');
     expect(parsed.report.sections[0]).toMatchObject({ title: '分析 1', content: '工资、奖金通常属于共同财产。' });
     expect(parsed.answer).toContain('已完成共同财产范围检索');
+  });
+
+  it('畸形结构化输出只恢复 answer，不把 JSON 外壳和过程性说明作为正文', () => {
+    const malformed = [
+      '现在我已经收集到足够的法律依据，下面输出完整的搜法报告。',
+      'json {',
+      '  "query": "离婚财产如何分割？",',
+      '  "summary": "离婚财产分割以"先协议、后判决"为基本路径。",',
+      '  "answer": "## 结论\\n离婚时夫妻共同财产原则上先由双方协议处理；协议不成的，由人民法院依法判决。",',
+      '  "sections": []',
+      '}',
+    ].join('\n');
+
+    const parsed = parseAiLawResearchReport(malformed, toolResults(), '离婚财产如何分割？');
+
+    expect(parsed.answer).toContain('离婚时夫妻共同财产原则上先由双方协议处理');
+    expect(parsed.answer).not.toContain('"summary"');
+    expect(parsed.report.answer).toBe(parsed.answer);
+    expect(parsed.report.summary).not.toContain('现在我已经');
+    expect(parsed.report.summary).not.toContain('"query"');
+    expect(parsed.report.sections.map((section) => section.content).join('\n')).not.toContain('"sections"');
   });
 
   it('非 JSON 长正文会分段完整进入报告，不在 3000 字处丢失', () => {
@@ -131,6 +154,8 @@ describe('AI 搜法结构化报告', () => {
     expect(prompt).toContain('批量读取最多3部');
     expect(prompt).toContain('本轮最多两次');
     expect(prompt).toContain('最多调用工具 5 次');
+    expect(prompt).toContain('客观、正式的书面法律语言');
+    expect(prompt).toContain('英文双引号必须正确转义');
   });
 
   it('事实修正由服务端确定性覆盖旧事实，不依赖模型主动删除', () => {

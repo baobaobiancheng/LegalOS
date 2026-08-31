@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { AiLawResearchReportV1 } from '../types'
+import { parseLegalAnswerBlocks } from '../domain/legal-answer'
 
 const props = withDefaults(defineProps<{
   report: AiLawResearchReportV1
@@ -38,9 +39,10 @@ const overallStatus = computed(() => {
   return { label: '已完成 AI 搜法', tone: 'complete' }
 })
 const sourceById = computed(() => new Map(props.report.sources.map(source => [source.recordId.toLowerCase(), source])))
+const answerBlocks = computed(() => props.compact ? [] : parseLegalAnswerBlocks(props.report.answer ?? ''))
 
 function sourceLabel(id: string) {
-  return sourceById.value.get(id.toLowerCase())?.lawName ?? '模型标注来源（未关联详情）'
+  return sourceById.value.get(id.toLowerCase())?.lawName ?? '未关联已读取来源'
 }
 
 function formatVerifiedAt(value: string | null | undefined) {
@@ -48,6 +50,7 @@ function formatVerifiedAt(value: string | null | undefined) {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
 }
+
 </script>
 
 <template>
@@ -57,7 +60,6 @@ function formatVerifiedAt(value: string | null | undefined) {
         <strong><i />{{ overallStatus.label }}</strong>
         <span>
           已读取 {{ report.metrics.verifiedSourceCount }} 部权威法规正文
-          <template v-if="compact"> · 本次引用 {{ report.metrics.citedSourceCount }} 部</template>
         </span>
       </div>
       <button
@@ -150,7 +152,45 @@ function formatVerifiedAt(value: string | null | undefined) {
       class="report-section analysis-section"
     >
       <h2>具体分析</h2>
-      <div class="analysis-list">
+      <div
+        v-if="answerBlocks.length"
+        class="answer-content"
+      >
+        <template
+          v-for="block in answerBlocks"
+          :key="block.key"
+        >
+          <h3
+            v-if="block.kind === 'heading'"
+            :class="`answer-heading-level-${block.level}`"
+          >
+            {{ block.text }}
+          </h3>
+          <p v-else-if="block.kind === 'paragraph'">
+            {{ block.text }}
+          </p>
+          <ol v-else-if="block.ordered">
+            <li
+              v-for="(item, index) in block.items"
+              :key="`${block.key}-${index}`"
+            >
+              {{ item }}
+            </li>
+          </ol>
+          <ul v-else>
+            <li
+              v-for="(item, index) in block.items"
+              :key="`${block.key}-${index}`"
+            >
+              {{ item }}
+            </li>
+          </ul>
+        </template>
+      </div>
+      <div
+        v-else
+        class="analysis-list"
+      >
         <div
           v-for="section in report.sections"
           :id="`${anchorPrefix}-${section.id}`"
@@ -208,7 +248,6 @@ function formatVerifiedAt(value: string | null | undefined) {
               <strong>{{ article.article }}</strong>
               <p>
                 {{ article.text }}
-                <small>模型标注引文，未做逐字核对</small>
               </p>
             </div>
           </div>
@@ -298,6 +337,15 @@ function formatVerifiedAt(value: string | null | undefined) {
 .report-section h2 { margin: 14px 0 6px; color: #101827; font-size: 18px; font-weight: 700; letter-spacing: -.02em; }
 .report-section h2 span { margin-left: 5px; color: #6b7890; font-size: 13px; font-weight: 600; }
 .summary-section > p { margin: 0; white-space: pre-line; }
+.answer-content { padding: 4px 0 2px; color: #27364d; }
+.answer-content h3 { margin: 20px 0 7px; color: #172033; font-size: 16px; line-height: 1.45; }
+.answer-content h3:first-child { margin-top: 4px; }
+.answer-content .answer-heading-level-1,
+.answer-content .answer-heading-level-2 { font-size: 17px; }
+.answer-content p { margin: 0 0 12px; line-height: 1.85; white-space: pre-line; }
+.answer-content ul,
+.answer-content ol { margin: 0 0 14px; padding-left: 24px; }
+.answer-content li { margin: 5px 0; line-height: 1.75; }
 .analysis-list { overflow: hidden; border: 1px solid #e0e6ef; border-radius: 6px; }
 .analysis-row { display: grid; grid-template-columns: minmax(120px, 1.2fr) minmax(0, 8.8fr); }
 .analysis-row + .analysis-row { border-top: 1px solid #e7ebf2; }
@@ -318,7 +366,6 @@ function formatVerifiedAt(value: string | null | undefined) {
 .article-list > div { display: grid; grid-template-columns: minmax(120px, 1.4fr) minmax(0, 8.6fr); border-top: 1px solid #e8edf4; }
 .article-list strong { padding: 8px 12px; border-right: 1px solid #e8edf4; color: #394963; font-size: 11px; }
 .article-list p { margin: 0; padding: 8px 12px; color: #5d6878; font-size: 11px; }
-.article-list p small { display: block; margin-top: 5px; color: #9a6b2f; font-size: 10px; }
 .verified-without-quote { margin: 0; padding: 8px 12px; border-top: 1px solid #e8edf4; color: #718096; font-size: 11px; }
 .all-sources-button { display: block; margin: 8px auto 0; padding: 4px 10px; border: 0; background: transparent; color: #0f5fff; font: inherit; font-size: 11px; font-weight: 620; cursor: pointer; }
 .report-limitations { margin-top: 14px; padding: 11px 13px; border-left: 3px solid #b8c9e7; background: #f7f9fc; color: #5b687b; font-size: 12px; }

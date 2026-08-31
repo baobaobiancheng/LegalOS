@@ -38,10 +38,11 @@ const reportId = ref('')
 const degradedWarning = ref<{ code: string; message: string } | undefined>()
 const error = ref<RequestError | null>(null)
 const copied = ref(false)
-const followupInput = ref<HTMLInputElement | null>(null)
+const followupInput = ref<HTMLTextAreaElement | null>(null)
 const conversationId = ref('')
 const contextVersion = ref(0)
 const lastTurnId = ref<string | null>(null)
+const displayedTurnId = ref<string | null>(null)
 const turns = ref<AiLegalResearchTurn[]>([])
 const candidateCount = ref(0)
 const verifiedSourceCount = ref(0)
@@ -64,7 +65,17 @@ const conversationBusy = computed(() => loading.value || syncingConversation.val
 const generatedLabel = computed(() => report.value
   ? new Date(report.value.generatedAt).toLocaleString('zh-CN', { hour12: false })
   : '')
+const readableAnswerPreview = computed(() => answerPreview.value
+  .replace(/^#{1,6}\s+/gmu, '')
+  .replace(/(?:\*\*|__)/gu, '')
+  .replace(/`([^`]+)`/gu, '$1'))
 const downloadContent = computed(() => report.value ? reportToMarkdown(report.value) : '')
+const recentTurns = computed(() => [...turns.value].reverse().slice(0, 8))
+const displayedTurnNumber = computed(() => {
+  const index = turns.value.findIndex(turn => turn.turnId === displayedTurnId.value)
+  return index >= 0 ? index + 1 : turns.value.length
+})
+const viewingLatestTurn = computed(() => !lastTurnId.value || displayedTurnId.value === lastTurnId.value)
 const operationHelp = computed(() => {
   if (followupOperation.value === 'correct') return '明确写出错误事实和正确事实；本轮会替换旧事实并重新核验受影响结论。'
   if (followupOperation.value === 'new_issue') return '沿用已确认事实，增加一个新的法律争点。'
@@ -182,7 +193,6 @@ function handleStreamEvent(event: AiLegalResearchStreamEvent) {
     return
   }
   if (event.type === 'report_start') {
-    answerPreview.value = ''
     incomingReport.value = advanceAiLawReportDraft(incomingReport.value, event).draft
     return
   }
@@ -214,9 +224,11 @@ function handleStreamEvent(event: AiLegalResearchStreamEvent) {
       return
     }
     report.value = transition.completed
+    answerPreview.value = ''
     reportId.value = event.reportId
     contextVersion.value = event.contextVersion
     lastTurnId.value = event.turnId
+    displayedTurnId.value = event.turnId
     degradedWarning.value = event.degraded ? event.warning : undefined
     if (report.value) {
       const completedTurn: AiLegalResearchTurn = {
@@ -253,9 +265,11 @@ function normalizeTurnOperation(value: FollowupOperation | undefined): AiLegalRe
 
 function submitFollowup() {
   const value = followup.value.trim()
-  if (!value || !report.value || !conversationId.value || conversationBusy.value) return
+  if (!value || !report.value || !conversationId.value || conversationBusy.value || !viewingLatestTurn.value) return
+  const operation = followupOperation.value
   followup.value = ''
-  void runSearch(value, followupOperation.value)
+  followupOperation.value = 'auto'
+  void runSearch(value, operation)
 }
 
 function retryLastRequest() {
@@ -281,6 +295,7 @@ function startNewConversation() {
   conversationId.value = ''
   contextVersion.value = 0
   lastTurnId.value = null
+  displayedTurnId.value = null
   turns.value = []
   report.value = null
   incomingReport.value = null
@@ -313,7 +328,24 @@ function displayTurn(turn: AiLegalResearchTurn) {
   reportId.value = turn.reportId ?? ''
   submittedQuery.value = turn.question
   query.value = turn.question
+  displayedTurnId.value = turn.turnId
   degradedWarning.value = turn.degraded ? turn.warning : undefined
+}
+
+function showLatestTurn() {
+  const latest = [...turns.value].reverse().find(turn => turn.turnId === lastTurnId.value && turn.report)
+    ?? [...turns.value].reverse().find(turn => turn.report)
+  if (latest) displayTurn(latest)
+}
+
+function selectFollowupOperation(operation: Exclude<FollowupOperation, 'auto'>) {
+  followupOperation.value = followupOperation.value === operation ? 'auto' : operation
+  focusFollowup()
+}
+
+function turnNumber(turn: AiLegalResearchTurn) {
+  const index = turns.value.findIndex(item => item.turnId === turn.turnId)
+  return index >= 0 ? index + 1 : 1
 }
 
 async function restoreConversation() {
@@ -513,6 +545,7 @@ function stageStatusLabel(value: StageStatus) {
 function reportToMarkdown(value: AiLawResearchReportV1) {
   const thinking = `## 检索思路\n\n### 分析法条检索需求\n\n${value.understanding.analysis}\n\n### 定位与检索\n\n${value.understanding.retrievalPlan}`
   const sections = value.sections.map(section => `## ${section.title}\n\n${section.content}`).join('\n\n')
+  const analysis = value.answer?.trim() || sections
   const sources = value.sources.map(source => {
     const articles = source.articles.map(article => `- ${article.article}：${article.text}`).join('\n')
     const verifiedAt = source.lastVerifiedAt
@@ -521,7 +554,7 @@ function reportToMarkdown(value: AiLawResearchReportV1) {
     return `### ${source.lawName}\n\n${source.issuingOrgan || ''}${source.timeliness ? ` · ${source.timeliness}` : ''}${verifiedAt}${articles ? `\n\n${articles}` : ''}`
   }).join('\n\n')
   const limitations = value.limitations.map(item => `- ${item}`).join('\n')
-  return `# ${value.title}\n\n检索问题：${value.query}\n\n${thinking}\n\n## 总结\n\n${value.summary}\n\n${sections}\n\n## 权威来源\n\n${sources}${limitations ? `\n\n## 适用边界\n\n${limitations}` : ''}`
+  return `# ${value.title}\n\n检索问题：${value.query}\n\n${thinking}\n\n## 总结\n\n${value.summary}\n\n${analysis}\n\n## 权威来源\n\n${sources}${limitations ? `\n\n## 适用边界\n\n${limitations}` : ''}`
 }
 
 onMounted(() => {
@@ -649,7 +682,7 @@ onBeforeUnmount(() => {
           <strong>AI 正文正在生成</strong>
           <small>已通过检索与正文读取闸门；完成后将替换为结构化报告</small>
         </div>
-        <p>{{ answerPreview }}<i aria-hidden="true" /></p>
+        <p>{{ readableAnswerPreview }}<i aria-hidden="true" /></p>
       </section>
       <footer>
         <span>候选法规 {{ candidateCount }} 部</span>
@@ -730,20 +763,9 @@ onBeforeUnmount(() => {
       <div class="report-workspace">
         <nav
           class="report-toc"
-          aria-label="报告目录与轮次"
+          aria-label="报告目录"
         >
-          <strong>检索会话</strong>
-          <button
-            v-for="(turn, index) in turns"
-            :key="turn.turnId"
-            type="button"
-            :disabled="!turn.report || conversationBusy"
-            @click="showTurn(turn)"
-          >
-            第 {{ index + 1 }} 轮 · {{ operationLabel(turn.operation) }}
-            <small>{{ turn.question }}</small>
-          </button>
-          <strong class="toc-section-title">报告目录</strong>
+          <strong>报告目录</strong>
           <button
             type="button"
             @click="scrollTo('ai-report-process')"
@@ -786,55 +808,93 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
-      </div>
+        <aside class="followup-panel">
+          <header class="followup-panel-heading">
+            <div>
+              <strong>连续追问</strong>
+              <small>当前查看第 {{ displayedTurnNumber }} 轮</small>
+            </div>
+            <span>{{ turns.length }} 轮</span>
+          </header>
 
-      <form
-        class="report-followup"
-        @submit.prevent="submitFollowup"
-      >
-        <div
-          class="followup-modes"
-          aria-label="追问类型"
-        >
-          <button
-            type="button"
-            :class="{ active: followupOperation === 'auto' }"
-            @click="followupOperation = 'auto'"
+          <div class="followup-turns">
+            <button
+              v-for="turn in recentTurns"
+              :key="turn.turnId"
+              type="button"
+              :class="{ active: turn.turnId === displayedTurnId }"
+              :disabled="!turn.report || conversationBusy"
+              @click="showTurn(turn)"
+            >
+              <span>第 {{ turnNumber(turn) }} 轮 · {{ operationLabel(turn.operation) }}</span>
+              <small>{{ turn.question }}</small>
+            </button>
+          </div>
+
+          <div
+            v-if="!viewingLatestTurn"
+            class="historical-turn-notice"
           >
-            继续追问
-          </button>
-          <button
-            type="button"
-            :class="{ active: followupOperation === 'correct' }"
-            @click="followupOperation = 'correct'"
+            <p>当前展示的是历史报告。为避免覆盖后续事实，追问只能基于最新轮次继续。</p>
+            <button
+              type="button"
+              @click="showLatestTurn"
+            >
+              返回最新轮次
+            </button>
+          </div>
+
+          <form
+            class="report-followup"
+            @submit.prevent="submitFollowup"
           >
-            修正事实
-          </button>
-          <button
-            type="button"
-            :class="{ active: followupOperation === 'new_issue' }"
-            @click="followupOperation = 'new_issue'"
-          >
-            新增争点
-          </button>
-          <small>{{ operationHelp }}</small>
-        </div>
-        <div class="followup-input-row">
-          <input
-            id="ai-report-followup"
-            ref="followupInput"
-            v-model="followup"
-            :placeholder="followupOperation === 'correct' ? '例如：不是 2024 年签约，是 2023 年' : '基于本检索会话继续追问...'"
-            :disabled="conversationBusy"
-          >
-          <button
-            :disabled="!followup.trim() || conversationBusy"
-            type="submit"
-          >
-            发送
-          </button>
-        </div>
-      </form>
+            <div class="followup-context">
+              <strong>{{ viewingLatestTurn ? `基于第 ${displayedTurnNumber} 轮继续` : '请先返回最新轮次' }}</strong>
+              <small>{{ operationHelp }}</small>
+            </div>
+            <textarea
+              id="ai-report-followup"
+              ref="followupInput"
+              v-model="followup"
+              rows="6"
+              :placeholder="followupOperation === 'correct' ? '例如：不是 2024 年签约，是 2023 年。请据此重新判断。' : '直接输入补充事实或新的法律问题…'"
+              :disabled="conversationBusy || !viewingLatestTurn"
+              @keydown.enter.exact.prevent="submitFollowup"
+            />
+            <div class="followup-toolbar">
+              <div
+                class="followup-shortcuts"
+                aria-label="追问辅助类型"
+              >
+                <button
+                  type="button"
+                  :class="{ active: followupOperation === 'correct' }"
+                  :aria-pressed="followupOperation === 'correct'"
+                  @click="selectFollowupOperation('correct')"
+                >
+                  更正事实
+                </button>
+                <button
+                  type="button"
+                  :class="{ active: followupOperation === 'new_issue' }"
+                  :aria-pressed="followupOperation === 'new_issue'"
+                  @click="selectFollowupOperation('new_issue')"
+                >
+                  新增争点
+                </button>
+              </div>
+              <button
+                class="followup-submit"
+                :disabled="!followup.trim() || conversationBusy || !viewingLatestTurn"
+                type="submit"
+              >
+                发送
+              </button>
+            </div>
+            <small class="followup-keyboard-hint">Enter 发送，Shift + Enter 换行</small>
+          </form>
+        </aside>
+      </div>
     </template>
   </section>
 </template>
@@ -913,10 +973,9 @@ onBeforeUnmount(() => {
 .report-document-actions button:disabled { opacity: .45; cursor: not-allowed; }
 .report-heading-actions :deep(.download-wrap) { margin: 0; }
 .report-heading-actions :deep(.dl-trigger) { height: 38px; padding: 0 14px; border-radius: 6px; background: #fff; color: #3d4d65; font-weight: 620; }
-.report-workspace { display: grid; grid-template-columns: 185px minmax(0, 1fr); margin-top: 16px; align-items: start; gap: 16px; }
+.report-workspace { display: grid; grid-template-columns: 150px minmax(0, 1fr) minmax(320px, 380px); margin-top: 16px; align-items: start; gap: 16px; }
 .report-toc { position: sticky; top: 12px; display: flex; padding: 14px 0; overflow: hidden; flex-direction: column; border: 1px solid #dce3ed; border-radius: 7px; background: #fff; }
 .report-toc > strong { padding: 0 14px 8px; color: #26364f; font-size: 13px; }
-.report-toc .toc-section-title { margin-top: 8px; padding-top: 10px; border-top: 1px solid #e7ebf2; }
 .report-toc button { position: relative; display: flex; padding: 7px 14px; overflow: hidden; flex-direction: column; border: 0; background: transparent; color: #657188; font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
 .report-toc button:hover { background: #f4f7fc; color: #0f5fff; }
 .report-toc button:disabled { cursor: default; opacity: .55; }
@@ -925,24 +984,52 @@ onBeforeUnmount(() => {
 .report-document { min-width: 0; padding: 18px 20px 10px; border: 1px solid #dce3ed; border-radius: 7px; background: #fff; }
 .report-document-actions { display: flex; margin: 16px -20px 0; padding: 10px 14px 0; align-items: center; justify-content: flex-end; gap: 12px; border-top: 1px solid #e7ebf2; }
 .report-document-actions span { color: #0f5fff; font-size: 11px; }
-.report-followup { position: sticky; bottom: 0; z-index: 4; margin-top: 14px; padding: 10px; border: 1px solid #b9cef5; border-radius: 7px; background: rgba(255,255,255,.98); box-shadow: 0 -8px 24px rgba(39, 77, 132, .06); }
-.followup-modes { display: flex; padding: 0 2px 8px; align-items: center; flex-wrap: wrap; gap: 5px; }
-.followup-modes button { padding: 4px 9px; border: 1px solid #d5deea; border-radius: 999px; background: #fff; color: #617088; font: inherit; font-size: 11px; cursor: pointer; }
-.followup-modes button.active { border-color: #8bb1f7; background: #edf4ff; color: #0f5fff; font-weight: 650; }
-.followup-modes small { margin-left: 6px; color: #7b8798; font-size: 10px; }
-.followup-input-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
-.followup-input-row input { min-width: 0; height: 40px; padding: 0 10px; border: 0; outline: 0; color: #27364d; font: inherit; }
-.followup-input-row > button { width: 70px; border: 0; border-radius: 6px; background: #0f5fff; color: #fff; font: inherit; font-weight: 650; cursor: pointer; }
-.followup-input-row > button:disabled { opacity: .45; cursor: not-allowed; }
+.followup-panel { position: sticky; top: 12px; display: flex; overflow: hidden; height: min(760px, calc(100vh - 24px)); min-height: 520px; flex-direction: column; border: 1px solid #d5dfed; border-radius: 8px; background: #fff; box-shadow: 0 12px 32px rgba(37, 66, 108, .07); }
+.followup-panel-heading { display: flex; padding: 16px; align-items: flex-start; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e5eaf1; }
+.followup-panel-heading > div { display: flex; min-width: 0; flex-direction: column; }
+.followup-panel-heading strong { color: #172943; font-size: 16px; }
+.followup-panel-heading small { margin-top: 2px; color: #718096; font-size: 11px; }
+.followup-panel-heading > span { padding: 3px 7px; border-radius: 4px; background: #edf4ff; color: #0f5fff; font-size: 10px; font-weight: 650; }
+.followup-turns { display: flex; overflow-y: auto; padding: 9px; flex-direction: column; gap: 4px; }
+.followup-turns button { display: flex; padding: 9px 10px; overflow: hidden; flex-direction: column; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #5f6e83; font: inherit; text-align: left; cursor: pointer; }
+.followup-turns button:hover { background: #f6f8fb; }
+.followup-turns button.active { border-color: #c8d9f8; background: #f2f6fd; color: #164fba; }
+.followup-turns button:disabled { cursor: default; opacity: .5; }
+.followup-turns button span { font-size: 11px; font-weight: 650; }
+.followup-turns button small { overflow: hidden; margin-top: 2px; color: #7a8799; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.historical-turn-notice { margin: 8px 12px 0; padding: 10px; border: 1px solid #ecd39f; border-radius: 6px; background: #fffbf3; color: #75531b; }
+.historical-turn-notice p { margin: 0; font-size: 11px; line-height: 1.55; }
+.historical-turn-notice button { margin-top: 7px; padding: 0; border: 0; background: transparent; color: #965f0d; font: inherit; font-size: 11px; font-weight: 650; cursor: pointer; }
+.report-followup { display: flex; margin-top: auto; padding: 14px; flex-direction: column; border-top: 1px solid #e5eaf1; background: #fbfcfe; }
+.followup-context { display: flex; margin-bottom: 9px; flex-direction: column; }
+.followup-context strong { color: #27364d; font-size: 12px; }
+.followup-context small { margin-top: 2px; color: #7b8798; font-size: 10px; line-height: 1.5; }
+.report-followup textarea { width: 100%; min-height: 132px; padding: 11px 12px; resize: vertical; border: 1px solid #cbd7e7; border-radius: 7px; outline: 0; background: #fff; color: #27364d; font: inherit; font-size: 13px; line-height: 1.65; box-sizing: border-box; }
+.report-followup textarea:focus { border-color: #6f9ff2; box-shadow: 0 0 0 3px rgba(23, 104, 242, .08); }
+.report-followup textarea:disabled { background: #f3f5f8; color: #8a95a5; }
+.followup-toolbar { display: flex; margin-top: 9px; align-items: center; justify-content: space-between; gap: 10px; }
+.followup-shortcuts { display: flex; flex-wrap: wrap; gap: 5px; }
+.followup-shortcuts button { padding: 4px 7px; border: 1px solid #d5deea; border-radius: 5px; background: #fff; color: #68768a; font: inherit; font-size: 10px; cursor: pointer; }
+.followup-shortcuts button.active { border-color: #8bb1f7; background: #edf4ff; color: #0f5fff; font-weight: 650; }
+.followup-submit { min-width: 62px; height: 32px; border: 0; border-radius: 6px; background: #0f5fff; color: #fff; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; }
+.followup-submit:disabled { opacity: .42; cursor: not-allowed; }
+.followup-keyboard-hint { margin-top: 6px; color: #98a2b1; font-size: 9px; text-align: right; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes cursor-blink { 50% { opacity: 0; } }
+
+@media (max-width: 1280px) {
+  .report-workspace { grid-template-columns: 150px minmax(0, 1fr); }
+  .followup-panel { position: sticky; top: auto; bottom: 0; z-index: 4; grid-column: 1 / -1; height: auto; min-height: 0; }
+  .followup-turns { display: none; }
+  .report-followup textarea { min-height: 92px; }
+}
 
 @media (max-width: 900px) {
   .ai-report-heading { flex-direction: column; }
   .report-workspace { grid-template-columns: 1fr; }
   .report-toc { position: static; }
+  .followup-panel { grid-column: 1; }
   .live-research > header { align-items: flex-start; }
   .session-badge { display: none; }
-  .followup-modes small { width: 100%; margin: 2px 0 0; }
 }
 </style>

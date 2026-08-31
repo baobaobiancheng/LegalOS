@@ -19,6 +19,7 @@ import {
   buildStandaloneAiLawResearchPrompt,
   AiLawResearchReportV1,
   AiLawResearchTurnContext,
+  JsonAnswerFieldStream,
   parseAiLawResearchReport,
 } from '../../common/services/ai-law-research-report';
 import { AuditService } from '../../common/audit/audit.service';
@@ -489,12 +490,15 @@ function emitToolResultProgress(
   progress: AiResearchProgress,
 ) {
   if (toolResult.isError) {
+    const detailStep = [DSH_LAW_DETAIL_TOOL, DSH_LAW_BATCH_DETAIL_TOOL].includes(toolResult.name as any);
     emit({
       type: 'research_stage',
-      stage: [DSH_LAW_DETAIL_TOOL, DSH_LAW_BATCH_DETAIL_TOOL].includes(toolResult.name as any) ? 'verify' : 'recall',
-      status: 'degraded',
-      title: '检索步骤未完成',
-      detail: '当前数据源调用未成功，系统将根据已获得证据决定降级或终止。',
+      stage: detailStep ? 'verify' : 'recall',
+      status: 'running',
+      title: detailStep ? '继续读取权威正文' : '调整检索方式',
+      detail: detailStep
+        ? '一次详情读取未完成，系统正在根据已取得的候选法规继续处理。'
+        : '当前检索方式未取得可用结果，系统正在尝试其他受控检索方式。',
     });
     return;
   }
@@ -590,143 +594,6 @@ function detailRequestCount(value: unknown): number {
   if (!value || typeof value !== 'object') return 1;
   const ids = (value as Record<string, unknown>).lawIds;
   return Array.isArray(ids) && ids.length ? Math.min(ids.length, 10) : 1;
-}
-
-/**
- * 模型输出仍是最终报告 JSON。这里只解码顶层 `answer` 字符串，
- * 不会把 JSON 外壳、understanding/analysis 或其他模型字段作为正文外发。
- */
-export class JsonAnswerFieldStream {
-  private readonly containers: Array<'object' | 'array'> = [];
-  private stringKind: 'key' | 'answer' | 'other' | undefined;
-  private keyBuffer = '';
-  private pendingKey = '';
-  private rootToken = '';
-  private escaped = false;
-  private unicodeDigits = '';
-  private completed = false;
-
-  push(chunk: string): string {
-    if (!chunk || this.completed) return '';
-    const answer: string[] = [];
-    for (const char of chunk) {
-      if (this.completed) break;
-      if (this.stringKind) {
-        this.consumeStringCharacter(char, answer);
-      } else {
-        this.consumeStructuralCharacter(char);
-      }
-    }
-    return answer.join('');
-  }
-
-  private consumeStructuralCharacter(char: string): void {
-    if (/\s/u.test(char)) return;
-    const atRootObject = this.containers.length === 1 && this.containers[0] === 'object';
-    if (char === '"') {
-      this.escaped = false;
-      this.unicodeDigits = '';
-      this.keyBuffer = '';
-      this.stringKind = atRootObject && (this.rootToken === '{' || this.rootToken === ',')
-        ? 'key'
-        : atRootObject && this.rootToken === ':' && this.pendingKey === 'answer'
-          ? 'answer'
-          : 'other';
-      return;
-    }
-    if (char === '{') {
-      this.containers.push('object');
-      if (this.containers.length === 1) {
-        this.rootToken = '{';
-        this.pendingKey = '';
-      }
-      return;
-    }
-    if (char === '[') {
-      this.containers.push('array');
-      return;
-    }
-    if (char === '}' || char === ']') {
-      if (this.containers.length) this.containers.pop();
-      if (this.containers.length === 1 && this.containers[0] === 'object') {
-        this.rootToken = 'value';
-      } else if (!this.containers.length) {
-        this.rootToken = '';
-        this.pendingKey = '';
-      }
-      return;
-    }
-    if (!atRootObject) return;
-    if (char === ':') {
-      this.rootToken = ':';
-      return;
-    }
-    if (char === ',') {
-      this.rootToken = ',';
-      this.pendingKey = '';
-      return;
-    }
-    if (this.rootToken === ':') this.rootToken = 'value';
-  }
-
-  private consumeStringCharacter(char: string, answer: string[]): void {
-    if (this.unicodeDigits) {
-      if (/^[0-9a-f]$/iu.test(char)) {
-        this.unicodeDigits += char;
-        if (this.unicodeDigits.length === 5) {
-          this.appendDecoded(String.fromCharCode(Number.parseInt(this.unicodeDigits.slice(1), 16)), answer);
-          this.unicodeDigits = '';
-        }
-      } else {
-        this.appendDecoded(`\\${this.unicodeDigits}${char}`, answer);
-        this.unicodeDigits = '';
-      }
-      return;
-    }
-    if (this.escaped) {
-      this.escaped = false;
-      if (char === 'u') {
-        this.unicodeDigits = 'u';
-        return;
-      }
-      const decoded: Record<string, string> = {
-        '"': '"',
-        '\\': '\\',
-        '/': '/',
-        b: '\b',
-        f: '\f',
-        n: '\n',
-        r: '\r',
-        t: '\t',
-      };
-      this.appendDecoded(decoded[char] ?? char, answer);
-      return;
-    }
-    if (char === '\\') {
-      this.escaped = true;
-      return;
-    }
-    if (char !== '"') {
-      this.appendDecoded(char, answer);
-      return;
-    }
-
-    if (this.stringKind === 'key') {
-      this.pendingKey = this.keyBuffer;
-      this.rootToken = 'key';
-    } else if (this.stringKind === 'answer') {
-      this.completed = true;
-      this.rootToken = 'value';
-    } else if (this.containers.length === 1 && this.containers[0] === 'object') {
-      this.rootToken = 'value';
-    }
-    this.stringKind = undefined;
-  }
-
-  private appendDecoded(value: string, answer: string[]): void {
-    if (this.stringKind === 'key') this.keyBuffer += value;
-    else if (this.stringKind === 'answer') answer.push(value);
-  }
 }
 
 class GatedAnswerStream {

@@ -48,6 +48,8 @@ export interface AiLawResearchReportV1 {
   title: string;
   scope: string;
   summary: string;
+  /** 与流式 answer_delta 同源的完整用户正文；旧报告可能没有该字段。 */
+  answer?: string;
   understanding: AiLawResearchUnderstandingV1;
   sections: AiLawResearchSectionV1[];
   sources: AiLawResearchSourceV1[];
@@ -84,12 +86,11 @@ interface ModelReport {
 interface ParsedModelOutput {
   value: ModelReport;
   plainText?: string;
-  repaired: boolean;
 }
 
 export const AI_LAW_REPORT_OUTPUT_RULE = `最终只输出一个 JSON 对象，不要输出 Markdown 围栏或额外说明。结构必须是：
 {"query":"本轮问题","title":"不超过40字的报告标题","scope":"本轮检索范围","summary":"两段以内总结","understanding":{"queryType":"article_location|regulation_location|legal_issue","analysis":"面向用户展示的问题理解，不写内部思维链","retrievalPlan":"面向用户展示的检索与详情读取方案","knownFacts":["当前有效的已知事实"],"legalIssues":["需要处理的法律争点"],"factChanges":{"added":["本轮新增事实"],"corrected":[{"from":"被修正事实","to":"修正后事实"}],"removed":["本轮删除事实"]}},"answer":"供咨询对话直接展示的Markdown答复","sections":[{"title":"分析主题","content":"具体分析","sourceIds":["模型标注的法规ID"]}],"evidenceQuotes":[{"recordId":"模型标注的法规ID","article":"具体条号","text":"法规原文"}],"limitations":["适用边界"]}。
-answer 必须包含结论、具体分析、适用边界和来源名称；不得泄露内部推理过程。没有直接引用时 evidenceQuotes 可为空数组；一旦引用，text 必须逐字复制已读取的法规正文连续片段。`;
+summary 必须使用客观、正式的书面法律语言，直接概括结论与主要依据，不得出现“我已经”“现在”“下面输出”等过程性表述。answer 必须包含结论、具体分析、适用边界和来源名称；不得泄露内部推理过程。JSON 字符串内部需要使用引号时优先使用中文引号“”，如使用英文双引号必须正确转义。没有直接引用时 evidenceQuotes 可为空数组；一旦引用，text 必须逐字复制已读取的法规正文连续片段。`;
 
 export interface AiLawResearchTurnContext {
   operation?: 'new' | 'continue' | 'correct' | 'new_issue';
@@ -125,15 +126,8 @@ export function parseAiLawResearchReport(
   const query = bound(requestedQuery.trim() || optionalText(value.query, 1_000) || '', 1_000);
   const verifiedDetails = verifiedLawDetails(toolResults).slice(0, 10);
   const evidenceQuotes = parseEvidenceQuotes(value.evidenceQuotes);
-  const quotesBySource = new Map<string, Array<{ article: string; text: string }>>();
-  for (const quote of evidenceQuotes) {
-    const entries = quotesBySource.get(quote.recordId) ?? [];
-    entries.push({ article: quote.article, text: quote.text });
-    quotesBySource.set(quote.recordId, entries);
-  }
 
   const sections = parseSections(value.sections);
-  const hadParsedSections = sections.length > 0;
   const answer = normalizedAnswer(value, parsedOutput.plainText, query, verifiedDetails, sections);
   if (!sections.length) {
     sections.push(...sectionsFromAnswer(
@@ -142,7 +136,6 @@ export function parseAiLawResearchReport(
     ));
   }
   const sources = verifiedDetails.map((detail) => {
-    const quotedArticles = (quotesBySource.get(detail.recordId.toLowerCase()) ?? []).slice(0, 3);
     return {
       recordId: bound(detail.recordId, 64),
       lawName: bound(detail.lawName, 300),
@@ -152,7 +145,8 @@ export function parseAiLawResearchReport(
       implementDate: nullableText(detail.implementDate, 40),
       timeliness: nullableText(detail.timeliness, 40),
       lastVerifiedAt: lawDetailLastVerifiedAt(detail),
-      articles: quotedArticles.length ? quotedArticles : selectEvidenceBlocks(detail, query),
+      // 展示正文始终来自已读取的权威详情，不把模型 evidenceQuotes 冒充原文。
+      articles: selectEvidenceBlocks(detail, query),
     };
   });
   const candidateIds = new Set(toolResults.flatMap((result) => {
@@ -164,16 +158,7 @@ export function parseAiLawResearchReport(
     .filter((quote) => sourceIds.has(quote.recordId))
     .map((quote) => quote.recordId)).size;
   const understanding = parseUnderstanding(value.understanding, query, sections, context);
-  const presentationRepaired = parsedOutput.repaired
-    || !optionalText(value.answer, 20_000)
-    || !optionalText(value.title, 100)
-    || !optionalText(value.scope, 500)
-    || !optionalText(value.summary, 2_000)
-    || !hadParsedSections;
   const limitations = parseStringArray(value.limitations, 5, 300);
-  if (presentationRepaired && limitations.length < 5) {
-    limitations.push('报告展示结构已由系统根据本轮模型输出和检索结果自动补全。');
-  }
 
   return {
     answer,
@@ -183,7 +168,8 @@ export function parseAiLawResearchReport(
       query,
       title: optionalText(value.title, 100) ?? defaultReportTitle(query),
       scope: optionalText(value.scope, 500) ?? defaultReportScope(verifiedDetails),
-      summary: optionalText(value.summary, 2_000) ?? summaryFromAnswer(answer),
+      summary: normalizedSummary(value.summary, answer, query, verifiedDetails),
+      answer,
       understanding,
       sections,
       sources,
@@ -279,6 +265,7 @@ export function buildAiLawResearchFallback(
         title: '已读取的权威法规详情',
         scope: '本轮已成功读取的法规详情正文',
         summary: `${failureNote}以下内容仅为系统已读取的权威法规原文，不包含未完成的 AI 报告。`,
+        answer,
         understanding: fallbackUnderstanding(normalizedQuery, context, '已读取候选法规详情正文，但模型报告解析未完成。'),
         sections: [{
           id: 'verified-evidence',
@@ -301,14 +288,15 @@ export function buildAiLawResearchFallback(
   if (candidates.length) {
     const candidateText = candidates.map((record) =>
       `- ${record.lawName}${record.issuingOrgan ? `｜${record.issuingOrgan}` : ''}${record.timeliness ? `｜${record.timeliness}` : ''}`).join('\n');
+    const answer = [
+      '## 已找到候选法规，详情正文尚未读取',
+      '本轮 AI 结论已被拦截。以下仅是检索召回的候选法规，尚未完成权威正文读取，不得作为法律结论或引用依据。',
+      candidateText,
+      '请重试以读取详情正文，或缩小问题范围后重新检索。',
+    ].join('\n\n');
     return {
       level: 'candidate_only',
-      answer: [
-        '## 已找到候选法规，详情正文尚未读取',
-        '本轮 AI 结论已被拦截。以下仅是检索召回的候选法规，尚未完成权威正文读取，不得作为法律结论或引用依据。',
-        candidateText,
-        '请重试以读取详情正文，或缩小问题范围后重新检索。',
-      ].join('\n\n'),
+      answer,
       report: {
         schemaVersion: 1,
         resultStatus: 'degraded',
@@ -316,6 +304,7 @@ export function buildAiLawResearchFallback(
         title: '候选法规已召回，详情正文待读取',
         scope: '本轮法规检索召回结果',
         summary: `${failureNote}系统仅保留候选法规清单，没有输出缺少详情正文读取的法律结论。`,
+        answer,
         understanding: fallbackUnderstanding(normalizedQuery, context, '已完成候选法规召回，权威详情正文尚未读取。'),
         sections: [{ id: 'candidate-laws', title: '候选法规', content: candidateText, sourceIds: [] }],
         sources: [],
@@ -326,9 +315,10 @@ export function buildAiLawResearchFallback(
     };
   }
 
+  const answer = '## 未检索到可核验来源\n\n本轮法规检索已完成，但未召回候选法规。系统未生成确定性法律结论，请更换关键词或缩小问题范围后重试。';
   return {
     level: 'empty',
-    answer: '## 未检索到可核验来源\n\n本轮法规检索已完成，但未召回候选法规。系统未生成确定性法律结论，请更换关键词或缩小问题范围后重试。',
+    answer,
     report: {
       schemaVersion: 1,
       resultStatus: 'degraded',
@@ -336,6 +326,7 @@ export function buildAiLawResearchFallback(
       title: '未检索到可核验法规',
       scope: '本轮法规检索',
       summary: '本轮未召回候选法规，系统未输出确定性法律结论。',
+      answer,
       understanding: fallbackUnderstanding(normalizedQuery, context, '本轮检索未召回可核验法规。'),
       sections: [{ id: 'empty-result', title: '检索结果', content: '未检索到可核验来源。', sourceIds: [] }],
       sources: [],
@@ -389,27 +380,176 @@ function queryTerms(query: string): string[] {
   return [...terms];
 }
 
+/**
+ * 对模型的顶层 JSON 做增量扫描，只解码 `answer` 字符串。
+ * 它不要求 answer 之前的其他字符串内容完全合法，因此也可用于终态容错恢复。
+ */
+export class JsonAnswerFieldStream {
+  private readonly containers: Array<'object' | 'array'> = [];
+  private stringKind: 'key' | 'answer' | 'other' | undefined;
+  private keyBuffer = '';
+  private pendingKey = '';
+  private rootToken = '';
+  private escaped = false;
+  private unicodeDigits = '';
+  private completed = false;
+
+  push(chunk: string): string {
+    if (!chunk || this.completed) return '';
+    const answer: string[] = [];
+    for (const char of chunk) {
+      if (this.completed) break;
+      if (this.stringKind) this.consumeStringCharacter(char, answer);
+      else this.consumeStructuralCharacter(char);
+    }
+    return answer.join('');
+  }
+
+  private consumeStructuralCharacter(char: string): void {
+    if (/\s/u.test(char)) return;
+    const atRootObject = this.containers.length === 1 && this.containers[0] === 'object';
+    if (char === '"') {
+      this.escaped = false;
+      this.unicodeDigits = '';
+      this.keyBuffer = '';
+      this.stringKind = atRootObject && (this.rootToken === '{' || this.rootToken === ',')
+        ? 'key'
+        : atRootObject && this.rootToken === ':' && this.pendingKey === 'answer'
+          ? 'answer'
+          : 'other';
+      return;
+    }
+    if (char === '{') {
+      this.containers.push('object');
+      if (this.containers.length === 1) {
+        this.rootToken = '{';
+        this.pendingKey = '';
+      }
+      return;
+    }
+    if (char === '[') {
+      this.containers.push('array');
+      return;
+    }
+    if (char === '}' || char === ']') {
+      if (this.containers.length) this.containers.pop();
+      if (this.containers.length === 1 && this.containers[0] === 'object') {
+        this.rootToken = 'value';
+      } else if (!this.containers.length) {
+        this.rootToken = '';
+        this.pendingKey = '';
+      }
+      return;
+    }
+    if (!atRootObject) return;
+    if (char === ':') {
+      this.rootToken = ':';
+      return;
+    }
+    if (char === ',') {
+      this.rootToken = ',';
+      this.pendingKey = '';
+      return;
+    }
+    if (this.rootToken === ':') this.rootToken = 'value';
+  }
+
+  private consumeStringCharacter(char: string, answer: string[]): void {
+    if (this.unicodeDigits) {
+      if (/^[0-9a-f]$/iu.test(char)) {
+        this.unicodeDigits += char;
+        if (this.unicodeDigits.length === 5) {
+          this.appendDecoded(String.fromCharCode(Number.parseInt(this.unicodeDigits.slice(1), 16)), answer);
+          this.unicodeDigits = '';
+        }
+      } else {
+        this.appendDecoded(`\\${this.unicodeDigits}${char}`, answer);
+        this.unicodeDigits = '';
+      }
+      return;
+    }
+    if (this.escaped) {
+      this.escaped = false;
+      if (char === 'u') {
+        this.unicodeDigits = 'u';
+        return;
+      }
+      const decoded: Record<string, string> = {
+        '"': '"',
+        '\\': '\\',
+        '/': '/',
+        b: '\b',
+        f: '\f',
+        n: '\n',
+        r: '\r',
+        t: '\t',
+      };
+      this.appendDecoded(decoded[char] ?? char, answer);
+      return;
+    }
+    if (char === '\\') {
+      this.escaped = true;
+      return;
+    }
+    if (char !== '"') {
+      this.appendDecoded(char, answer);
+      return;
+    }
+
+    if (this.stringKind === 'key') {
+      this.pendingKey = this.keyBuffer;
+      this.rootToken = 'key';
+    } else if (this.stringKind === 'answer') {
+      this.completed = true;
+      this.rootToken = 'value';
+    } else if (this.containers.length === 1 && this.containers[0] === 'object') {
+      this.rootToken = 'value';
+    }
+    this.stringKind = undefined;
+  }
+
+  private appendDecoded(value: string, answer: string[]): void {
+    if (this.stringKind === 'key') this.keyBuffer += value;
+    else if (this.stringKind === 'answer') answer.push(value);
+  }
+}
+
 function parseModelOutput(text: string): ParsedModelOutput {
   const trimmed = text.trim();
   const withoutFence = trimmed.startsWith('```')
     ? trimmed.replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '').trim()
     : trimmed;
   const direct = parseJsonRecord(withoutFence);
-  if (direct) return { value: direct, repaired: false };
+  if (direct) return { value: direct };
 
   const fenced = [...trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/giu)]
     .map((match) => parseJsonRecord(match[1]))
     .find((value): value is ModelReport => Boolean(value));
-  if (fenced) return { value: fenced, repaired: true };
+  if (fenced) return { value: fenced };
 
   const embedded = extractFirstJsonObject(trimmed);
   const embeddedValue = embedded ? parseJsonRecord(embedded) : undefined;
-  if (embeddedValue) return { value: embeddedValue, repaired: true };
+  if (embeddedValue) return { value: embeddedValue };
+
+  // 结构化输出即使因未转义引号等问题损坏，也只能恢复明确的 answer 字段；
+  // 绝不能把 JSON 外壳、系统字段和模型过程性说明作为用户正文展示。
+  if (looksLikeStructuredModelOutput(trimmed)) {
+    const recoveredAnswer = new JsonAnswerFieldStream().push(trimmed).trim();
+    return {
+      value: recoveredAnswer ? { answer: bound(recoveredAnswer, 60_000) } : {},
+    };
+  }
 
   const plainText = withoutFence && !withoutFence.startsWith('{') && !withoutFence.startsWith('[')
-    ? bound(withoutFence, 20_000)
+    ? bound(withoutFence, 60_000)
     : undefined;
-  return { value: {}, ...(plainText ? { plainText } : {}), repaired: true };
+  return { value: {}, ...(plainText ? { plainText } : {}) };
+}
+
+function looksLikeStructuredModelOutput(value: string): boolean {
+  const sample = value.slice(0, 12_000);
+  return /```(?:json)?/iu.test(sample)
+    || /(?:^|[{,])\s*"(?:query|title|scope|summary|understanding|answer|sections|evidenceQuotes|limitations)"\s*:/u.test(sample);
 }
 
 function parseJsonRecord(value: string): ModelReport | undefined {
@@ -471,7 +611,7 @@ function normalizedAnswer(
   details: BaijianLawDetail[],
   sections: AiLawResearchSectionV1[],
 ): string {
-  const modelAnswer = optionalText(value.answer, 20_000);
+  const modelAnswer = optionalText(value.answer, 60_000);
   if (modelAnswer) return modelAnswer;
   if (plainText) return plainText;
 
@@ -501,14 +641,43 @@ function defaultReportScope(details: BaijianLawDetail[]): string {
   return names.length ? `本轮已读取：${names.join('、')}` : '本轮法规检索及权威详情读取范围';
 }
 
-function summaryFromAnswer(answer: string): string {
-  const plain = answer
-    .replace(/^#{1,6}\s*/gmu, '')
-    .replace(/^>\s*/gmu, '')
-    .replace(/[*_`]/gu, '')
-    .replace(/\s+/gu, ' ')
-    .trim();
-  return bound(plain || '本轮已完成法规检索与权威详情正文读取。', 500);
+function normalizedSummary(
+  value: unknown,
+  answer: string,
+  query: string,
+  details: BaijianLawDetail[],
+): string {
+  const modelSummary = optionalText(value, 2_000);
+  if (modelSummary && isUserFacingSummary(modelSummary)) return modelSummary;
+  return summaryFromAnswer(answer, query, details);
+}
+
+function isUserFacingSummary(value: string): boolean {
+  const compact = value.replace(/\s+/gu, ' ').trim();
+  if (!compact) return false;
+  if (looksLikeStructuredModelOutput(compact)) return false;
+  return !/^(?:我已经|现在(?:我|将|开始)?|下面(?:将|输出|给出)|以下为(?:本轮|结构化|完整))/u.test(compact);
+}
+
+function summaryFromAnswer(answer: string, query: string, details: BaijianLawDetail[]): string {
+  const paragraphs = answer
+    .replace(/```[\s\S]*?```/gu, ' ')
+    .split(/\n{2,}/u)
+    .map((paragraph) => paragraph
+      .replace(/^#{1,6}\s+.*$/gmu, '')
+      .replace(/^>\s*/gmu, '')
+      .replace(/^\s*(?:[-*+]\s+|\d+[.)、]\s*)/gmu, '')
+      .replace(/\[([^\]]+)\]\((?:[^()]|\([^()]*\))*\)/gu, '$1')
+      .replace(/[*_`]/gu, '')
+      .replace(/\s+/gu, ' ')
+      .trim())
+    .filter((paragraph) => paragraph && isUserFacingSummary(paragraph));
+  const substantive = paragraphs.slice(0, 2).join(' ');
+  if (substantive) return bound(substantive, 500);
+
+  const lawNames = [...new Set(details.map((detail) => detail.lawName).filter(Boolean))].slice(0, 3);
+  const scope = lawNames.length ? `，并读取${lawNames.map((name) => `《${name}》`).join('、')}的权威详情正文` : '';
+  return bound(`已围绕“${bound(query || '本轮法律问题', 120)}”完成法规检索${scope}。本报告仅依据本轮已取得的法规资料整理，具体适用仍需结合案件事实判断。`, 500);
 }
 
 function sectionsFromAnswer(answer: string, sourceIds: string[]): AiLawResearchSectionV1[] {

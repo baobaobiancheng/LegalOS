@@ -4,9 +4,9 @@ import {
   DshResearchEvidenceError,
   validateResearchCompletion,
 } from '../src/common/services/dsh.service';
+import { JsonAnswerFieldStream } from '../src/common/services/ai-law-research-report';
 import {
   isCaseLikeTitle,
-  JsonAnswerFieldStream,
   LegalResearchService,
 } from '../src/modules/legal-research/legal-research.service';
 import { ConsultationExecutionRouter } from '../src/modules/project/application/consultation-execution.router';
@@ -131,6 +131,7 @@ describe('LegalResearchService', () => {
     const candidateMetrics: number[] = [];
     const verifiedMetrics: number[] = [];
     const answerDeltas: string[] = [];
+    const stageEvents: Array<{ status: string; title: string }> = [];
     const modelOutput = JSON.stringify({
       title: '经济补偿检索报告',
       scope: '劳动合同法',
@@ -151,6 +152,8 @@ describe('LegalResearchService', () => {
       setImmediate(() => {
         // 即使模型提前产生 answer，证据闸门通过前也不向 SSE 外发。
         handle.emit('research_text', modelOutput.slice(0, earlySplit));
+        handle.emit('tool_call', { callId: 's0', name: 'search_laws_advanced', arguments: { keyword: '经济补偿' } });
+        handle.emit('tool_result', { callId: 's0', name: 'search_laws_advanced', isError: true, error: { name: 'SupplierError', code: 'TEMPORARY' } });
         handle.emit('tool_call', { callId: 's1', name: 'search_laws', arguments: { keyword: '经济补偿' } });
         handle.emit('tool_result', { callId: 's1', name: 'search_laws', isError: false, result: { records: [{ recordId: lawId, lawName: '劳动合同法' }] } });
         handle.emit('research_text', modelOutput.slice(earlySplit, verifiedSplit));
@@ -215,6 +218,7 @@ describe('LegalResearchService', () => {
           timeline.push('evidence_gate_open');
         }
         if (event.type === 'answer_delta') answerDeltas.push(event.delta);
+        if (event.type === 'research_stage') stageEvents.push({ status: event.status, title: event.title });
       },
     );
 
@@ -225,6 +229,8 @@ describe('LegalResearchService', () => {
     expect(candidateMetrics).toEqual([1, 2]);
     expect(verifiedMetrics).toEqual([1]);
     expect(answerDeltas.join('')).toBe('应依据已核验的劳动合同法计算。\n具体工资基数需结合个案确认。');
+    expect(stageEvents).toContainEqual({ status: 'running', title: '调整检索方式' });
+    expect(stageEvents).not.toContainEqual(expect.objectContaining({ status: 'degraded' }));
     expect(timeline.indexOf('evidence_gate_open')).toBeLessThan(timeline.indexOf('answer_delta'));
     expect(timeline.indexOf('answer_delta')).toBeLessThan(timeline.indexOf('persisted'));
     expect(timeline.at(-1)).toBe('report_completed');
@@ -320,8 +326,9 @@ describe('LegalResearchService', () => {
     expect(result.degraded).toBeUndefined();
     expect(result.warning).toBeUndefined();
     expect(result.report.summary).toContain('已检索《中华人民共和国公司法》');
+    expect(result.report.answer).toBe(partialResult.text);
     expect(result.report.sources[0].articles[0].text).toBe(original);
-    expect(result.report.limitations).toContain('报告展示结构已由系统根据本轮模型输出和检索结果自动补全。');
+    expect(result.report.limitations).toEqual([]);
     expect(record).toHaveBeenLastCalledWith(expect.objectContaining({
       action: 'ai.legal_research.succeeded', outcome: 'success',
     }));

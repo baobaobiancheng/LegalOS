@@ -25,6 +25,7 @@ describe('AI 搜法报告流草稿', () => {
     query: '经济补偿如何计算',
     title: '经济补偿检索报告',
     scope: '劳动合同法',
+    answer: '应依据已核验的劳动合同法计算。',
     understanding: {
       queryType: 'legal_issue',
       analysis: '需要检索计算规则。',
@@ -46,6 +47,7 @@ describe('AI 搜法报告流草稿', () => {
     transition = advanceAiLawReportDraft(transition.draft, { type: 'report_completed' })
     expect(transition.draft).toBeNull()
     expect(transition.completed?.summary).toBe('已核验计算规则。')
+    expect(transition.completed?.answer).toBe('应依据已核验的劳动合同法计算。')
   })
 
   it('没有完整草稿时不接受完成事件', () => {
