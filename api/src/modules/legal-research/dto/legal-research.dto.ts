@@ -65,9 +65,12 @@ export class AiLawResearchDto {
   @IsUUID()
   conversationId?: string;
 
-  /** 客户端消息幂等键，防止断线重试重复生成同一轮。 */
+  /** 客户端消息幂等键：只需稳定且可安全存储，不要求 UUID 语义。 */
   @IsOptional()
-  @IsUUID()
+  @IsString()
+  @MinLength(16)
+  @MaxLength(128)
+  @Matches(/^[A-Za-z0-9._:-]+$/)
   messageId?: string;
 
   /** 前端看到的上一轮 run id，用于拒绝在过期上下文上继续追问。 */
