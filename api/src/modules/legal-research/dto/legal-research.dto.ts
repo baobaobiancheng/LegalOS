@@ -1,4 +1,4 @@
-import { IsBoolean, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
 class RefreshableResearchDto {
@@ -59,6 +59,33 @@ export class AiLawResearchDto {
   @MinLength(2)
   @MaxLength(1000)
   query: string;
+
+  /** 服务端持有的独立检索会话；首轮不传，由服务端创建。 */
+  @IsOptional()
+  @IsUUID()
+  conversationId?: string;
+
+  /** 客户端消息幂等键，防止断线重试重复生成同一轮。 */
+  @IsOptional()
+  @IsUUID()
+  messageId?: string;
+
+  /** 前端看到的上一轮 run id，用于拒绝在过期上下文上继续追问。 */
+  @IsOptional()
+  @IsUUID()
+  parentTurnId?: string;
+
+  /** 服务端上下文版本；不一致时返回 409，避免并发追问覆盖事实修正。 */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  contextVersion?: number;
+
+  /** auto 会按“不是/更正/改为”等措辞识别事实修正。 */
+  @IsOptional()
+  @IsIn(['auto', 'continue', 'correct', 'new_issue'])
+  operation?: 'auto' | 'continue' | 'correct' | 'new_issue';
 }
 
 export class AiLawReportDownloadDto {

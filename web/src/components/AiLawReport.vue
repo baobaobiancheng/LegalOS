@@ -23,10 +23,10 @@ const processSteps = computed<Array<{ key: string; label: string; status: Proces
     ? { key: 'recall', label: '法规召回', status: 'completed', statusLabel: '已完成' }
     : { key: 'recall', label: '法规召回', status: 'empty', statusLabel: '无结果' },
   props.report.metrics.verifiedSourceCount > 0
-    ? { key: 'verify', label: '正文核验', status: 'completed', statusLabel: '已完成' }
+    ? { key: 'verify', label: '读取正文', status: 'completed', statusLabel: '已完成' }
     : props.report.metrics.candidateCount > 0
-      ? { key: 'verify', label: '正文核验', status: 'incomplete', statusLabel: '未完成' }
-      : { key: 'verify', label: '正文核验', status: 'skipped', statusLabel: '已跳过' },
+      ? { key: 'verify', label: '读取正文', status: 'incomplete', statusLabel: '未完成' }
+      : { key: 'verify', label: '读取正文', status: 'skipped', statusLabel: '已跳过' },
   isDegraded.value
     ? { key: 'answer', label: props.compact ? '生成回答' : '生成报告', status: 'degraded', statusLabel: '已降级' }
     : { key: 'answer', label: props.compact ? '生成回答' : '生成报告', status: 'completed', statusLabel: '已完成' },
@@ -40,7 +40,7 @@ const overallStatus = computed(() => {
 const sourceById = computed(() => new Map(props.report.sources.map(source => [source.recordId.toLowerCase(), source])))
 
 function sourceLabel(id: string) {
-  return sourceById.value.get(id.toLowerCase())?.lawName ?? '已核验法规'
+  return sourceById.value.get(id.toLowerCase())?.lawName ?? '模型标注来源（未关联详情）'
 }
 
 function formatVerifiedAt(value: string | null | undefined) {
@@ -56,7 +56,7 @@ function formatVerifiedAt(value: string | null | undefined) {
       <div>
         <strong><i />{{ overallStatus.label }}</strong>
         <span>
-          已核验 {{ report.metrics.verifiedSourceCount }} 部权威法规
+          已读取 {{ report.metrics.verifiedSourceCount }} 部权威法规正文
           <template v-if="compact"> · 本次引用 {{ report.metrics.citedSourceCount }} 部</template>
         </span>
       </div>
@@ -74,7 +74,7 @@ function formatVerifiedAt(value: string | null | undefined) {
       class="research-process"
       open
     >
-      <summary>检索过程</summary>
+      <summary>已完成检索思考</summary>
       <div class="process-grid">
         <div
           v-for="(step, index) in processSteps"
@@ -85,7 +85,56 @@ function formatVerifiedAt(value: string | null | undefined) {
           <span><strong>{{ step.label }}</strong><small :class="`step-${step.status}`"><i />{{ step.statusLabel }}</small></span>
         </div>
       </div>
-      <p>检索范围：{{ report.scope }}</p>
+      <div class="process-narrative">
+        <section>
+          <span>01</span>
+          <div>
+            <h4>分析法条检索需求</h4>
+            <p>{{ report.understanding.analysis }}</p>
+          </div>
+        </section>
+        <section>
+          <span>02</span>
+          <div>
+            <h4>定位与检索</h4>
+            <p>{{ report.understanding.retrievalPlan }}</p>
+          </div>
+        </section>
+        <section
+          v-if="report.understanding.factChanges.corrected.length || report.understanding.factChanges.added.length || report.understanding.factChanges.removed.length"
+          class="fact-change-section"
+        >
+          <span>修</span>
+          <div>
+            <h4>本轮事实变化</h4>
+            <ul>
+              <li
+                v-for="item in report.understanding.factChanges.corrected"
+                :key="`${item.from}-${item.to}`"
+              >
+                “{{ item.from }}”已修正为“{{ item.to }}”
+              </li>
+              <li
+                v-for="item in report.understanding.factChanges.added"
+                :key="`added-${item}`"
+              >
+                新增：{{ item }}
+              </li>
+              <li
+                v-for="item in report.understanding.factChanges.removed"
+                :key="`removed-${item}`"
+              >
+                移除：{{ item }}
+              </li>
+            </ul>
+          </div>
+        </section>
+      </div>
+      <div class="context-snapshot">
+        <span>当前事实 {{ report.understanding.knownFacts.length }}</span>
+        <span>法律争点 {{ report.understanding.legalIssues.length }}</span>
+        <small>检索范围：{{ report.scope }}</small>
+      </div>
     </details>
 
     <section
@@ -157,14 +206,17 @@ function formatVerifiedAt(value: string | null | undefined) {
               :key="`${source.recordId}-${article.article}`"
             >
               <strong>{{ article.article }}</strong>
-              <p>{{ article.text }}</p>
+              <p>
+                {{ article.text }}
+                <small>模型标注引文，未做逐字核对</small>
+              </p>
             </div>
           </div>
           <p
             v-else
             class="verified-without-quote"
           >
-            已完成权威正文核验，本次回答未直接引用该法规条文。
+            已读取权威详情正文，本次回答未直接引用该法规条文。
           </p>
         </details>
       </div>
@@ -174,7 +226,7 @@ function formatVerifiedAt(value: string | null | undefined) {
         type="button"
         @click="emit('toggleFull')"
       >
-        {{ compact ? `查看全部 ${report.sources.length} 部已核验法规` : '收起法规列表' }}
+        {{ compact ? `查看全部 ${report.sources.length} 部已读取法规` : '收起法规列表' }}
       </button>
     </section>
 
@@ -231,7 +283,17 @@ function formatVerifiedAt(value: string | null | undefined) {
 .process-step small.step-degraded { color: #aa620b; }
 .process-step small.step-incomplete i,
 .process-step small.step-degraded i { background: #dc8b27; }
-.research-process > p { margin: 4px 18px 10px; color: #6b7890; font-size: 11px; text-align: center; }
+.process-narrative { margin: 8px 18px 12px; overflow: hidden; border-top: 1px solid #e3e9f1; }
+.process-narrative section { display: grid; grid-template-columns: 28px minmax(0, 1fr); padding: 12px 0; gap: 10px; }
+.process-narrative section + section { border-top: 1px solid #e9edf3; }
+.process-narrative section > span { display: grid; width: 24px; height: 24px; border-radius: 5px; place-items: center; background: #edf4ff; color: #0f5fff; font-size: 10px; font-weight: 750; }
+.process-narrative h4 { margin: 1px 0 3px; color: #25354d; font-size: 12px; }
+.process-narrative p { margin: 0; color: #647189; font-size: 12px; line-height: 1.65; white-space: pre-line; }
+.process-narrative ul { margin: 3px 0 0; padding-left: 17px; color: #647189; font-size: 11px; }
+.process-narrative .fact-change-section > span { background: #fff3e4; color: #a65c07; }
+.context-snapshot { display: flex; margin: 0 18px 12px; align-items: center; flex-wrap: wrap; gap: 6px; }
+.context-snapshot span { padding: 2px 7px; border-radius: 4px; background: #eef3f8; color: #596981; font-size: 10px; }
+.context-snapshot small { margin-left: auto; color: #768397; font-size: 10px; }
 .report-section { scroll-margin-top: 20px; }
 .report-section h2 { margin: 14px 0 6px; color: #101827; font-size: 18px; font-weight: 700; letter-spacing: -.02em; }
 .report-section h2 span { margin-left: 5px; color: #6b7890; font-size: 13px; font-weight: 600; }
@@ -256,6 +318,7 @@ function formatVerifiedAt(value: string | null | undefined) {
 .article-list > div { display: grid; grid-template-columns: minmax(120px, 1.4fr) minmax(0, 8.6fr); border-top: 1px solid #e8edf4; }
 .article-list strong { padding: 8px 12px; border-right: 1px solid #e8edf4; color: #394963; font-size: 11px; }
 .article-list p { margin: 0; padding: 8px 12px; color: #5d6878; font-size: 11px; }
+.article-list p small { display: block; margin-top: 5px; color: #9a6b2f; font-size: 10px; }
 .verified-without-quote { margin: 0; padding: 8px 12px; border-top: 1px solid #e8edf4; color: #718096; font-size: 11px; }
 .all-sources-button { display: block; margin: 8px auto 0; padding: 4px 10px; border: 0; background: transparent; color: #0f5fff; font: inherit; font-size: 11px; font-weight: 620; cursor: pointer; }
 .report-limitations { margin-top: 14px; padding: 11px 13px; border-left: 3px solid #b8c9e7; background: #f7f9fc; color: #5b687b; font-size: 12px; }

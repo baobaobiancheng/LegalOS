@@ -11,6 +11,7 @@ export const isTerminalEvent = (event: SseEvent): boolean =>
   event.done === true ||
   event.error === true ||
   event.type === 'message_end' ||
+  event.type === 'report_completed' ||
   event.type === 'error'
 
 /** 咨询流式协议（2026-08-12，与后端 sendConsultSSE 对齐）：runId/seq 去重，messageId 唯一节点 */
@@ -20,6 +21,18 @@ export type ConsultStreamEvent =
   | { type: 'text_delta'; runId: string; seq: number; delta: string }
   | { type: 'message_end'; runId: string; seq: number; messageId: string; finalText: string; research?: unknown }
   | { type: 'error'; runId: string; seq: number; code: string; message: string; actions?: string[]; retryable?: boolean }
+
+export type AiLegalResearchStreamEvent =
+  | { type: 'research_session'; seq: number; runId: string; conversationId: string; turnId: string; contextVersion: number; operation: string; question: string; replayed?: boolean }
+  | { type: 'research_stage'; seq: number; stage: 'understand' | 'recall' | 'verify' | 'answer'; status: 'running' | 'completed' | 'empty' | 'degraded'; title: string; detail: string }
+  | { type: 'research_metrics'; seq: number; candidateCount?: number; verifiedSourceCount?: number; toolName?: string }
+  | { type: 'report_start'; seq: number; report: Omit<import('../types').AiLawResearchReportV1, 'summary' | 'sections' | 'sources' | 'limitations'> }
+  | { type: 'report_summary'; seq: number; summary: string }
+  | { type: 'report_section'; seq: number; section: import('../types').AiLawResearchSectionV1 }
+  | { type: 'report_source'; seq: number; source: import('../types').AiLawResearchSourceV1 }
+  | { type: 'report_limitations'; seq: number; limitations: string[] }
+  | { type: 'report_completed'; seq: number; runId: string; conversationId: string; turnId: string; contextVersion: number; reportId: string; degraded?: boolean; warning?: { code: string; message: string } }
+  | { type: 'error'; seq: number; runId: string; code: string; message: string; retryable?: boolean }
 
 const reportSseError = (error: RequestError): RequestError => {
   apiLogger.warn('sse.error', {

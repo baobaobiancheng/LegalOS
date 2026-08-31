@@ -58,16 +58,22 @@ describe('AI 搜法结构化报告', () => {
     expect(parsed.report.metrics).toEqual({ candidateCount: 1, verifiedSourceCount: 1, citedSourceCount: 1 });
   });
 
-  it('过滤章节中的未知 ID，并按连续原文将引用归一到已读取法规', () => {
+  it('保留模型标注来源，不再校验来源关联或引文文字', () => {
     const unknown = 'E4A4956751D374FD35D0CEA47C041313';
+    const fabricated = '正文中不存在的模型引文';
     const parsed = parseAiLawResearchReport(JSON.stringify({
       title: '报告', scope: '范围', summary: '总结', answer: `ID: ${LAW_ID}`,
       sections: [{ title: '分析', content: '内容', sourceIds: [unknown] }],
-      evidenceQuotes: [{ recordId: unknown, article: '第一千零六十二条', text: ORIGINAL }],
+      evidenceQuotes: [
+        { recordId: unknown, article: '第一条', text: fabricated },
+        { recordId: LAW_ID, article: '第二条', text: fabricated },
+      ],
       limitations: [],
     }), toolResults(), '问题');
-    expect(parsed.report.sections[0].sourceIds).toEqual([]);
-    expect(parsed.report.sources[0].articles).toEqual([{ article: '第一千零六十二条', text: ORIGINAL }]);
+
+    expect(parsed.report.sections[0].sourceIds).toEqual([unknown.toLowerCase()]);
+    expect(parsed.report.sources[0].articles).toEqual([{ article: '第二条', text: fabricated }]);
+    expect(parsed.report.metrics.citedSourceCount).toBe(1);
   });
 
   it('提示词明确最多3部批量读取与5次工具调用上限', () => {
@@ -76,5 +82,29 @@ describe('AI 搜法结构化报告', () => {
     expect(prompt).toContain('批量读取最多3部');
     expect(prompt).toContain('本轮最多两次');
     expect(prompt).toContain('最多调用工具 5 次');
+  });
+
+  it('事实修正由服务端确定性覆盖旧事实，不依赖模型主动删除', () => {
+    const parsed = parseAiLawResearchReport(JSON.stringify({
+      title: '报告', scope: '范围', summary: '总结', answer: `ID: ${LAW_ID}`,
+      understanding: {
+        queryType: 'legal_issue', analysis: '分析', retrievalPlan: '检索',
+        knownFacts: ['合同于2024年签订', '双方均为公司'],
+        legalIssues: ['违约责任'],
+        factChanges: { added: [], corrected: [], removed: [] },
+      },
+      sections: [{ title: '分析', content: '内容', sourceIds: [LAW_ID] }],
+      evidenceQuotes: [{ recordId: LAW_ID, article: '第一千零六十二条', text: ORIGINAL }],
+      limitations: [],
+    }), toolResults(), '不是2024年签订，是2023年签订', {
+      operation: 'correct',
+      knownFacts: ['合同于2024年签订', '双方均为公司'],
+      legalIssues: ['违约责任'],
+    });
+
+    expect(parsed.report.understanding.knownFacts).toEqual(['双方均为公司', '2023年签订']);
+    expect(parsed.report.understanding.factChanges.corrected).toContainEqual({
+      from: '2024年签订', to: '2023年签订',
+    });
   });
 });

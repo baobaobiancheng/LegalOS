@@ -18,121 +18,57 @@ afterEach(() => {
 });
 
 describe('DshService 法律检索执行契约', () => {
-  it('不再核验法规 ID，只核验引用是否为已读取正文的连续原文', () => {
-    const candidateId = 'D6592443DA000EF8D692CE667E947A69';
-    const unsupportedId = 'E4A4956751D374FD35D0CEA47C041313';
-    const results: any[] = [
-      { name: 'search_laws', isError: false, result: { records: [{ recordId: candidateId }] } },
-      { name: 'get_law_detail', isError: false, result: { recordId: candidateId, contentBlocks: [{ text: '第八十七条 用人单位违法解除劳动合同的，应支付赔偿金。' }] } },
-    ];
+  it('没有成功的法规检索结果时拒绝生成分析', () => {
     expect(() => validateResearchEvidence(
       'law_search',
-      `> [法规原文｜ID:${candidateId}｜条文:第八十七条] 用人单位违法解除劳动合同的，应支付赔偿金。\n另见 ID: ${unsupportedId}`,
-      [{ callId: '1', name: 'search_laws', arguments: {} }, { callId: '2', name: 'get_law_detail', arguments: { lawId: candidateId } }],
-      results,
-    )).not.toThrow();
+      '模型回答',
+      [],
+      [{ name: 'search_laws', isError: true, result: undefined }] as any[],
+    )).toThrow('未产生成功的法规检索结果');
   });
 
-  it('拒绝用真实法规 ID 包装的虚构条文', () => {
-    const lawId = 'D6592443DA000EF8D692CE667E947A69';
-    const calls: any[] = [
-      { callId: '1', name: 'search_laws_semantic', arguments: { query: '违法解除' } },
-      { callId: '2', name: 'get_law_detail', arguments: { lawId, articleHint: '第八十七条' } },
-    ];
-    const results: any[] = [
-      { name: 'search_laws_semantic', isError: false, result: { records: [{ recordId: lawId }] } },
-      { name: 'get_law_detail', isError: false, result: { recordId: lawId, contentBlocks: [{ text: '第八十七条 应当依照本法第四十七条规定的经济补偿标准的二倍向劳动者支付赔偿金。' }] } },
-    ];
-    expect(() => validateResearchEvidence(
-      'law_search',
-      `> [法规原文｜ID:${lawId}｜条文:第八十七条] 用人单位必须额外支付三倍赔偿金。`,
-      calls,
-      results,
-    )).toThrow('引用不是法规正文中的连续原文');
-  });
-
-  it('有检索结果但没有直接引用时允许生成分析', () => {
+  it('命中候选但未读取权威详情正文时拒绝生成分析', () => {
     const lawId = 'D6592443DA000EF8D692CE667E947A69';
     expect(() => validateResearchEvidence(
       'law_search',
       JSON.stringify({ answer: '根据已检索法规，需要结合财产性质进一步分析。', evidenceQuotes: [] }),
       [{ callId: '1', name: 'search_laws', arguments: {} }],
       [{ name: 'search_laws', isError: false, result: { records: [{ recordId: lawId }] } }] as any[],
-    )).not.toThrow();
+    )).toThrow('命中法规后未读取权威正文');
   });
 
-  it('answer 中显式引用的内容也必须是法规正文连续原文', () => {
-    const lawId = 'D6592443DA000EF8D692CE667E947A69';
+  it('读取任一权威详情正文后，不再校验来源 ID、候选关联、引文文字或工具调用白名单', () => {
+    const candidateId = 'D6592443DA000EF8D692CE667E947A69';
+    const detailId = 'E4A4956751D374FD35D0CEA47C041313';
+    const citedId = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
     expect(() => validateResearchEvidence(
       'law_search',
-      JSON.stringify({ answer: '《民法典》规定：“离婚时所有财产必须平均分割。”', evidenceQuotes: [] }),
-      [{ callId: '1', name: 'search_laws', arguments: {} }, { callId: '2', name: 'get_law_detail', arguments: { lawId } }],
+      JSON.stringify({
+        answer: '《某法》规定：“这是一段并不存在于详情正文中的文字。”',
+        sections: [{ title: '结论', content: '依法处理。', sourceIds: [citedId] }],
+        evidenceQuotes: [{ recordId: citedId, article: '第一条', text: '虚构引文' }],
+      }),
       [
-        { name: 'search_laws', isError: false, result: { records: [{ recordId: lawId }] } },
-        { name: 'get_law_detail', isError: false, result: { recordId: lawId, contentBlocks: [{ text: '离婚时，夫妻的共同财产由双方协议处理。' }] } },
+        { callId: '1', name: 'search_laws', arguments: {} },
+        { callId: '2', name: 'get_law_detail', arguments: { lawId: detailId } },
+        { callId: '3', name: 'other_tool', arguments: {} },
       ] as any[],
-    )).toThrow('引用不是法规正文中的连续原文');
-  });
-
-  it('允许可控的 Markdown 和中英文标点差异，但仍逐字核对原文', () => {
-    const lawId = 'D6592443DA000EF8D692CE667E947A69';
-    const original = '用人单位违反本法规定解除或者终止劳动合同的，应当支付赔偿金。';
-    expect(() => validateResearchEvidence(
-      'law_search',
-      `**[法规原文 | ID：${lawId} | 条文：第八十七条]** ${original}`,
-      [{ callId: '1', name: 'search_laws', arguments: {} }, { callId: '2', name: 'get_law_detail', arguments: { lawId, query: '赔偿金' } }],
       [
-        { name: 'search_laws', isError: false, result: { records: [{ recordId: lawId }] } },
-        { name: 'get_law_detail', isError: false, result: { recordId: lawId, contentBlocks: [{ text: original }] } },
+        { name: 'search_laws', isError: false, result: { records: [{ recordId: candidateId }] } },
+        { name: 'get_law_detail', isError: false, result: { recordId: detailId, contentBlocks: [{ text: '权威详情正文。' }] } },
       ] as any[],
     )).not.toThrow();
   });
 
-  it('支持技术闸门的结构化 evidenceQuotes，并使用同一逐字校验', () => {
-    const lawId = 'D6592443DA000EF8D692CE667E947A69';
-    const original = '用人单位违反本法规定解除或者终止劳动合同的，应当支付赔偿金。';
-    const text = JSON.stringify({
-      answer: `结论 ID: ${lawId}`,
-      sourceUses: [{ source: 'lawstar', recordId: lawId }],
-      evidenceQuotes: [{ recordId: lawId, article: '第八十七条', text: original }],
-    });
-    expect(() => validateResearchEvidence(
-      'law_search', text,
-      [{ callId: '1', name: 'search_laws', arguments: {} }, { callId: '2', name: 'get_law_detail', arguments: { lawId, query: '赔偿金' } }],
-      [
-        { name: 'search_laws', isError: false, result: { records: [{ recordId: lawId }] } },
-        { name: 'get_law_detail', isError: false, result: { recordId: lawId, contentBlocks: [{ text: original }] } },
-      ] as any[],
-    )).not.toThrow();
-  });
-
-  it('零命中只允许明确声明没有可核验来源', () => {
+  it('零命中时只要求检索成功，不再检查回答声明', () => {
     const calls: any[] = [{ callId: '1', name: 'search_laws_semantic', arguments: { query: '问题' } }];
     const results: any[] = [{ name: 'search_laws_semantic', isError: false, result: { records: [] } }];
-    expect(() => validateResearchEvidence('law_search', '依据一般知识分析', calls, results))
-      .toThrow('零结果时未声明无可核验来源');
-    expect(() => validateResearchEvidence('law_search', '未检索到可核验来源。请补充信息。', calls, results))
-      .not.toThrow();
-    expect(() => validateResearchEvidence('law_search', JSON.stringify({
-      answer: '未检索到可核验来源。请补充信息。',
-      evidenceQuotes: [],
-    }), calls, results)).not.toThrow();
-  });
-
-  it('批量详情与单条详情使用同一法规原文校验规则', () => {
-    const lawId = 'D6592443DA000EF8D692CE667E947A69';
-    const original = '经济补偿按劳动者在本单位工作的年限，每满一年支付一个月工资。';
-    const text = JSON.stringify({
-      answer: `结论 ID: ${lawId}`,
-      evidenceQuotes: [{ recordId: lawId, article: '第四十七条', text: original }],
-    });
-    expect(() => validateResearchEvidence('law_search', text, [
-      { callId: '1', name: 'search_laws_semantic', arguments: { query: '经济补偿' } },
-      { callId: '2', name: 'get_law_details', arguments: { lawIds: [lawId], query: '经济补偿' } },
-    ] as any[], [
-      { name: 'search_laws_semantic', isError: false, result: { records: [{ recordId: lawId }] } },
-      { name: 'get_law_details', isError: false, result: { toolName: 'get_law_details', details: [{ recordId: lawId, contentBlocks: [{ text: original }] }] } },
-    ] as any[])).not.toThrow();
+    expect(() => validateResearchEvidence(
+      'law_search',
+      '依据一般知识分析',
+      calls,
+      results,
+    )).not.toThrow();
   });
 
   it('转发原生工具事件，并把本轮标准化结果放入权威 completion', async () => {

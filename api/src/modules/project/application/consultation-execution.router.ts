@@ -181,7 +181,7 @@ export function classifyResearchError(error: Error): string {
 export function publicResearchError(code: string): string {
   if (code === 'RESEARCH_QUOTA_EXHAUSTED') return '法律数据源额度暂不可用，本次未生成检索结论';
   if (code === 'RESEARCH_TIMEOUT') return '法律检索超时，请重试或改选通用咨询';
-  if (code === 'RESEARCH_TOOL_LIMIT_REACHED') return '检索步骤已达本轮上限，仍未完成证据核验。请缩小问题范围后重试';
+  if (code === 'RESEARCH_TOOL_LIMIT_REACHED') return '检索步骤已达本轮上限，仍未完成所需检索或详情读取。请缩小问题范围后重试';
   if (code === 'RESEARCH_TOOL_NOT_ALLOWED') return '检索执行超出允许范围，已安全终止，本次回答未保存';
   if (code === 'RESEARCH_CASE_SEARCH_REQUIRED') return 'AI 未完成类案检索，本次回答未保存，请重试';
   if (code === 'RESEARCH_SEARCH_REQUIRED') return 'AI 未完成法规召回，本次回答未保存，请重试';
@@ -202,7 +202,10 @@ export function publicResearchDegradedWarning(code: string): string {
     return '已召回候选法规，但尚未完成权威正文读取；当前仅展示候选清单，不作为正式引用依据';
   }
   if (code === 'RESEARCH_SEARCH_REQUIRED') {
-    return '法规召回结果未通过完整核验；当前仅展示系统能够安全保留的检索信息';
+    return '法规检索未成功完成；当前仅展示系统能够保留的检索信息';
   }
-  return 'AI 结论未通过法规证据核验，系统已拦截未核验内容；当前仅展示可安全核验的法规信息';
+  if (code === 'RESEARCH_REPORT_INVALID') {
+    return 'AI 搜法报告结构不完整；当前仅展示已读取的法规详情信息';
+  }
+  return 'AI 搜法未完整完成；当前仅展示已获得的法规检索信息';
 }

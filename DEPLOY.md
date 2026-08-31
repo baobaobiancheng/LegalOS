@@ -165,13 +165,13 @@ npm run baijian:verify -- law-advanced '劳动合同'
 npm run baijian:verify -- law-semantic '违法解除劳动合同如何计算赔偿金'
 npm run baijian:verify -- case '劳动合同违法解除经济补偿的中国类似案例'
 
-# 2. 嵌入式 dsh Agent：自主规划 query + 单个只读工具 + 权威来源 ID 校验
+# 2. 嵌入式 dsh Agent：自主规划 query + 受控法规检索与详情读取
 npm run dsh:model-gate
 npm run dsh:baijian-gate -- law '劳动合同解除经济补偿'
 npm run dsh:baijian-gate -- case '劳动合同违法解除经济补偿的中国类似案例'
 ```
 
-PR-B 的 AI 搜法会同时开放关键词、高级、语义、单条法规详情和批量法规详情五个受控工具。批量详情单次最多核验 10 部本轮候选法规；法规搜索命中后必须读取至少一份本轮候选正文，最终回答只能引用已读取详情的 32 位法规 ID；证据校验通过前不向客户端输出模型正文。高级与语义检索同样经过 PR-A 缓存，不新增 Redis 或环境变量。
+PR-B 的 AI 搜法会同时开放关键词、高级、语义、单条法规详情和批量法规详情五个受控工具。当前法规检索完成条件只保留两项：必须产生成功的法规检索结果；检索命中候选法规后，必须读取至少一份权威详情正文。模型正文、`sourceIds`、引文逐字匹配以及详情与候选 ID 的关联不再作为拦截条件；前端会把模型标注引文明确提示为“未做逐字核对”。高级与语义检索同样经过 PR-A 缓存，不新增 Redis 或环境变量。
 
 PR-A 部署必须执行 `20260824150000_add_legal_research_cache` migration，新增权威文档投影、精确请求快照和脱敏成本台账。当前单 API 实例使用进程内 single-flight，不依赖 Redis。同一精确请求在 TTL 内直接复用本地快照；只有显式「刷新权威数据」、缓存缺失或过期时才再调用百鉴。
 
@@ -179,7 +179,7 @@ PR1/PR2 部署还会执行 `20260820190000_add_consultation_research_trace` migr
 `consultation_runs` 增加能力快照、dsh 会话 ID 和有界来源 trace；不依赖 Redis。法务独立检索接口为
 `GET /api/legal-research/laws` 与 `GET /api/legal-research/cases`，受登录角色和应用内限流保护。
 
-dsh 在进程内只为本次运行注册 `search_laws` 或 `search_similar_cases` 之一；工具内部复用官方 MCP TypeScript SDK 与 `BaijianResultNormalizer`，模型看不到供应商凭证。每轮事件、checkpoint 和压缩结果写入 `DSH_HOME`，请确保目录持久化且仅 API 运行用户可读写。任何未观察到必需工具结果、出现额外工具、工具报错、有命中却无权威 ID 引用或最终 JSON 无效，都视为闸门失败，不得启用咨询检索 Agent。
+dsh 在进程内只为本次运行注册 `search_laws` 或 `search_similar_cases` 之一；工具内部复用官方 MCP TypeScript SDK 与 `BaijianResultNormalizer`，模型看不到供应商凭证。每轮事件、checkpoint 和压缩结果写入 `DSH_HOME`，请确保目录持久化且仅 API 运行用户可读写。法规搜法未产生成功检索结果，或者检索命中后未读取任何权威详情正文，会被运行闸门拦截；最终 JSON 结构无效会进入报告解析降级流程。
 
 迁移期间 `codex:baijian-preflight` 与 `codex:baijian-gate` 仅保留作旧实现诊断，不再是新 dsh 路径的上线条件；因此 dsh 闸门不依赖 Codex CLI、`/etc/codex/requirements.toml` 或 Codex 的模型元数据。等上述两道 dsh Agent 闸门在真实服务器都通过后，再删除旧 Codex Agent 文件与部署配置。
 

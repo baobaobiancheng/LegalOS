@@ -111,6 +111,19 @@ export type AiLawResearchSectionV1 = {
   sourceIds: string[]
 }
 
+export type AiLawResearchUnderstandingV1 = {
+  queryType: 'article_location' | 'regulation_location' | 'legal_issue'
+  analysis: string
+  retrievalPlan: string
+  knownFacts: string[]
+  legalIssues: string[]
+  factChanges: {
+    added: string[]
+    corrected: Array<{ from: string; to: string }>
+    removed: string[]
+  }
+}
+
 export type AiLawResearchSourceV1 = {
   recordId: string
   lawName: string
@@ -130,6 +143,7 @@ export type AiLawResearchReportV1 = {
   title: string
   scope: string
   summary: string
+  understanding: AiLawResearchUnderstandingV1
   sections: AiLawResearchSectionV1[]
   sources: AiLawResearchSourceV1[]
   limitations: string[]
@@ -139,6 +153,30 @@ export type AiLawResearchReportV1 = {
     verifiedSourceCount: number
     citedSourceCount: number
   }
+}
+
+export type AiLegalResearchTurn = {
+  turnId: string
+  question: string
+  operation: 'new' | 'continue' | 'correct' | 'new_issue'
+  status: string
+  reportId?: string | null
+  report?: AiLawResearchReportV1
+  degraded?: boolean
+  warning?: { code: string; message: string }
+  createdAt: string
+  completedAt?: string | null
+}
+
+export type AiLegalResearchConversation = {
+  conversationId: string
+  title: string
+  contextVersion: number
+  knownFacts: string[]
+  legalIssues: string[]
+  lastTurnId: string | null
+  activeRunId: string | null
+  turns: AiLegalResearchTurn[]
 }
 
 export type EventDto = {
