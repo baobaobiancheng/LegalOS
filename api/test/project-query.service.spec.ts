@@ -35,7 +35,7 @@ describe('ProjectQueryService 工单分组分页', () => {
       .mockResolvedValueOnce(6)
       .mockResolvedValueOnce(13)
       .mockResolvedValueOnce(5);
-    const listScope = vi.fn().mockReturnValue({ OR: [{ legalBpId: 'bp-1' }, { legalBpId: null }] });
+    const listScope = vi.fn().mockReturnValue({ OR: [{ legalBpId: 'bp-1' }, { ownerId: 'bp-1' }, { legalBpId: null }] });
     const service = new ProjectQueryService(
       { project: { findMany, count } } as any,
       { listScope } as any,
@@ -49,7 +49,7 @@ describe('ProjectQueryService 工单分组分页', () => {
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: {
         AND: [
-          { OR: [{ legalBpId: 'bp-1' }, { legalBpId: null }] },
+          { OR: [{ legalBpId: 'bp-1' }, { ownerId: 'bp-1' }, { legalBpId: null }] },
           projectGroupWhere('待处理'),
         ],
       },
@@ -118,5 +118,78 @@ describe('ProjectQueryService 工单分组分页', () => {
         已取消: 3,
       },
     });
+  });
+
+  it.each([
+    [{ page: 0, size: 20 }, 'page'],
+    [{ page: 1.5, size: 20 }, 'page'],
+    [{ page: Number.MAX_SAFE_INTEGER, size: 100 }, '分页'],
+    [{ page: 1, size: 0 }, 'size'],
+    [{ page: 1, size: 101 }, 'size'],
+  ])('拒绝非法或不安全分页 %#', async (params, message) => {
+    const service = new ProjectQueryService({ project: {} } as any, { listScope: vi.fn() } as any);
+    await expect(service.findAll(
+      { id: 'bp-1', role: 'legal_bp' },
+      params,
+    )).rejects.toThrow(message);
+  });
+
+  it('legal_bp 未认领项只返回认领摘要，ownerId 指派项仍返回正常列表字段', async () => {
+    const base = {
+      id: 'p-unassigned', kind: 'consult', title: '待认领', status: '待处理', risk: 'P1',
+      route: 'legalbp', isFailed: false, legalBpId: null, ownerId: 'biz-1', result: 'PRIVATE_RESULT',
+      requesterName: 'PRIVATE_REQUESTER', creator: { id: 'biz-1', displayName: 'PRIVATE_USER' },
+      owner: { id: 'biz-1', displayName: 'PRIVATE_USER' }, legalBp: null,
+      createdAt: new Date(), updatedAt: new Date(), extra: { secret: true },
+    };
+    const findMany = vi.fn().mockResolvedValue([
+      base,
+      { ...base, id: 'p-owned', title: '已指派', ownerId: 'bp-1', result: '正常可见' },
+    ]);
+    const count = vi.fn().mockResolvedValue(0);
+    const service = new ProjectQueryService(
+      { project: { findMany, count } } as any,
+      { listScope: vi.fn().mockReturnValue({}) } as any,
+    );
+
+    const result = await service.findAll({ id: 'bp-1', role: 'legal_bp' }, { page: 1, size: 20 });
+
+    expect(result.items[0]).toEqual({
+      id: 'p-unassigned', kind: 'consult', title: '待认领', status: '待处理', risk: 'P1',
+      route: 'legalbp', legalBpId: null, createdAt: base.createdAt, updatedAt: base.updatedAt,
+    });
+    expect(result.items[0]).not.toHaveProperty('result');
+    expect(result.items[0]).not.toHaveProperty('creator');
+    expect(result.items[1]).toMatchObject({ id: 'p-owned', ownerId: 'bp-1', result: '正常可见' });
+    expect(result.groups['待处理'].map((item) => item.id)).toEqual(['p-unassigned', 'p-owned']);
+  });
+
+  it('未认领数字分身摘要仍进入数字分身分组，与数据库分组计数一致', async () => {
+    const updatedAt = new Date('2026-09-08T00:00:00.000Z');
+    const item = {
+      id: 'p-unassigned-llm', kind: 'consult', title: 'AI处理中', status: '分析中', risk: 'P2',
+      route: 'llm', isFailed: false, legalBpId: null, ownerId: 'biz-1', result: 'PRIVATE_RESULT',
+      creator: { id: 'biz-1' }, owner: { id: 'biz-1' }, legalBp: null,
+      createdAt: updatedAt, updatedAt, extra: null,
+    };
+    const service = new ProjectQueryService(
+      {
+        project: {
+          findMany: vi.fn().mockResolvedValue([item]),
+          count: vi.fn().mockResolvedValueOnce(0).mockResolvedValueOnce(0).mockResolvedValueOnce(0).mockResolvedValueOnce(1),
+        },
+      } as any,
+      { listScope: vi.fn().mockReturnValue({}) } as any,
+    );
+
+    const result = await service.findAll(
+      { id: 'bp-1', role: 'legal_bp' },
+      { group: '数字分身处理', page: 1, size: 20 },
+    );
+
+    expect(result.groupCounts['数字分身处理']).toBe(1);
+    expect(result.groups['数字分身处理']).toEqual(result.items);
+    expect(result.items[0]).toMatchObject({ id: item.id, route: 'llm', updatedAt });
+    expect(result.items[0]).not.toHaveProperty('result');
   });
 });

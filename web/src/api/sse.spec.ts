@@ -17,6 +17,8 @@ const streamResponse = (chunks: string[], requestId = 'rid-sse') => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 describe('P2-03 SSE client', () => {
@@ -122,4 +124,54 @@ describe('P2-03 SSE client', () => {
       payload: { code: 'BAD_RESPONSE', requestId: 'rid-json' },
     })
   })
+
+  it('响应头和首个事件已到达后，停止操作仍会取消正文流', async () => {
+    const cancel = vi.fn()
+    const abort = new AbortController()
+    let firstEvent!: () => void
+    const started = new Promise<void>((resolve) => { firstEvent = resolve })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(openStream('data: {"text":"partial"}\n\n', cancel)))
+
+    const cancelled = expect(streamSse('/stream', { method: 'POST', signal: abort.signal }, firstEvent))
+      .rejects.toMatchObject({ payload: { code: 'REQUEST_ABORTED' } })
+    await started
+    abort.abort()
+    await cancelled
+    expect(cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['非法 JSON', 'data: {broken}\n\n', 'BAD_SSE_EVENT'],
+    ['事件处理器失败', 'data: {"text":"partial"}\n\n', 'SSE_CONNECTION_CLOSED'],
+  ])('%s 后取消仍未关闭的底层流', async (_name, chunk, code) => {
+    const cancel = vi.fn()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(openStream(chunk, cancel)))
+
+    await expect(streamSse('/stream', { method: 'POST' }, () => { throw new Error('fixture handler failed') }))
+      .rejects.toMatchObject({ payload: { code } })
+    expect(cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('正文长时间无新数据时取消读取，清除空闲计时器', async () => {
+    vi.useFakeTimers()
+    const cancel = vi.fn()
+    let firstEvent!: () => void
+    const started = new Promise<void>((resolve) => { firstEvent = resolve })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(openStream('data: {"text":"partial"}\n\n', cancel)))
+
+    const timedOut = expect(streamSse('/stream', { method: 'POST' }, firstEvent))
+      .rejects.toMatchObject({ payload: { code: 'ANSWER_GENERATION_TIMEOUT' } })
+    await started
+    await vi.advanceTimersByTimeAsync(120_001)
+    await timedOut
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
 })
+
+function openStream(chunk: string, cancel: () => void): Response {
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(new TextEncoder().encode(chunk)) },
+    cancel,
+  }), { headers: { 'content-type': 'text/event-stream', 'x-request-id': 'rid-open' } })
+}

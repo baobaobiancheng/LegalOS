@@ -136,7 +136,7 @@ export class LegalResearchController {
   }
 }
 
-function publicStreamError(error: unknown): { code: string; message: string; retryable: boolean } {
+export function publicStreamError(error: unknown): { code: string; message: string; retryable: boolean } {
   const response = error && typeof error === 'object' && 'getResponse' in error
     ? (error as { getResponse: () => unknown }).getResponse()
     : undefined;
@@ -145,7 +145,7 @@ function publicStreamError(error: unknown): { code: string; message: string; ret
     const detail = typeof value.error === 'string'
       ? value.error
       : typeof value.message === 'string' ? value.message : undefined;
-    if (detail && typeof value.code === 'string') {
+    if (detail && typeof value.code === 'string' && PUBLIC_STREAM_ERROR_CODES.has(value.code)) {
       return {
         code: value.code,
         message: detail,
@@ -155,6 +155,12 @@ function publicStreamError(error: unknown): { code: string; message: string; ret
       };
     }
   }
-  const message = error instanceof Error ? error.message : 'AI 搜法失败，请重试';
-  return { code: 'AI_RESEARCH_FAILED', message: message.slice(0, 300), retryable: true };
+  return { code: 'AI_RESEARCH_FAILED', message: 'AI 搜法失败，请稍后重试', retryable: true };
 }
+
+const PUBLIC_STREAM_ERROR_CODES = new Set([
+  'AI_RESEARCH_CONTEXT_CONFLICT',
+  'AI_RESEARCH_VALIDATION_FAILED',
+  'AI_RESEARCH_UNAVAILABLE',
+  'AI_EXECUTION_BUSY',
+]);

@@ -39,6 +39,7 @@ import {
   crmReviewDeliveryOutboxDedupKey,
   OUTBOX_EVENT_CRM_REVIEW_RESULT_DELIVER,
 } from './application/crm-delivery';
+import { matchActiveLegalAssignee, requireActiveLegalAssignee } from './domain/legal-assignee';
 
 // 用户选择器，避免暴露密码哈希
 const userSelect = { id: true, username: true, displayName: true, role: true };
@@ -120,7 +121,7 @@ export class ProjectService {
     let legalBpId: string | null = null;
     if (route === 'legalbp') {
       const effectiveDomain = skillGroup ?? domain ?? null;
-      legalBpId = await this.matchLegalBp(effectiveDomain);
+      legalBpId = await matchActiveLegalAssignee(this.prisma, effectiveDomain);
     }
 
     // 2. 事件文案（事务内写入）
@@ -221,14 +222,6 @@ export class ProjectService {
       }
     }
 
-    // 目标 BP 角色校验（lead/admin 转派路径；工程评审决策 #3）
-    if (dto.legalBpId) {
-      const bp = await this.prisma.user.findUnique({ where: { id: dto.legalBpId } });
-      if (!bp || (bp.role !== 'legal_bp' && bp.role !== 'legal_lead')) {
-        throw new ForbiddenException('目标用户不是法务 BP');
-      }
-    }
-
     // P2-01 状态机：非法状态迁移(PATCH 直接赋值)返回 409,不静默覆盖
     if (dto.status && dto.status !== project.status && !this.stateMachine.canTransition(project.status, dto.status)) {
       throw new ConflictException(`非法状态迁移: ${project.status} → ${dto.status}`);
@@ -286,6 +279,8 @@ export class ProjectService {
     const { result: updated, previousLegalBpId } = await this.prisma.$transaction(async (tx) => {
       const before = await this.lockProjectForAudit(tx, id, project);
       this.accessPolicy.assertCan(actor, ProjectAction.Update, before);
+      if (dto.legalBpId) await requireActiveLegalAssignee(tx, dto.legalBpId);
+      if (dto.ownerId) await requireActiveLegalAssignee(tx, dto.ownerId);
       if (dto.status && dto.status !== before.status && !this.stateMachine.canTransition(before.status, dto.status)) {
         throw new ConflictException(`非法状态迁移: ${before.status} → ${dto.status}`);
       }
@@ -392,14 +387,10 @@ export class ProjectService {
     if (!project) throw new NotFoundException('工单不存在');
     this.accessPolicy.assertCan(actor, ProjectAction.Transfer, project);
 
-    const bp = await this.prisma.user.findUnique({ where: { id: legalBpId } });
-    if (!bp || (bp.role !== 'legal_bp' && bp.role !== 'legal_lead')) {
-      throw new ForbiddenException('目标用户不是法务 BP');
-    }
-
     const { result: updated, before } = await this.prisma.$transaction(async (tx) => {
       const before = await this.lockProjectForAudit(tx, id, project);
       this.accessPolicy.assertCan(actor, ProjectAction.Transfer, before);
+      const bp = await requireActiveLegalAssignee(tx, legalBpId);
       const result = await tx.project.update({
         where: { id },
         data: { legalBpId, ownerId: legalBpId },
@@ -429,7 +420,7 @@ export class ProjectService {
           retentionClass: 'business',
         }, tx);
       }
-      return { result, before };
+      return { result, before, bp };
     });
 
     // 钉钉：新 BP 加群改由 Outbox Worker 执行，HTTP 请求只提交本地事件。
@@ -438,7 +429,7 @@ export class ProjectService {
       if (before.dingtalkChatId) {
         await this.dingtalk.sendNotification(
           before.dingtalkChatId,
-          `工单已转派给 ${bp.displayName}`,
+          `工单已转派给 ${updated.legalBp?.displayName ?? legalBpId}`,
         );
       }
     } catch (e) {
@@ -873,24 +864,6 @@ export class ProjectService {
   // ═══════════════════════════════════════════
   // 钉钉联动
   // ═══════════════════════════════════════════
-
-  /** 领域 → BP 匹配（工程评审决策 #16）：映射表取第一个已绑定 userid 的 BP；失败兜底 legal_lead */
-  private async matchLegalBp(domain: string | null): Promise<string | null> {
-    if (domain) {
-      const maps = await this.prisma.bpDomainMap.findMany({
-        where: { domain },
-        include: { user: { select: { id: true, dingtalkUserId: true } } },
-      });
-      const bound = maps.find((m) => m.user.dingtalkUserId);
-      if (bound) return bound.user.id;
-    }
-    const lead = await this.prisma.user.findFirst({
-      where: { role: 'legal_lead', dingtalkUserId: { not: null } },
-      orderBy: { createdAt: 'asc' },
-      select: { id: true },
-    });
-    return lead?.id ?? null;
-  }
 
   /**
    * 转派/认领检测（transfer/update/reply 共用）：新 BP 进群，旧 BP 留群。

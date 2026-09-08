@@ -27,9 +27,9 @@ export class RealCasAdapter implements CasAdapter {
   private async casFetch(url: string, init?: RequestInit): Promise<Response> {
     try {
       return await fetch(url, { signal: AbortSignal.timeout(this.timeoutMs), ...init });
-    } catch (e) {
+    } catch {
       // 不可达/超时/网络错误 → 503。⚠️ 不重试：ticket 一次性,重试可能消费后返回无效
-      throw new CasAuthError(CasAuthErrorType.CAS_UNAVAILABLE, `CAS 不可达：${(e as Error)?.message ?? e}`);
+      throw new CasAuthError(CasAuthErrorType.CAS_UNAVAILABLE, 'CAS 不可达');
     }
   }
 
@@ -50,7 +50,7 @@ export class RealCasAdapter implements CasAdapter {
     }
 
     const url = `${this.host}/validate?ticket=${encodeURIComponent(ticket)}`;
-    this.logger.debug(`CAS validate: ${url.replace(ticket, ticket.slice(0, 8) + '…')}`); // 不打明文 ticket
+    this.logger.debug(`CAS validate: ${this.host}/validate（ticket 已提供）`);
 
     const res = await this.casFetch(url);
     if (!res.ok) {
@@ -78,7 +78,7 @@ export class RealCasAdapter implements CasAdapter {
     }
 
     const loginUrl = `${this.host}/api/login`;
-    this.logger.debug(`CAS 方式一登录: ${loginUrl}（username=${username} 不打密码）`);
+    this.logger.debug(`CAS 方式一登录: ${loginUrl}（凭证已提供）`);
 
     // 实测(2026-08-11)：/api/login 密码需 MD5 摘要（文档 12 同款，e10adc... = MD5("123456")）
     const md5Password = crypto.createHash('md5').update(password).digest('hex');

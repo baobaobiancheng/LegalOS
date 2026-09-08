@@ -55,16 +55,19 @@ export type ProjectListItem = {
   status: ProjectStatus
   risk: RiskLevel
   route: string
-  isFailed: boolean
-  creator: UserBrief
-  owner: UserBrief
+  isFailed?: boolean
+  creator?: UserBrief
+  owner?: UserBrief
   legalBp?: UserBrief
   requesterName?: string
   createdAt: string
   updatedAt: string
 }
 
-export type ProjectDetail = ProjectListItem & {
+export type ProjectDetail = Omit<ProjectListItem, 'isFailed' | 'creator' | 'owner'> & {
+  isFailed: boolean
+  creator: UserBrief
+  owner: UserBrief
   skillId?: string
   skillName?: string
   model?: string

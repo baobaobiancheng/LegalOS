@@ -16,15 +16,12 @@ if (!isMainThread && port) {
     .catch((error: unknown) => {
       if (error instanceof UnprocessableEntityException) {
         const response = error.getResponse();
-        const validationError = typeof response === 'object' && response !== null
+        const message = typeof response === 'object' && response !== null
           ? String((response as Record<string, unknown>).error ?? '文件校验失败')
           : '文件校验失败';
-        port.postMessage({ ok: false, validationError });
+        port.postMessage({ ok: false, errorType: 'validation', message });
         return;
       }
-      port.postMessage({
-        ok: false,
-        internalError: error instanceof Error ? error.message : '合同文件解析失败',
-      });
+      port.postMessage({ ok: false, errorType: 'internal' });
     });
 }

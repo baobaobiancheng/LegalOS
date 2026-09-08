@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
-import { Writable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createHash } from 'node:crypto';
 import {
@@ -98,6 +97,43 @@ describe('CRM A1 multipart 流式解析', () => {
       status: 400,
       response: expect.objectContaining({ code: 'INVALID_PARAM' }),
     });
+  });
+
+  it('慢请求中写盘提前失败不产生 unhandledRejection，并清理 staging', async () => {
+    const diskError = Object.assign(new Error('simulated disk full'), { code: 'ENOSPC' });
+    class FailingCrmMultipartService extends CrmMultipartService {
+      protected override openStagingWriteStream(): Writable {
+        return new Writable({
+          write(_chunk, _encoding, callback) { callback(diskError); },
+        });
+      }
+    }
+    service = new FailingCrmMultipartService();
+    const body = multipart('boundary-slow', '{}', [
+      { name: 'files', filename: 'main.txt', content: 'contract body' },
+    ]);
+    const splitAt = body.indexOf(Buffer.from('contract body')) + 2;
+    const stream = Readable.from((async function* () {
+      yield body.subarray(0, splitAt);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      yield body.subarray(splitAt);
+    })()) as any;
+    stream.headers = { 'content-type': 'multipart/form-data; boundary=boundary-slow' };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown) => unhandled.push(error);
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      await expect(service.parse(stream)).rejects.toMatchObject({
+        status: 500,
+        response: expect.objectContaining({ code: 'INTERNAL_ERROR' }),
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      expect(readdirSync(join(root, '.staging'))).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 
   function request(body: Buffer, boundary: string): any {

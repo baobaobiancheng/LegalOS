@@ -10,13 +10,13 @@ const prisma = new PrismaClient();
 const seedUsers = [
   {
     username: 'admin',
-    password: process.env.SEED_ADMIN_PASSWORD || 'admin123',
+    password: process.env.SEED_ADMIN_PASSWORD,
     role: Role.admin,
     displayName: '赵俊芳', // 2026-08-05 钉钉拉群：真实姓名（姓名匹配钉钉通讯录前提）
   },
   {
     username: 'business',
-    password: process.env.SEED_BUSINESS_PASSWORD || 'biz123',
+    password: process.env.SEED_BUSINESS_PASSWORD,
     role: Role.business,
     displayName: '田强', // 2026-08-05 钉钉拉群：真实姓名（姓名匹配钉钉通讯录前提）
   },
@@ -316,18 +316,26 @@ const seedSkills = [
 
 async function main() {
   for (const item of seedUsers) {
-    const passwordHash = await bcrypt.hash(item.password, 10);
-    await prisma.user.upsert({
-      where: { username: item.username },
-      update: { passwordHash, role: item.role, displayName: item.displayName },
-      create: {
+    const existing = await prisma.user.findUnique({ where: { username: item.username } });
+    if (existing) {
+      // Seed 只负责首次引导，绝不能重置已存在账号的密码、角色或资料。
+      console.log(`seed user preserved: ${item.username}`);
+      continue;
+    }
+    if (!item.password) {
+      console.warn(`seed user skipped: ${item.username}（未配置显式初始密码）`);
+      continue;
+    }
+    assertStrongSeedPassword(item.password, item.username);
+    await prisma.user.create({
+      data: {
         username: item.username,
-        passwordHash,
+        passwordHash: await bcrypt.hash(item.password, 10),
         role: item.role,
         displayName: item.displayName,
       },
     });
-    console.log(`seeded: ${item.username} (${item.role})`);
+    console.log(`seed user created: ${item.username} (${item.role})`);
   }
 
   // 技能库种子（creatorId 绑定 admin，视为已审核直接 public）
@@ -380,6 +388,17 @@ async function main() {
       create: t as any,
     });
     console.log(`seeded contract template: ${t.slug}`);
+  }
+}
+
+function assertStrongSeedPassword(password: string, username: string): void {
+  const strong = password.length >= 12
+    && /[a-z]/.test(password)
+    && /[A-Z]/.test(password)
+    && /\d/.test(password)
+    && /[^A-Za-z0-9]/.test(password);
+  if (!strong) {
+    throw new Error(`SEED_${username.toUpperCase()}_PASSWORD 必须至少 12 位并包含大小写字母、数字和符号`);
   }
 }
 

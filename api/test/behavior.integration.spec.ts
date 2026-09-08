@@ -205,7 +205,7 @@ describe.skipIf(!HAS_DB)('行为级集成（MySQL）', () => {
     const contactId = `DU-${uniq()}`;
     const svc = new MembersService(prisma as any, {
       syncContacts: async () => ({ contacts: [{ userId: contactId, name: uniqueName, mobile: '1' }], complete: true, departmentCount: 1, pageCount: 1, warnings: [] }),
-    } as any);
+    } as any, { get: () => '' } as any);
     const u = await mkUser('business', uniqueName);
     const result = await svc.syncContacts();
     expect(result.autoBound).toBe(1);
@@ -214,5 +214,49 @@ describe.skipIf(!HAS_DB)('行为级集成（MySQL）', () => {
     // 批次已 complete
     const batch = await prisma.dingTalkSyncBatch.findFirst({ orderBy: { createdAt: 'desc' } });
     expect(batch.status).toBe('complete');
+  });
+
+  it('P1-08：两次同步交错时新批次获胜，旧批次不覆盖新快照', async () => {
+    const suffix = uniq();
+    const oldContactId = `DU-old-${suffix}`;
+    const newContactId = `DU-new-${suffix}`;
+    let releaseOld!: () => void;
+    const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+    let oldFetchStarted!: () => void;
+    const oldStarted = new Promise<void>((resolve) => { oldFetchStarted = resolve; });
+    const config = { get: () => '' } as any;
+    const olderSync = new MembersService(prisma as any, {
+      syncContacts: async () => {
+        oldFetchStarted();
+        await oldGate;
+        return {
+          contacts: [{ userId: oldContactId, name: `旧快照-${suffix}` }],
+          complete: true, departmentCount: 1, pageCount: 1, warnings: [],
+        };
+      },
+    } as any, config);
+    const newerSync = new MembersService(prisma as any, {
+      syncContacts: async () => ({
+        contacts: [{ userId: newContactId, name: `新快照-${suffix}` }],
+        complete: true, departmentCount: 1, pageCount: 1, warnings: [],
+      }),
+    } as any, config);
+
+    const oldResultPromise = olderSync.syncContacts();
+    await oldStarted;
+    // startedAt 是毫秒精度，确保两批次时序可比较。
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const newResult = await newerSync.syncContacts();
+    releaseOld();
+    const oldResult = await oldResultPromise;
+
+    expect(newResult.complete).toBe(true);
+    expect(oldResult).toMatchObject({ complete: false, error: '同步结果已被更新批次取代' });
+    expect(await prisma.dingTalkContact.findUnique({ where: { userId: newContactId } }))
+      .toMatchObject({ isActive: true, name: `新快照-${suffix}` });
+    expect(await prisma.dingTalkContact.findUnique({ where: { userId: oldContactId } })).toBeNull();
+    const oldBatch = await prisma.dingTalkSyncBatch.findUnique({ where: { id: (oldResult as any).batchId } });
+    expect(oldBatch).toMatchObject({ status: 'failed', errorMessage: '同步结果已被更新批次取代' });
+    expect(await prisma.dingTalkContactStaging.count({ where: { batchId: (oldResult as any).batchId } })).toBe(0);
   });
 });

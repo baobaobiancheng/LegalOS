@@ -49,7 +49,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
       if (this.audit) {
         await this.recordFailure(request, statusCode, String(code)).catch((auditError) => {
-          this.logger.error(`requestId=${requestId} 审计失败事件写入失败：${auditError}`);
+          this.logger.error(`requestId=${toLogToken(requestId)} auditWrite=${safeExceptionDiagnostics(auditError).join(',')}`);
         });
       }
 
@@ -74,10 +74,15 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     if (this.audit) {
       await this.recordFailure(request, HttpStatus.INTERNAL_SERVER_ERROR, 'INTERNAL_ERROR').catch((auditError) => {
-        this.logger.error(`requestId=${requestId} 审计失败事件写入失败：${auditError}`);
+        this.logger.error(`requestId=${toLogToken(requestId)} auditWrite=${safeExceptionDiagnostics(auditError).join(',')}`);
       });
     }
-    this.logger.error(`requestId=${requestId} ${exception instanceof Error ? exception.message : exception}`);
+    this.logger.error([
+      `requestId=${toLogToken(requestId)}`,
+      'statusCode=500',
+      'code=INTERNAL_ERROR',
+      ...safeExceptionDiagnostics(exception),
+    ].join(' '));
     return response.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
       error: '服务器内部错误',
       code: 'INTERNAL_ERROR',
@@ -134,6 +139,16 @@ export class HttpExceptionFilter implements ExceptionFilter {
         : requestedAction?.startsWith('member.') ? 'admin' : 'business',
     });
   }
+}
+
+function safeExceptionDiagnostics(exception: unknown): string[] {
+  if (typeof exception !== 'object' || exception === null) return ['exceptionType=unknown'];
+  const value = exception as Record<string, unknown>;
+  return [
+    ['exceptionName', value.name],
+    ['exceptionCode', value.code],
+    ['clientVersion', value.clientVersion],
+  ].flatMap(([key, item]) => item === undefined ? [] : [`${key}=${toLogToken(item)}`]);
 }
 
 function classifySensitiveAction(method: string, rawPath: string): string | null {

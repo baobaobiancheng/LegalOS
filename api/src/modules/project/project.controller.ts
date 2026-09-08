@@ -25,7 +25,7 @@ import {
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { Role } from '@prisma/client';
 import { ProjectActor } from './domain/project-access.types';
-import { isBusinessStatusGroupKey, isProjectGroupKey, isProjectKind } from './queries/project-query.service';
+import { isBusinessStatusGroupKey, isProjectGroupKey, isProjectKind, isProjectStatus } from './queries/project-query.service';
 import { auditRequestContext } from '../../common/audit/audit-request';
 import { RecordDownloadDto } from './dto/record-download.dto';
 
@@ -57,8 +57,10 @@ export class ProjectController {
     const selectedKind = kind && isProjectKind(kind) ? kind : undefined;
     if (kind && !selectedKind) throw new BadRequestException('未知工单类型');
     const actor: ProjectActor = { id: userId, role };
+    const selectedStatus = status && isProjectStatus(status) ? status : undefined;
+    if (status && !selectedStatus) throw new BadRequestException('未知工单状态');
     return this.projectService.findAll(actor, {
-      status: status as any,
+      status: selectedStatus,
       kind: selectedKind,
       group: selectedGroup,
       page: page ? Number(page) : 1,
@@ -83,10 +85,12 @@ export class ProjectController {
     if (group && !selectedGroup) throw new BadRequestException('未知记录分组');
     const selectedKind = kind && isProjectKind(kind) ? kind : undefined;
     if (kind && !selectedKind) throw new BadRequestException('未知记录类型');
+    const selectedStatus = status && isProjectStatus(status) ? status : undefined;
+    if (status && !selectedStatus) throw new BadRequestException('未知工单状态');
     const actor: ProjectActor = { id: userId, role };
     return this.projectService.findAll(actor, {
       mine: true,
-      status: status as any,
+      status: selectedStatus,
       statusGroup: selectedGroup,
       kind: selectedKind,
       query,

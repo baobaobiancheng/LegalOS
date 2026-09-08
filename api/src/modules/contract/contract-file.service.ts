@@ -18,6 +18,7 @@ import {
 } from 'fs';
 import { extname, join } from 'path';
 import { randomUUID } from 'crypto';
+import { pipeline } from 'node:stream/promises';
 import { PrismaService } from '../../prisma/prisma.service';
 import { formatEventTime } from '../../common/utils/event-time';
 import { ProjectAccessPolicy } from '../project/domain/project-access.policy';
@@ -26,6 +27,7 @@ import { ContractDocumentWriter } from './application/contract-document.writer';
 import { AuditService } from '../../common/audit/audit.service';
 import { AuditRequestContext } from '../../common/audit/audit.types';
 import { ContractFileProcessor } from './application/contract-file.processor';
+import { safeErrorTag } from '../../common/utils/safe-error';
 
 /**
  * 合同文件服务（从 ContractService 抽出，2026-08-20 上帝类拆分）。
@@ -58,37 +60,37 @@ export class ContractFileService {
     actor: ProjectActor,
   ) {
     if (!file) throw new BadRequestException('未收到文件');
+    try {
+      return await this.persistUpload(projectId, file, kind, actor);
+    } finally {
+      // 覆盖查库、鉴权、chmod、解析、移动等所有失败点；成功移动后原路径不存在。
+      this.tryCleanup(file.path);
+    }
+  }
+
+  private async persistUpload(
+    projectId: string,
+    file: Express.Multer.File,
+    kind: string,
+    actor: ProjectActor,
+  ) {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) {
-      this.tryCleanup(file.path);
       throw new NotFoundException('工单不存在');
     }
-    try {
-      this.accessPolicy.assertCan(actor, ProjectAction.ManageFile, project);
-    } catch (e) {
-      this.tryCleanup(file.path);
-      throw e;
-    }
+    this.accessPolicy.assertCan(actor, ProjectAction.ManageFile, project);
 
     const ext = extname(file.originalname).toLowerCase();
     if (file.size > 20 * 1024 * 1024) {
-      this.tryCleanup(file.path);
       throw new BadRequestException('文件超过 20MB 限制');
     }
     chmodSync(file.path, 0o600);
     if (kind !== 'revised' && kind !== 'final') {
-      this.tryCleanup(file.path);
       throw new BadRequestException('kind 仅支持 revised / final');
     }
 
     // 四种格式都必须在 staging 阶段解析出非空正文；失败不进入业务目录/数据库。
-    let extractedText: string;
-    try {
-      extractedText = (await this.fileProcessor.validateAndExtract(file.path, file.originalname)).text;
-    } catch (e) {
-      this.tryCleanup(file.path);
-      throw e;
-    }
+    const extractedText = (await this.fileProcessor.validateAndExtract(file.path, file.originalname)).text;
 
     const storedName = file.filename || `${randomUUID()}${ext}`;
     const projectDir = join(this.storageDir, projectId);
@@ -100,8 +102,8 @@ export class ContractFileService {
       chmodSync(projectDir, 0o700);
       renameSync(file.path, finalPath);
     } catch (e) {
-      this.tryCleanup(file.path);
-      this.logger.error(`附件移动到正式目录失败：${e}`);
+      this.tryCleanup(finalPath);
+      this.logger.error(`附件移动到正式目录失败：${safeErrorTag(e)}`);
       throw new InternalServerErrorException('附件保存失败');
     }
 
@@ -134,15 +136,17 @@ export class ContractFileService {
             label: kind === 'revised' ? '修订版文本' : '终稿文本',
           },
         });
+        await tx.projectEvent.create({
+          data: { projectId, text: formatEventTime() + ` · 上传了合同文件：${file.originalname}` },
+        });
         return created;
       });
     } catch (e) {
       this.tryCleanup(finalPath);
-      this.logger.error(`附件记录落库失败：${e}`);
+      this.logger.error(`附件记录落库失败：${safeErrorTag(e)}`);
       throw new InternalServerErrorException('附件保存失败');
     }
 
-    await this.addEvent(projectId, formatEventTime() + ` · 上传了合同文件：${file.originalname}`);
     return {
       fileId: record.id,
       originalName: record.originalName,
@@ -205,15 +209,18 @@ export class ContractFileService {
       `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(file.originalName)}`,
     );
     res.setHeader('Content-Length', stat.size);
-    createReadStream(targetPath).pipe(res);
+    try {
+      await pipeline(createReadStream(targetPath), res);
+    } catch (error) {
+      // 客户端断开时 pipeline 会受控关闭文件描述符；响应已开始后不能再写 JSON 错误。
+      if (res.destroyed || res.writableEnded || res.headersSent) return;
+      this.logger.error(`附件读取失败：${safeErrorTag(error)}`);
+      throw new InternalServerErrorException('附件读取失败');
+    }
   }
 
   private tryCleanup(path?: string) {
     if (path) { try { unlinkSync(path); } catch {} }
-  }
-
-  private async addEvent(projectId: string, text: string) {
-    return this.prisma.projectEvent.create({ data: { projectId, text } });
   }
 
 }

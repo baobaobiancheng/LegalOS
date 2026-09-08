@@ -18,6 +18,7 @@ export function sendSSE(
   stream: SseStream,
   donePayload: Record<string, unknown> = {},
   onDisconnect?: () => void,
+  completion?: Promise<unknown>,
 ): void {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -46,7 +47,7 @@ export function sendSSE(
     }
   });
 
-  stream.on('close', (code) => {
+  stream.on('close', async (code) => {
     // 客户端已断开（刷新/切页）时无需推送，落库由 service 的 close handler 完成
     if (res.destroyed || res.writableEnded) return;
     // 刷新 decoder 剩余缓冲
@@ -60,6 +61,18 @@ export function sendSSE(
     }
     if (code === 0) {
       ended = true;
+      if (completion) {
+        try {
+          await completion;
+        } catch {
+          if (!res.destroyed && !res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ error: true, message: '结果保存失败，请重试' })}\n\n`);
+            res.end();
+          }
+          return;
+        }
+        if (res.destroyed || res.writableEnded) return;
+      }
       // finalText 是 item 感知组装后的权威快照：前端必须赋值替换，不能继续追加
       res.write(`data: ${JSON.stringify({
         done: true,

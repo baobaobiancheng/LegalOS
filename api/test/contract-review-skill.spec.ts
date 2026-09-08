@@ -26,7 +26,7 @@ describe('ContractService.reviewContract 技能注入', () => {
 
   beforeEach(() => {
     prisma = {
-      project: { findUnique: vi.fn(), update: vi.fn() },
+      project: { findUnique: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       skill: { findFirst: vi.fn() },
       projectMessage: { findFirst: vi.fn(), create: vi.fn() },
       projectEvent: { create: vi.fn() },
@@ -48,16 +48,21 @@ describe('ContractService.reviewContract 技能注入', () => {
       { execute: vi.fn() } as any,
     );
 
-    prisma.project.findUnique.mockResolvedValue({
+    const project = {
       id: 'c-1',
       kind: 'contract',
       status: '待复核',
+      route: 'llm',
+      result: null,
+      reviewStatus: null,
+      updatedAt: new Date('2026-09-08T00:00:00.000Z'),
       title: '合同草稿·测试',
       creatorId: 'u-biz',
       ownerId: 'u-bp',
       legalBpId: 'u-bp', // 已指派给 u-bp → 统一 Policy ReviewContract 通过
       dingtalkChatId: null,
-    });
+    };
+    prisma.project.findUnique.mockResolvedValue(project);
   });
 
   it('有效技能：注入实时 prompt 到审查 prompt + 持久化 skillId/skillName + ReviewRun 指向源文档', async () => {
@@ -70,10 +75,12 @@ describe('ContractService.reviewContract 技能注入', () => {
     const result = await service.reviewContract('c-1', { id: 'u-bp', role: 'legal_bp' }, 'sk-review');
 
     // 持久化（OV#2）
-    expect(prisma.project.update).toHaveBeenCalledWith({
-      where: { id: 'c-1' },
-      data: { skillId: 'sk-review', skillName: '合同风险审查' },
-    });
+    expect(prisma.project.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        id: 'c-1', status: '待复核', route: 'llm', reviewStatus: null,
+      }),
+      data: expect.objectContaining({ skillId: 'sk-review', skillName: '合同风险审查' }),
+    }));
 
     // P1-05：先建 ReviewRun，sourceDocumentId 指向源文档
     expect(prisma.contractReviewRun.create).toHaveBeenCalledWith(
@@ -105,7 +112,7 @@ describe('ContractService.reviewContract 技能注入', () => {
 
     await service.reviewContract('c-1', { id: 'u-bp', role: 'legal_bp' }, 'junk-id');
 
-    expect(prisma.project.update).not.toHaveBeenCalled();
+    expect(prisma.project.updateMany).not.toHaveBeenCalled();
     const prompt = dsh.executeStream.mock.calls[0][0];
     expect(prompt).not.toContain('## 技能指令');
     expect(prompt).toContain('总体评价'); // 基础审查 prompt 正常
@@ -115,8 +122,44 @@ describe('ContractService.reviewContract 技能注入', () => {
     await service.reviewContract('c-1', { id: 'u-bp', role: 'legal_bp' });
 
     expect(prisma.skill.findFirst).not.toHaveBeenCalled();
-    expect(prisma.project.update).not.toHaveBeenCalled();
+    expect(prisma.project.updateMany).not.toHaveBeenCalled();
     const prompt = dsh.executeStream.mock.calls[0][0];
     expect(prompt).not.toContain('## 技能指令');
+  });
+
+  it.each([
+    ['人工回复', { status: '已回传', reviewStatus: 'review_completed', result: '人工结论' }],
+    ['人工取消', { status: '已取消' }],
+  ])('技能查询期间发生%s时 CAS 失败，不建 Run、不启动 DSH', async (_label, humanChange) => {
+    const projectState: any = await prisma.project.findUnique();
+    prisma.project.findUnique.mockImplementation(async () => ({ ...projectState }));
+    prisma.project.updateMany.mockImplementation(async ({ where, data }: any) => {
+      const matches = where.updatedAt.getTime() === projectState.updatedAt.getTime()
+        && ['route', 'status', 'result', 'reviewStatus', 'ownerId', 'legalBpId']
+          .every((key) => where[key] === projectState[key]);
+      if (!matches) return { count: 0 };
+      Object.assign(projectState, data);
+      return { count: 1 };
+    });
+    let skillLookupStarted!: () => void;
+    const started = new Promise<void>((resolve) => { skillLookupStarted = resolve; });
+    let releaseSkill!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseSkill = resolve; });
+    prisma.skill.findFirst.mockImplementation(async () => {
+      skillLookupStarted();
+      await gate;
+      return { id: 'sk-review', name: '合同风险审查', prompt: '逐条识别风险' };
+    });
+
+    const pending = service.reviewContract('c-1', { id: 'u-bp', role: 'legal_bp' }, 'sk-review');
+    await started;
+    Object.assign(projectState, humanChange, {
+      updatedAt: new Date('2026-09-08T00:00:00.000Z'),
+    });
+    releaseSkill();
+
+    await expect(pending).rejects.toThrow('工单状态已变化');
+    expect(prisma.contractReviewRun.create).not.toHaveBeenCalled();
+    expect(dsh.executeStream).not.toHaveBeenCalled();
   });
 });

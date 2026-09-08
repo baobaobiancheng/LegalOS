@@ -85,8 +85,8 @@ const kindLabel = (kind: ProjectListItem['kind']) => ({
   draft: '文书',
 })[kind]
 
-const requester = (project: ProjectListItem) => project.requesterName || project.creator.displayName
-const assignee = (project: ProjectListItem) => project.legalBp?.displayName || project.owner.displayName
+const requester = (project: ProjectListItem) => project.requesterName || project.creator?.displayName || '信息已隐藏'
+const assignee = (project: ProjectListItem) => project.legalBp?.displayName || project.owner?.displayName || '未认领'
 
 const formatTime = (value: string) => {
   const time = new Date(value).getTime()

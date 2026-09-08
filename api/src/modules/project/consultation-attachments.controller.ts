@@ -17,7 +17,10 @@ export class ConsultationAttachmentsController {
   @Post()
   @Roles(Role.business, Role.legal_bp, Role.legal_lead, Role.admin)
   @UseInterceptors(
-    FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } }),
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 0, parts: 2, fieldNameSize: 32 },
+    }),
   )
   async upload(@UploadedFile() file: Express.Multer.File, @CurrentUser('id') userId: string) {
     if (!file) throw new BadRequestException('缺少文件字段（file）');

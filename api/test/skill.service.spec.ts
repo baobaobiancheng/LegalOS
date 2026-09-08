@@ -47,7 +47,7 @@ describe('SkillService', () => {
         findMany: vi.fn(),
         create: vi.fn(),
         update: vi.fn(),
-        updateMany: vi.fn(),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       skillReviewLog: { create: vi.fn().mockResolvedValue({ id: 'log-1' }), upsert: vi.fn() },
       // P1-09：交互式事务，用 prisma 自身充当 tx
@@ -226,6 +226,19 @@ describe('SkillService', () => {
       prisma.skill.update.mockResolvedValue(skillRow({ name: '新名' }));
       await expect(service.update('sk-1', { name: '新名' }, 'u-lead', Role.legal_lead)).resolves.toBeDefined();
     });
+
+    it('只更新传入字段，且并发发布/撤回导致 CAS 失败时返回 409', async () => {
+      const updatedAt = new Date('2026-09-08T00:00:00.000Z');
+      prisma.skill.findUnique.mockResolvedValue(skillRow({ visibility: 'private', updatedAt }));
+      prisma.skill.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.update('sk-1', { description: '只改说明' }, 'u-bp', Role.legal_bp))
+        .rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.skill.updateMany).toHaveBeenCalledWith({
+        where: { id: 'sk-1', visibility: 'private', updatedAt, creatorId: 'u-bp' },
+        data: { description: '只改说明' },
+      });
+    });
   });
 
   // ── archive / restore ──
@@ -307,6 +320,7 @@ describe('SkillService', () => {
         { visibility: 'public' },
         { creatorId: 'u-bp', visibility: 'private' },
       ]);
+      expect(prisma.skill.findMany.mock.calls[0][0].where).not.toHaveProperty('visibility');
       const ids = items.map((i: any) => i.id);
       expect(ids).toContain('pub-1');
       expect(ids).toContain('my-1');

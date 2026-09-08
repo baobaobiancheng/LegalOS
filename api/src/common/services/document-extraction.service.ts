@@ -1,6 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { Worker } from 'node:worker_threads';
-import * as mammoth from 'mammoth';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { ContractFileProcessor } from '../../modules/contract/application/contract-file.processor';
 
 const LEGACY_DOC_SIGNATURE = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
 const LEGACY_DOC_HEADER_BYTES = 512;
@@ -25,7 +28,7 @@ const WordExtractor = require('word-extractor');
 /**
  * 咨询附件正文提取（2026-08-12 review：DOCX 正文从未交给模型）：
  * 支持 .docx / .doc / .txt / .md；其余格式前端不展示、后端不接收。
- * 只存提取后的正文，不落盘原文件；批量抽取有 zip-bomb 上限由调用方按 size 拦截。
+ * 只存提取后的正文，DOCX 临时落盘并在 finally 删除；解压 entry/总量上限复用合同处理器。
  */
 export interface ExtractionResult {
   text: string;
@@ -34,25 +37,30 @@ export interface ExtractionResult {
 
 @Injectable()
 export class DocumentExtractionService {
-  private readonly logger = new Logger(DocumentExtractionService.name);
+  constructor(private readonly contractFileProcessor: ContractFileProcessor) {}
 
   /** 提取正文：.docx 用 mammoth，旧版 .doc 用 OLE 解析器；txt/md 按 UTF-8 读文本。 */
   async extract(buffer: Buffer, fileName: string): Promise<ExtractionResult> {
     const lower = fileName.toLowerCase();
     if (lower.endsWith('.docx')) return this.extractDocx(buffer);
     if (lower.endsWith('.doc')) return this.extractDoc(buffer);
-    return { text: this.normalizeText(buffer.toString('utf8')) };
+    return { text: this.normalizeText(new TextDecoder('utf-8', { fatal: true }).decode(buffer)) };
   }
 
   /** 普通 DOCX：extractRawText 覆盖正文+表格；批注/修订痕迹/嵌入图片不提取 */
   async extractDocx(buffer: Buffer): Promise<ExtractionResult> {
-    const result = await mammoth.extractRawText({ buffer });
-    const text = this.normalizeText(result.value);
-    const warning =
-      result.messages && result.messages.length > 0
-        ? '已提取正文，批注、修订痕迹及图片可能未包含'
-        : undefined;
-    return { text, warning };
+    const tempDir = await mkdtemp(join(tmpdir(), 'legalos-consult-docx-'));
+    const filePath = join(tempDir, 'attachment.docx');
+    try {
+      await writeFile(filePath, buffer, { mode: 0o600, flag: 'wx' });
+      const result = await this.contractFileProcessor.validateAndExtract(filePath, 'attachment.docx');
+      return {
+        text: this.normalizeText(result.text),
+        warning: '已提取正文，批注、修订痕迹及图片可能未包含',
+      };
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   }
 
   /** 旧版二进制 Word（OLE .doc）：提取正文文本，不包含图片、批注和修订记录。 */

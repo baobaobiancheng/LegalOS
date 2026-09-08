@@ -47,7 +47,11 @@ const reportSseError = (error: RequestError): RequestError => {
 /** 流式空闲超时（2026-08-11）：长静默期（推理模型思考）不超时，只在「很久没有任何数据」时中断。 */
 const SSE_IDLE_TIMEOUT_MS = 120_000
 
-const consumeSseResponse = async <T extends SseEvent>(response: Response, onEvent: EventHandler<T>): Promise<void> => {
+const consumeSseResponse = async <T extends SseEvent>(
+  response: Response,
+  onEvent: EventHandler<T>,
+  signal?: AbortSignal,
+): Promise<void> => {
   const requestId = readRequestId(response)
   const contentType = response.headers.get('content-type') || ''
   if (!contentType.includes('text/event-stream')) {
@@ -73,6 +77,7 @@ const consumeSseResponse = async <T extends SseEvent>(response: Response, onEven
   let terminalEvent = false
   // 空闲超时：每收到一个 chunk 重置；超时 → 取消读取并报「请求超时」（推理模型长思考不误杀）
   let idleTimedOut = false
+  let callerAborted = signal?.aborted === true
   let idleTimer: ReturnType<typeof setTimeout> | null = null
   const armIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer)
@@ -84,6 +89,11 @@ const consumeSseResponse = async <T extends SseEvent>(response: Response, onEven
   const clearIdleTimer = () => {
     if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
   }
+  const abortReader = () => {
+    callerAborted = true
+    void reader.cancel().catch(() => undefined)
+  }
+  if (signal && !signal.aborted) signal.addEventListener('abort', abortReader, { once: true })
 
   const dispatch = (block: string) => {
     const data = block
@@ -123,6 +133,14 @@ const consumeSseResponse = async <T extends SseEvent>(response: Response, onEven
     if (buffer.trim()) dispatch(buffer)
   } catch (error) {
     if (error instanceof RequestError) throw error
+    if (callerAborted) {
+      throw reportSseError(new RequestError({
+        error: '请求已取消',
+        code: 'REQUEST_ABORTED',
+        statusCode: 0,
+        ...(requestId ? { requestId } : {}),
+      }))
+    }
     if (idleTimedOut) {
       throw reportSseError(new RequestError({
         error: '请求超时，请重试',
@@ -139,10 +157,20 @@ const consumeSseResponse = async <T extends SseEvent>(response: Response, onEven
     }))
   } finally {
     clearIdleTimer()
+    if (signal) signal.removeEventListener('abort', abortReader)
+    await reader.cancel().catch(() => undefined)
     reader.releaseLock()
   }
 
   // reader.cancel() 后 read() 通常以 done 正常结束而非抛错,此处兜底判空闲超时
+  if (callerAborted) {
+    throw reportSseError(new RequestError({
+      error: '请求已取消',
+      code: 'REQUEST_ABORTED',
+      statusCode: 0,
+      ...(requestId ? { requestId } : {}),
+    }))
+  }
   if (idleTimedOut) {
     throw reportSseError(new RequestError({
       error: '请求超时，请重试',
@@ -170,7 +198,7 @@ export async function streamSse<T extends SseEvent = SseEvent>(
 ): Promise<void> {
   const response = await apiFetch(path, { ...options, retry: false })
   if (!response.ok) await parseApiResponse(response)
-  await consumeSseResponse(response, onEvent)
+  await consumeSseResponse(response, onEvent, options.signal)
 }
 
 /** 同一后端接口可能返回 SSE 或普通 JSON（例如风险升级分支）时使用。 */
@@ -182,7 +210,7 @@ export async function requestStreamOrJson<T extends SseEvent = SseEvent>(
   const response = await apiFetch(path, { ...options, retry: false })
   if (!response.ok) await parseApiResponse(response)
   if ((response.headers.get('content-type') || '').includes('text/event-stream')) {
-    await consumeSseResponse(response, onEvent)
+    await consumeSseResponse(response, onEvent, options.signal)
     return undefined
   }
   return parseApiResponse<T>(response)

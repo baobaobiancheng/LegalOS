@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ProjectAccessPolicy } from '../domain/project-access.policy';
 import { ProjectAction, ProjectActor } from '../domain/project-access.types';
@@ -29,6 +29,8 @@ export const isBusinessStatusGroupKey = (value: string | undefined): value is Bu
   Boolean(value && BUSINESS_STATUS_GROUP_KEYS.includes(value as BusinessStatusGroupKey));
 export const isProjectKind = (value: string | undefined): value is ProjectKind =>
   Boolean(value && Object.values(ProjectKind).includes(value as ProjectKind));
+export const isProjectStatus = (value: string | undefined): value is ProjectStatus =>
+  Boolean(value && Object.values(ProjectStatus).includes(value as ProjectStatus));
 
 export function businessStatusGroupWhere(group: BusinessStatusGroupKey): Prisma.ProjectWhereInput {
   switch (group) {
@@ -80,10 +82,23 @@ export class ProjectQueryService {
   /** 列表：服务端范围过滤 + 分页 + 按状态分组投影 */
   async findAll(actor: ProjectActor, params: ProjectListParams) {
     const { status, statusGroup, kind, group, query, mine, page = 1, size = 20 } = params;
+    if (!Number.isSafeInteger(page) || page < 1) {
+      throw new BadRequestException('page 必须是大于等于 1 的整数');
+    }
+    if (!Number.isSafeInteger(size) || size < 1 || size > 100) {
+      throw new BadRequestException('size 必须是 1 到 100 的整数');
+    }
+    if (status !== undefined && !isProjectStatus(status)) {
+      throw new BadRequestException('未知工单状态');
+    }
+    const skip = (page - 1) * size;
+    if (!Number.isSafeInteger(skip)) {
+      throw new BadRequestException('分页参数超出安全范围');
+    }
     const mineScopeWhere: Prisma.ProjectWhereInput | undefined = mine ? { creatorId: actor.id } : undefined;
     const baseWhere: Prisma.ProjectWhereInput = mine
       ? { ...mineScopeWhere }
-      : (this.accessPolicy.listScope(actor) as Prisma.ProjectWhereInput);
+      : this.accessPolicy.listScope(actor);
 
     if (status) baseWhere.status = status;
     if (kind) baseWhere.kind = kind;
@@ -105,7 +120,7 @@ export class ProjectQueryService {
           legalBp: { select: userSelect },
         },
         orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * size,
+        skip,
         take: size,
       }),
       Promise.all(PROJECT_GROUP_KEYS.map((key) => this.prisma.project.count({
@@ -141,7 +156,13 @@ export class ProjectQueryService {
       crmPayloadSha256: _crmPayloadSha256,
       crmFileManifestSha256: _crmFileManifestSha256,
       ...rest
-    }) => rest);
+    }) => {
+      if (actor.role === 'legal_bp' && rest.legalBpId === null && rest.ownerId !== actor.id) {
+        const { id, kind, title, status, risk, route, legalBpId, createdAt, updatedAt } = rest;
+        return { id, kind, title, status, risk, route, legalBpId, createdAt, updatedAt };
+      }
+      return rest;
+    });
 
     // 按状态分组
     const groups: Record<string, typeof safeItems> = { 待处理: [], 合同协作: [], 已回传: [], 数字分身处理: [] };

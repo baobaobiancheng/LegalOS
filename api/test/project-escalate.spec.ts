@@ -131,4 +131,17 @@ describe('ProjectService.escalate（人工升级接口）', () => {
     const result = await service.escalate('p-1', { id: 'u-lead', role: 'legal_lead' });
     expect(result.upgraded).toBe(true);
   });
+
+  it('显式指定已停用法务时拒绝升级，不写事件或 Outbox', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'u-disabled', displayName: '已停用法务', role: 'legal_bp', isActive: false,
+    });
+
+    await expect(escalateUseCase.execute({
+      projectId: 'p-1', legalBpId: 'u-disabled', status: '待复核', eventTexts: ['不应写入'],
+    })).rejects.toThrow('账号须启用');
+    expect(prisma.project.updateMany).not.toHaveBeenCalled();
+    expect(prisma.projectEvent.create).not.toHaveBeenCalled();
+    expect(prisma.outboxEvent.create).not.toHaveBeenCalled();
+  });
 });

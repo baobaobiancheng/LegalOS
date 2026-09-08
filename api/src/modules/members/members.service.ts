@@ -87,7 +87,37 @@ export class MembersService {
 
       // 2-5. staging 完整后，正式快照、软失效、自动绑定、批次完成必须原子提交。
       // 任何一步失败都会回滚正式表和用户绑定，catch 只把本批标记 failed。
-      const { autoBound, ambiguous } = await this.prisma.$transaction(async (tx) => {
+      const commitResult = await this.prisma.$transaction(async (tx) => {
+        // 所有实例在同一张批次表的最早行上取行锁；锁随事务提交释放，不依赖进程内互斥。
+        // 后启动的成功批次已经提交时，旧批次不得再覆盖新快照。
+        await tx.$queryRawUnsafe(
+          'SELECT id FROM dingtalk_sync_batches ORDER BY started_at ASC, id ASC LIMIT 1 FOR UPDATE',
+        );
+        const latestComplete = await tx.dingTalkSyncBatch.findFirst({
+          where: { status: 'complete' },
+          orderBy: [{ startedAt: 'desc' }, { id: 'desc' }],
+          select: { id: true, startedAt: true },
+        });
+        const latestIsNewer = latestComplete
+          && latestComplete.id !== batch.id
+          && (
+            latestComplete.startedAt > batch.startedAt
+            || (
+              latestComplete.startedAt.getTime() === batch.startedAt.getTime()
+              && latestComplete.id > batch.id
+            )
+          );
+        if (latestIsNewer) {
+          await tx.dingTalkSyncBatch.update({
+            where: { id: batch.id },
+            data: {
+              status: 'failed',
+              errorMessage: '同步结果已被更新批次取代',
+              completedAt: new Date(),
+            },
+          });
+          return { autoBound: 0, ambiguous: [] as string[], superseded: true };
+        }
         const staged = await tx.dingTalkContactStaging.findMany({
           where: { batchId: batch.id },
           select: { userId: true, name: true, mobile: true, avatarUrl: true, department: true },
@@ -171,13 +201,25 @@ export class MembersService {
             retentionClass: 'admin',
           }, tx);
         }
-        return binding;
+        return { ...binding, superseded: false };
       });
 
-      // staging 事务内已消费,清理旧批次仅留本批(防表无限膨胀,review 2026-08-11)
+      if (commitResult.superseded) {
+        await this.prisma.dingTalkContactStaging
+          .deleteMany({ where: { batchId: batch.id } })
+          .catch(() => undefined);
+        return { complete: false, batchId: batch.id, error: '同步结果已被更新批次取代' };
+      }
+      const { autoBound, ambiguous } = commitResult;
+
+      // 只清理已终态的旧批次；不得删除其他仍在 staging 的并发同步。
+      // 清理是提交后的维护动作，失败不得把已成功批次改写为 failed。
       await this.prisma.dingTalkContactStaging.deleteMany({
-        where: { batchId: { not: batch.id } },
-      });
+        where: {
+          batchId: { not: batch.id },
+          batch: { status: { in: ['complete', 'failed'] } },
+        },
+      }).catch(() => this.logger.warn(`通讯录旧 staging 清理失败（当前批次 ${batch.id}）`));
 
       this.logger.log(`通讯录同步完成：${contacts.length} 人，自动绑定 ${autoBound} 人`);
       return {

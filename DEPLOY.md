@@ -38,7 +38,7 @@ cp api/.env.example api/.env
 | `DINGTALK_APP_SECRET` | 钉钉 Client Secret |
 | `DINGTALK_AGENT_ID` | 钉钉 AgentId |
 | `DINGTALK_ROBOT_CODE` | 钉钉机器人 Code |
-| `SEED_ADMIN_PASSWORD` 等 4 个 | 种子账号初始密码（首次 `db seed` 生效，之后改密码不走 seed） |
+| `SEED_ADMIN_PASSWORD` / `SEED_BUSINESS_PASSWORD` | 可选的首次初始化密码；仅在账号不存在时生效，须至少 12 位且包含大小写字母、数字和符号；生产建议留空并通过 CAS 预开通 |
 | `BAIJIAN_MCP_APP_KEY` | 百鉴 MCP App Key，只进入服务器 Secret，不写入配置文件或命令参数 |
 | `BAIJIAN_MCP_APP_SECRET` | 百鉴 MCP App Secret；已在聊天或本地文档暴露的旧值必须先轮换 |
 | `LEGAL_RESEARCH_SEARCH_CACHE_TTL_MS` | 法规/类案精确请求快照 TTL，默认 24 小时 |
@@ -141,14 +141,14 @@ curl --silent --show-error --output /dev/null --write-out '%{http_code}\n' \
 pm2 logs legalos-api --lines 100 --nostream
 ```
 
-## 八、种子账号（`db seed` 后）
+## 八、可选种子账号（仅首次初始化）
 
 | 账号 | 密码 | 角色 |
 |------|------|------|
-| `admin` | `.env` SEED_ADMIN_PASSWORD | 管理员（赵俊芳） |
-| `business` | SEED_BUSINESS_PASSWORD | 业务（田强） |
+| `admin` | 显式配置的 `SEED_ADMIN_PASSWORD` | 管理员（赵俊芳） |
+| `business` | 显式配置的 `SEED_BUSINESS_PASSWORD` | 业务（田强） |
 
-法务 BP、法务负责人统一使用 CAS 身份，不再提供本地密码账号。部署后通过成员管理预开通，或由员工首次 CAS 登录创建。
+未配置密码时不会创建本地账号，但合同模板等业务种子仍会继续执行。seed 永不修改已存在账号的密码、角色或资料。法务 BP、法务负责人统一使用 CAS 身份，不再提供本地密码账号。部署后通过成员管理预开通，或由员工首次 CAS 登录创建。
 
 ## 九、钉钉集成上线检查清单
 

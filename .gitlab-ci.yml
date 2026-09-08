@@ -38,7 +38,16 @@ validate:prisma:
     - npm --prefix api ci
   script:
     - cd api
-    - npx prisma format --check
+    - |
+      schema_copy="$(mktemp)"
+      cp prisma/schema.prisma "$schema_copy"
+      npx prisma format --schema "$schema_copy"
+      cmp --silent prisma/schema.prisma "$schema_copy" || {
+        echo "prisma/schema.prisma is not formatted; run: npx prisma format"
+        rm -f "$schema_copy"
+        exit 1
+      }
+      rm -f "$schema_copy"
     - npx prisma validate
     - npx prisma generate
 
@@ -53,6 +62,12 @@ test:api-unit:
   <<: *deps
   script:
     - cd api && npm run test:unit
+
+test:web-unit:
+  stage: test
+  <<: *deps
+  script:
+    - npm --prefix web run test
 
 test:typecheck:
   stage: test

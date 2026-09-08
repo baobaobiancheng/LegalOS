@@ -58,6 +58,25 @@ describe('HttpExceptionFilter requestId', () => {
     expect(res.json.mock.calls[0][0].requestId).toBe('rid-test-abc');
   });
 
+  it('未知异常日志不包含 Prisma 正文或凭证，仅记录结构化安全元数据', () => {
+    const res: any = { status: vi.fn().mockReturnThis(), json: vi.fn(), setHeader: vi.fn() };
+    const req: any = { requestId: 'rid-safe-log' };
+    const filter = new HttpExceptionFilter();
+    const log = vi.fn();
+    (filter as any).logger = { error: log };
+    const exception = Object.assign(
+      new Error('Invalid DATABASE_URL mysql://root:password-secret@db/private'),
+      { code: 'P2002', clientVersion: '6.19.3' },
+    );
+
+    filter.catch(exception, makeCtx(req, res));
+
+    const output = String(log.mock.calls[0][0]);
+    expect(output).toContain('exceptionCode=P2002');
+    expect(output).not.toContain('password-secret');
+    expect(output).not.toContain('DATABASE_URL');
+  });
+
   it('5xx HttpException 记录 requestId、领域码和脱敏 cause，不再静默返回', () => {
     const res: any = { status: vi.fn().mockReturnThis(), json: vi.fn() };
     const req: any = { requestId: 'rid-research-503' };

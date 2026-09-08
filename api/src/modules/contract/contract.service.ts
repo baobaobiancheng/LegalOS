@@ -22,6 +22,12 @@ import { ProjectAction, ProjectActor } from '../project/domain/project-access.ty
 import { CreateProjectUseCase } from '../project/application/create-project.use-case';
 import { EscalateProjectToLegalUseCase } from '../project/application/escalate-project-to-legal.use-case';
 import { formatEventTime } from '../../common/utils/event-time';
+import { safeErrorTag } from '../../common/utils/safe-error';
+import {
+  AiProjectVersion,
+  aiProjectVersionWhere,
+  nextProjectVersion,
+} from '../project/domain/ai-project-version';
 
 /**
  * 合同协作服务（生成/审查编排；文件管理见 ContractFileService，prompt 组装见 contract-prompt.builder）。
@@ -86,7 +92,7 @@ export class ContractService {
       emitter.emit('close', null);
     });
     handle.on('error', (error: Error) => {
-      this.logger.error(`dsh 执行失败：${error.message}`);
+      this.logger.error(`dsh 执行失败：${safeErrorTag(error)}`);
       // 真实错误信息经 __errorMessage 透传（落库/SSE error 分支读取）；
       // 不单独 emit 'error'——无监听时 EventEmitter 会抛未处理错误，
       // 而 close(code≠0) 已同时覆盖 DB 失败写入与前端 SSE 失败响应。
@@ -113,6 +119,7 @@ export class ContractService {
     status?: string;
     generationRunId?: string;
     documentId?: string | null;
+    completion?: Promise<unknown>;
   }> {
     // Project.idempotencyKey 只保护“建单”；生成流还必须有自己的唯一运行记录。
     // 否则两个请求可能只落一个 Project，却各自启动一条 Codex 流。
@@ -132,7 +139,7 @@ export class ContractService {
         return {
           projectId: existing.id,
           reused: true,
-          status: existingRun?.status === 'succeeded' ? existing.status : existing.status,
+          status: existing.status,
           generationRunId: existingRun?.id,
           documentId: existingRun?.documentId,
         };
@@ -149,6 +156,7 @@ export class ContractService {
 
     let projectId: string;
     let existingProject: any | null = null;
+    let projectVersion!: AiProjectVersion;
     let createdProject = false;
     if (dto.projectId) {
       existingProject = await this.prisma.project.findUnique({ where: { id: dto.projectId } });
@@ -157,7 +165,11 @@ export class ContractService {
       if (existingProject.route !== 'llm') {
         throw new ConflictException('该工单已进入法务流程，无法继续生成'); // 升级守卫
       }
+      if (existingProject.status === '已取消' || existingProject.reviewStatus === 'review_completed') {
+        throw new ConflictException('该工单已人工办结或取消，无法继续生成');
+      }
       projectId = existingProject.id;
+      projectVersion = existingProject;
 
       const candidateRequestKey = this.buildGenerationRequestKey(dto, projectId).requestKey;
       const existingGenerationRun = await this.prisma.contractGenerationRun.findUnique({
@@ -190,6 +202,7 @@ export class ContractService {
         events: [formatEventTime() + ' · AI 正在生成合同草稿…'],
       });
       projectId = project.id;
+      projectVersion = project;
       createdProject = created;
       if (!created) {
         const requestKey = this.buildGenerationRequestKey(dto, projectId).requestKey;
@@ -243,8 +256,8 @@ export class ContractService {
         signal,
       });
     } catch (error) {
-      await this.prisma.contractGenerationRun.update({
-        where: { id: generationRunId },
+      await this.prisma.contractGenerationRun.updateMany({
+        where: { id: generationRunId, projectId, status: 'running' },
         data: {
           status: 'failed',
           completedAt: new Date(),
@@ -257,21 +270,41 @@ export class ContractService {
     const stream = this.adaptDshHandle(handle);
     let fullText = '';
     stream.stdout?.on('data', (chunk: Buffer) => { fullText += chunk.toString(); });
+    const deferred = createDeferred();
 
     stream.on('close', async (code) => {
       // dsh 侧权威完整文本（done 事件携带），回退到增量重拼（理论一致，防御分叉）
       const finalText = (stream as any).__finalText ?? fullText;
       // 连接断开主动取消 → 不写失败状态（刷新 ≠ 生成失败）
       if ((stream as any).__cancelled) {
-        await this.prisma.contractGenerationRun.update({
-          where: { id: generationRunId },
+        await this.prisma.contractGenerationRun.updateMany({
+          where: { id: generationRunId, projectId, status: 'running' },
           data: { status: 'cancelled', completedAt: new Date(), errorMessage: '合同生成已取消' },
         }).catch(() => undefined);
+        deferred.reject(new Error('合同生成已取消'));
         return;
       }
       if (code === 0 && finalText.trim()) {
         try {
           await this.prisma.$transaction(async (tx) => {
+            const runUpdated = await tx.contractGenerationRun.updateMany({
+              where: { id: generationRunId, projectId, status: 'running' },
+              data: {
+                status: 'succeeded',
+                completedAt: new Date(),
+                errorMessage: null,
+              },
+            });
+            if (runUpdated.count !== 1) throw new StaleContractCompletionError();
+            const projectUpdated = await tx.project.updateMany({
+              where: aiProjectVersionWhere(projectId, projectVersion),
+              data: {
+                status: '待复核',
+                result: finalText.trim(),
+                updatedAt: nextProjectVersion(projectVersion),
+              },
+            });
+            if (projectUpdated.count !== 1) throw new StaleContractCompletionError();
             // AI 草稿 → ContractDocument(type=draft, version=N)；消息仅供 UI，不是审查数据源
             const document = await this.documentWriter.create(tx, {
               projectId,
@@ -282,29 +315,35 @@ export class ContractService {
             await tx.projectMessage.create({
               data: { projectId, role: 'assistant', text: finalText.trim() },
             });
-            await tx.project.update({
-              where: { id: projectId },
-              data: { status: '待复核', result: finalText.trim() },
-            });
             await tx.contractGenerationRun.update({
               where: { id: generationRunId },
+              data: { documentId: document.id },
+            });
+            await tx.projectEvent.create({
+              data: { projectId, text: formatEventTime() + ' · 合同草稿已生成' },
+            });
+            const pendingCount = (finalText.match(/【待补充】/g) || []).length;
+            await tx.projectEvent.create({
               data: {
-                status: 'succeeded',
-                documentId: document.id,
-                completedAt: new Date(),
-                errorMessage: null,
+                projectId,
+                text: `本稿共 ${pendingCount} 处【待补充】，需双方确认后填写。本稿由 AI 生成，仅供参考，需经法务审阅后生效。`,
               },
             });
           });
-          await this.addEvent(projectId, formatEventTime() + ' · 合同草稿已生成');
-          // 独立提示消息（不放入合同正文）
-          const pendingCount = (finalText.match(/【待补充】/g) || []).length;
-          await this.addEvent(
-            projectId,
-            `本稿共 ${pendingCount} 处【待补充】，需双方确认后填写。本稿由 AI 生成，仅供参考，需经法务审阅后生效。`,
-          );
+          deferred.resolve({ projectId, generationRunId });
         } catch (err) {
-          this.logger.error(`合同草稿落库失败：${err}`);
+          this.logger.error(`合同草稿未提交：${safeErrorTag(err)}`);
+          await this.prisma.contractGenerationRun.updateMany({
+            where: { id: generationRunId, projectId, status: 'running' },
+            data: {
+              status: err instanceof StaleContractCompletionError ? 'cancelled' : 'failed',
+              completedAt: new Date(),
+              errorMessage: err instanceof StaleContractCompletionError
+                ? '执行上下文已变更，迟到结果未写入'
+                : '合同草稿写入失败',
+            },
+          }).catch(() => undefined);
+          deferred.reject(err);
         }
       } else {
         this.logger.error(`合同草稿生成失败，code=${code}`);
@@ -312,22 +351,43 @@ export class ContractService {
           const errorMessage = (stream as any).__errorMessage
             ? String((stream as any).__errorMessage).slice(0, 200)
             : 'AI 合同生成失败或超时';
-          await this.prisma.contractGenerationRun.update({
-            where: { id: generationRunId },
-            data: { status: 'failed', completedAt: new Date(), errorMessage },
+          await this.prisma.$transaction(async (tx) => {
+            const runUpdated = await tx.contractGenerationRun.updateMany({
+              where: { id: generationRunId, projectId, status: 'running' },
+              data: { status: 'failed', completedAt: new Date(), errorMessage },
+            });
+            if (runUpdated.count !== 1) throw new StaleContractCompletionError();
+            const projectUpdated = await tx.project.updateMany({
+              where: aiProjectVersionWhere(projectId, projectVersion),
+              data: {
+                status: '待处理',
+                isFailed: true,
+                updatedAt: nextProjectVersion(projectVersion),
+              },
+            });
+            if (projectUpdated.count !== 1) throw new StaleContractCompletionError();
+            await tx.projectEvent.create({
+              data: { projectId, text: formatEventTime() + ' · 合同草稿生成失败，已转人工处理' },
+            });
           });
-          await this.prisma.project.update({
-            where: { id: projectId },
-            data: { status: '待处理', isFailed: true },
-          });
-          await this.addEvent(projectId, formatEventTime() + ' · 合同草稿生成失败，已转人工处理');
         } catch (err) {
-          this.logger.error(`失败状态更新失败：${err}`);
+          this.logger.error(`失败状态更新失败：${safeErrorTag(err)}`);
+          await this.prisma.contractGenerationRun.updateMany({
+            where: { id: generationRunId, projectId, status: 'running' },
+            data: {
+              status: err instanceof StaleContractCompletionError ? 'cancelled' : 'failed',
+              completedAt: new Date(),
+              errorMessage: err instanceof StaleContractCompletionError
+                ? '执行上下文已变更，迟到结果未写入'
+                : '合同草稿失败状态写入失败',
+            },
+          }).catch(() => undefined);
         }
+        deferred.reject(new Error('AI 合同生成失败或超时'));
       }
     });
 
-    return { projectId, stream, generationRunId };
+    return { projectId, stream, generationRunId, completion: deferred.promise };
   }
 
   /**
@@ -414,6 +474,7 @@ export class ContractService {
     reviewRunId: string;
     sourceDocumentId: string;
     sourceVersion: number;
+    completion: Promise<unknown>;
   }> {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('工单不存在');
@@ -441,11 +502,17 @@ export class ContractService {
         this.logger.warn(`审查技能 skillId=${skillId} 解析失败，按无技能审查`);
       }
     }
+    let projectVersion: AiProjectVersion = project;
     if (skillName) {
-      await this.prisma.project.update({
-        where: { id: projectId },
-        data: { skillId: skillId ?? null, skillName },
+      const updatedAt = nextProjectVersion(projectVersion);
+      const updated = await this.prisma.project.updateMany({
+        where: aiProjectVersionWhere(projectId, projectVersion),
+        data: { skillId: skillId ?? null, skillName, updatedAt },
       });
+      if (updated.count !== 1) {
+        throw new ConflictException('工单状态已变化，未启动 AI 审查');
+      }
+      projectVersion = { ...projectVersion, updatedAt };
     }
 
     // 解析源文档：显式 sourceDocumentId 必须属于当前项目；缺省取最新可审查文档
@@ -480,8 +547,8 @@ export class ContractService {
     } catch (e) {
       // 队列繁忙/排队超时：审查未开始，标记 failed（SSE 开始前返回 HTTP 错误）
       await this.prisma.contractReviewRun
-        .update({
-          where: { id: reviewRun.id },
+        .updateMany({
+          where: { id: reviewRun.id, projectId, status: 'running' },
           data: {
             status: 'failed',
             errorMessage: String((e as Error)?.message ?? e).slice(0, 200),
@@ -495,46 +562,91 @@ export class ContractService {
     const stream = this.adaptDshHandle(handle);
     let fullText = '';
     stream.stdout?.on('data', (chunk: Buffer) => { fullText += chunk.toString(); });
+    const deferred = createDeferred();
 
     stream.on('close', async (code) => {
       // dsh 侧权威完整文本（done 事件携带），回退到增量重拼（理论一致，防御分叉）
       const finalText = (stream as any).__finalText ?? fullText;
       if ((stream as any).__cancelled) {
         await this.prisma.contractReviewRun
-          .update({
-            where: { id: reviewRun.id },
+          .updateMany({
+            where: { id: reviewRun.id, projectId, status: 'running' },
             data: { status: 'cancelled', errorMessage: '审查已取消', completedAt: new Date() },
           })
           .catch(() => undefined);
+        deferred.reject(new Error('审查已取消'));
         return;
       }
       if (code === 0 && finalText.trim()) {
         try {
           // 风险报告只进 ReviewRun.result（9.3-6）；另写 ProjectMessage 供 UI 展示
-          await this.prisma.$transaction([
-            this.prisma.contractReviewRun.update({
-              where: { id: reviewRun.id },
+          await this.prisma.$transaction(async (tx) => {
+            const runUpdated = await tx.contractReviewRun.updateMany({
+              where: { id: reviewRun.id, projectId, sourceDocumentId: sourceDoc.id, status: 'running' },
               data: { status: 'succeeded', result: finalText.trim(), completedAt: new Date() },
-            }),
-            this.prisma.projectMessage.create({
+            });
+            if (runUpdated.count !== 1) throw new StaleContractCompletionError();
+            const projectUpdated = await tx.project.updateMany({
+              where: aiProjectVersionWhere(projectId, projectVersion),
+              data: { updatedAt: nextProjectVersion(projectVersion) },
+            });
+            if (projectUpdated.count !== 1) throw new StaleContractCompletionError();
+            await tx.projectMessage.create({
               data: { projectId, role: 'assistant', text: finalText.trim(), label: 'AI 风险审查' },
-            }),
-          ]);
-          await this.addEvent(projectId, formatEventTime() + ' · AI 风险审查完成');
+            });
+            await tx.projectEvent.create({
+              data: { projectId, text: formatEventTime() + ' · AI 风险审查完成' },
+            });
+          });
+          deferred.resolve({ projectId, reviewRunId: reviewRun.id });
         } catch (err) {
-          this.logger.error(`审查结果落库失败：${err}`);
+          this.logger.error(`审查结果未提交：${safeErrorTag(err)}`);
+          await this.prisma.contractReviewRun.updateMany({
+            where: { id: reviewRun.id, projectId, status: 'running' },
+            data: {
+              status: err instanceof StaleContractCompletionError ? 'cancelled' : 'failed',
+              errorMessage: err instanceof StaleContractCompletionError
+                ? '执行上下文已变更，迟到结果未写入'
+                : '审查结果写入失败',
+              completedAt: new Date(),
+            },
+          }).catch(() => undefined);
+          deferred.reject(err);
         }
       } else {
         const errorMessage = (stream as any).__errorMessage
           ? String((stream as any).__errorMessage).slice(0, 200)
           : 'AI 审查失败或超时';
-        await this.prisma.contractReviewRun
-          .update({
-            where: { id: reviewRun.id },
-            data: { status: 'failed', errorMessage, completedAt: new Date() },
-          })
-          .catch(() => undefined);
-        await this.addEvent(projectId, formatEventTime() + ' · AI 风险审查失败，请人工审阅');
+        try {
+          await this.prisma.$transaction(async (tx) => {
+            const runUpdated = await tx.contractReviewRun.updateMany({
+              where: { id: reviewRun.id, projectId, sourceDocumentId: sourceDoc.id, status: 'running' },
+              data: { status: 'failed', errorMessage, completedAt: new Date() },
+            });
+            if (runUpdated.count !== 1) throw new StaleContractCompletionError();
+            const projectUpdated = await tx.project.updateMany({
+              where: aiProjectVersionWhere(projectId, projectVersion),
+              data: { updatedAt: nextProjectVersion(projectVersion) },
+            });
+            if (projectUpdated.count !== 1) throw new StaleContractCompletionError();
+            await tx.projectEvent.create({
+              data: { projectId, text: formatEventTime() + ' · AI 风险审查失败，请人工审阅' },
+            });
+          });
+        } catch (err) {
+          this.logger.error(`审查失败状态未提交：${safeErrorTag(err)}`);
+          await this.prisma.contractReviewRun.updateMany({
+            where: { id: reviewRun.id, projectId, status: 'running' },
+            data: {
+              status: err instanceof StaleContractCompletionError ? 'cancelled' : 'failed',
+              errorMessage: err instanceof StaleContractCompletionError
+                ? '执行上下文已变更，迟到结果未写入'
+                : '审查失败状态写入失败',
+              completedAt: new Date(),
+            },
+          }).catch(() => undefined);
+        }
+        deferred.reject(new Error('AI 审查失败或超时'));
       }
     });
 
@@ -544,6 +656,7 @@ export class ContractService {
       reviewRunId: reviewRun.id,
       sourceDocumentId: sourceDoc.id,
       sourceVersion: sourceDoc.version,
+      completion: deferred.promise,
     };
   }
 
@@ -575,8 +688,28 @@ export class ContractService {
     });
   }
 
-  private async addEvent(projectId: string, text: string) {
-    return this.prisma.projectEvent.create({ data: { projectId, text } });
-  }
+}
 
+
+function createDeferred(): {
+  promise: Promise<unknown>;
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+} {
+  let resolve!: (value: unknown) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<unknown>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  // Service 创建后 controller 才注册等待者；先挂拒绝处理器避免同步 close 形成短暂未处理拒绝。
+  void promise.catch(() => undefined);
+  return { promise, resolve, reject };
+}
+
+class StaleContractCompletionError extends Error {
+  constructor() {
+    super('执行上下文已变更，迟到结果未写入');
+    this.name = 'StaleContractCompletionError';
+  }
 }

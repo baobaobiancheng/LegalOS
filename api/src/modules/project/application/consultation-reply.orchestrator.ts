@@ -12,6 +12,13 @@ import {
 } from '../domain/consultation-capability';
 import { AuditService } from '../../../common/audit/audit.service';
 import { createHash } from 'node:crypto';
+import { safeErrorTag } from '../../../common/utils/safe-error';
+import {
+  AiProjectVersion,
+  aiProjectVersionSelect,
+  aiProjectVersionWhere,
+  nextProjectVersion,
+} from '../domain/ai-project-version';
 
 /**
  * 咨询 AI 答复编排器（从 ProjectService 抽出，2026-08-20 上帝类拆分）。
@@ -123,16 +130,12 @@ export class ConsultationReplyOrchestrator {
   async reply(
     projectId: string,
     currentUserMessageId: string,
-    signal?: AbortSignal,
-    runId?: string,
+    signal: AbortSignal | undefined,
+    runId: string,
     requestedCapability: ConsultationCapability = 'general',
   ): Promise<any> {
-    const release = await this.acquireProjectTurn(projectId);
-    // 释放串行锁 + 清理 Map 条目（幂等：close 与 error 都可能触发）
-    const finishTurn = () => {
-      release();
-      this.projectTurnTails.delete(projectId);
-    };
+    // release 只会删除自己仍是最新 tail 的条目；A 完成时不会误删已经排队的 B/C。
+    const finishTurn = await this.acquireProjectTurn(projectId);
     // P0-4（review 2026-08-12）：SSE 的 message_end 必须等落库成功后才发，
     // 避免「前端显示成功 → 落库失败 → 刷新答案消失」。
     let resolveCompletion!: (msg: unknown) => void;
@@ -142,6 +145,7 @@ export class ConsultationReplyOrchestrator {
       rejectCompletion = rej;
     });
     let child: any;
+    let projectVersion!: AiProjectVersion;
     let capability: ConsultationCapability = requestedCapability;
     let modelVersion = capability === 'general'
       ? String(this.config.get('LLM_MODEL', 'glm-5-2'))
@@ -150,15 +154,17 @@ export class ConsultationReplyOrchestrator {
       const project = await this.prisma.project
         .findUnique({
           where: { id: projectId },
-          select: { extra: true, skillName: true },
-        })
-        .catch(() => null);
-      const skillPrompt = (project?.extra as any)?.skillPrompt ?? null;
-      const skillName = project?.skillName ?? null;
+          select: { extra: true, skillName: true, ...aiProjectVersionSelect },
+        });
+      if (!project) throw new BadRequestException('工单不存在');
+      if (project.route !== 'llm' || project.status === '已取消' || project.reviewStatus === 'review_completed') {
+        throw new BadRequestException('工单已进入人工流程，停止 AI 答复');
+      }
+      projectVersion = project;
+      const skillPrompt = (project.extra as any)?.skillPrompt ?? null;
+      const skillName = project.skillName;
 
-      const run = runId
-        ? await this.prisma.consultationRun.findUnique({ where: { id: runId } })
-        : null;
+      const run = await this.prisma.consultationRun.findUnique({ where: { id: runId } });
       capability = normalizeConsultationCapability(run?.capability ?? requestedCapability);
       modelVersion = capability === 'general'
         ? String(this.config.get('LLM_MODEL', 'glm-5-2'))
@@ -171,12 +177,12 @@ export class ConsultationReplyOrchestrator {
               capability,
               status: 'succeeded',
               dshSessionId: { not: null },
-              ...(runId ? { id: { not: runId } } : {}),
+              id: { not: runId },
             },
             orderBy: { completedAt: 'desc' },
             select: { dshSessionId: true },
           });
-      if (runId && this.audit) {
+      if (this.audit) {
         await this.audit.record({
           actor: { type: 'system' },
           action: 'ai.run.started',
@@ -199,14 +205,14 @@ export class ConsultationReplyOrchestrator {
           skillPrompt: skillName && skillPrompt ? buildSkillSection(skillName, skillPrompt) : undefined,
         });
       } catch (e) {
-        this.logger.error(`咨询上下文构建失败（${projectId}/${currentUserMessageId}）：${e}`);
+        this.logger.error(`咨询上下文构建失败（${projectId}/${currentUserMessageId}）：${safeErrorTag(e)}`);
         throw new BadRequestException('咨询上下文构建失败，请重试');
       }
       child = await this.executionRouter.execute({
         capability,
         messages: context.messages,
         projectId,
-        runId: runId ?? '',
+        runId,
         signal,
         resumeDshSessionId: previous?.dshSessionId ?? undefined,
       });
@@ -223,7 +229,7 @@ export class ConsultationReplyOrchestrator {
     }
 
     // P0-3：流式协议身份——一次 Run 一个稳定 runId，SSE 事件据此去重/丢弃过期
-    if (runId) child.__runId = runId;
+    child.__runId = runId;
 
     let fullText = '';
     let finalized = false;
@@ -244,10 +250,12 @@ export class ConsultationReplyOrchestrator {
       try {
         // 连接断开主动取消 → 不写失败状态（刷新 ≠ 生成失败）；run 标记 cancelled 以便重试
         if ((child as any).__cancelled) {
-          if (runId) {
-            await this.prisma.$transaction(async (tx) => {
-              await tx.consultationRun.update({ where: { id: runId }, data: { status: 'cancelled', completedAt: new Date() } });
-              if (this.audit) {
+          await this.prisma.$transaction(async (tx) => {
+            const updated = await tx.consultationRun.updateMany({
+              where: { id: runId, projectId, userMessageId: currentUserMessageId, status: 'running' },
+              data: { status: 'cancelled', completedAt: new Date() },
+            });
+            if (updated.count === 1 && this.audit) {
                 await this.audit.record({
                   actor: { type: 'system' },
                   action: 'ai.run.cancelled',
@@ -260,9 +268,8 @@ export class ConsultationReplyOrchestrator {
                   metadata: { capability, modelVersion },
                   retentionClass: 'ai',
                 }, tx);
-              }
-            }).catch((error) => this.logger.error(`AI 取消状态/审计写入失败：${error}`));
-          }
+            }
+          }).catch((error) => this.logger.error(`AI 取消状态/审计写入失败：${safeErrorTag(error)}`));
           rejectCompletion(new Error('cancelled'));
           return;
         }
@@ -275,31 +282,38 @@ export class ConsultationReplyOrchestrator {
               ?? createHash('sha256').update(finalText).digest('hex');
             const toolSummary = buildToolSummary(child.__researchTrace);
             const msg = await this.prisma.$transaction(async (tx) => {
+              const runUpdated = await tx.consultationRun.updateMany({
+                where: { id: runId, projectId, userMessageId: currentUserMessageId, status: 'running' },
+                data: {
+                  status: 'succeeded',
+                  answerMessageId,
+                  completedAt: new Date(),
+                  modelVersion,
+                  toolSummary,
+                  outputHash,
+                  ...(child.__researchTrace ? {
+                    dshSessionId: child.__researchTrace.dshSessionId,
+                    researchTrace: child.__researchTrace,
+                  } : {}),
+                },
+              });
+              if (runUpdated.count !== 1) throw new StaleAiCompletionError();
+              const projectUpdated = await tx.project.updateMany({
+                where: aiProjectVersionWhere(projectId, projectVersion),
+                data: {
+                  status: '已回传',
+                  result: finalText,
+                  updatedAt: nextProjectVersion(projectVersion),
+                },
+              });
+              if (projectUpdated.count !== 1) throw new StaleAiCompletionError();
               const created = await tx.projectMessage.create({
                 data: { id: answerMessageId, projectId, role: 'assistant', text: finalText },
               });
-              await tx.project.update({
-                where: { id: projectId },
-                data: { status: '已回传', result: finalText },
+              await tx.projectEvent.create({
+                data: { projectId, text: formatEventTime() + ' · AI 答复已完成' },
               });
-              if (runId) {
-                await tx.consultationRun.update({
-                  where: { id: runId },
-                  data: {
-                    status: 'succeeded',
-                    answerMessageId,
-                    completedAt: new Date(),
-                    modelVersion,
-                    toolSummary,
-                    outputHash,
-                    ...(child.__researchTrace ? {
-                      dshSessionId: child.__researchTrace.dshSessionId,
-                      researchTrace: child.__researchTrace,
-                    } : {}),
-                  },
-                });
-              }
-              if (runId && this.audit) {
+              if (this.audit) {
                 const degraded = child.__researchDegraded as { level?: string; reasonCode?: string } | undefined;
                 await this.audit.record({
                   actor: { type: 'system' },
@@ -326,7 +340,6 @@ export class ConsultationReplyOrchestrator {
               }
               return created;
             });
-            await this.addEvent(projectId, formatEventTime() + ' · AI 答复已完成');
             resolveCompletion({
               ...msg,
               ...(child.__researchTrace ? {
@@ -334,40 +347,41 @@ export class ConsultationReplyOrchestrator {
               } : {}),
             }); // P0-4：落库成功 → 前端可收到 message_end
           } catch (err) {
-            this.logger.error(`AI 答复落库失败：${err}`);
+            this.logger.error(`AI 答复未提交：${safeErrorTag(err)}`);
             rejectCompletion(err);
-            if (runId) {
-              await this.prisma.consultationRun
-                .update({
-                  where: { id: runId },
-                  data: { status: 'failed', errorMessage: String(err).slice(0, 500), completedAt: new Date() },
-                })
-                .catch(() => undefined);
-            }
-            await this.recordAiOutcome('ai.run.failed', 'failed', projectId, runId, capability, modelVersion, String(err));
+            await this.settleRunAfterPersistenceError(
+              projectId,
+              runId,
+              currentUserMessageId,
+              err,
+              'AI 答复写入失败',
+            );
+            await this.recordAiOutcome(
+              'ai.run.failed',
+              'failed',
+              projectId,
+              runId,
+              capability,
+              modelVersion,
+              err instanceof StaleAiCompletionError ? 'STALE_AI_COMPLETION' : 'AI_PERSIST_FAILED',
+            );
           }
         } else {
           const publicMessage = child.__errorMessage ?? `AI 答复生成失败（code=${code}）`;
-          this.logger.error(`咨询执行流异常退出，code=${code} error=${child.__errorCode ?? 'unknown'}`);
+          this.logger.error(`咨询执行流异常退出，code=${code} ${safeErrorTag({
+            name: 'ExecutionError',
+            code: child.__errorCode ?? 'unknown',
+          })}`);
           rejectCompletion(new Error(publicMessage));
           try {
-            if (!String(child.__errorCode ?? '').startsWith('RESEARCH_')) {
-              await this.prisma.project.update({
-                where: { id: projectId },
-                data: { status: '待处理', isFailed: true },
-              });
-              await this.addEvent(projectId, formatEventTime() + ' · AI 答复生成失败，已转人工处理');
-            } else {
-              await this.addEvent(projectId, formatEventTime() + ' · 法律检索失败，等待用户重试或切换能力');
-            }
-            if (runId) {
-              await this.prisma.consultationRun
-                .update({
-                  where: { id: runId },
-                data: { status: 'failed', errorMessage: publicMessage.slice(0, 500), completedAt: new Date() },
-                })
-                .catch(() => undefined);
-            }
+            await this.persistFailure(
+              projectId,
+              runId,
+              currentUserMessageId,
+              publicMessage,
+              String(child.__errorCode ?? '').startsWith('RESEARCH_'),
+              projectVersion,
+            );
             await this.recordAiOutcome(
               'ai.run.failed',
               'failed',
@@ -379,7 +393,14 @@ export class ConsultationReplyOrchestrator {
               child.__errorCode ?? 'AI_EXECUTION_FAILED',
             );
           } catch (err) {
-            this.logger.error(`失败状态更新失败：${err}`);
+            this.logger.error(`失败状态更新失败：${safeErrorTag(err)}`);
+            await this.settleRunAfterPersistenceError(
+              projectId,
+              runId,
+              currentUserMessageId,
+              err,
+              'AI 失败状态写入失败',
+            );
           }
         }
       } finally {
@@ -390,25 +411,27 @@ export class ConsultationReplyOrchestrator {
 
     child.once('error', async (err) => {
       if (!beginFinalize()) return;
-      this.logger.error(`咨询网关流错误：${err.message}`);
+      this.logger.error(`咨询网关流错误：${safeErrorTag(err)}`);
       rejectCompletion(err);
       try {
-        await this.prisma.project.update({
-          where: { id: projectId },
-          data: { status: '待处理', isFailed: true },
-        });
-        await this.addEvent(projectId, formatEventTime() + ' · AI 服务不可用，已转人工处理');
-        if (runId) {
-          await this.prisma.consultationRun
-            .update({
-              where: { id: runId },
-              data: { status: 'failed', errorMessage: err.message.slice(0, 500), completedAt: new Date() },
-            })
-            .catch(() => undefined);
-        }
+        await this.persistFailure(
+          projectId,
+          runId,
+          currentUserMessageId,
+          'AI 服务不可用',
+          false,
+          projectVersion,
+        );
         await this.recordAiOutcome('ai.run.failed', 'failed', projectId, runId, capability, modelVersion, err.message);
       } catch (dbErr) {
-        this.logger.error(`失败状态更新失败：${dbErr}`);
+        this.logger.error(`失败状态更新失败：${safeErrorTag(dbErr)}`);
+        await this.settleRunAfterPersistenceError(
+          projectId,
+          runId,
+          currentUserMessageId,
+          dbErr,
+          'AI 失败状态写入失败',
+        );
       } finally {
         finishTurn();
       }
@@ -424,9 +447,75 @@ export class ConsultationReplyOrchestrator {
     let release!: () => void;
     const tail = new Promise<void>((r) => (release = r));
     const gate = prev.catch(() => undefined).then(() => undefined);
-    this.projectTurnTails.set(projectId, gate.then(() => tail).catch(() => tail));
+    const currentTail = gate.then(() => tail).catch(() => tail);
+    this.projectTurnTails.set(projectId, currentTail);
     await gate;
-    return release;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      release();
+      if (this.projectTurnTails.get(projectId) === currentTail) {
+        this.projectTurnTails.delete(projectId);
+      }
+    };
+  }
+
+  private async persistFailure(
+    projectId: string,
+    runId: string,
+    userMessageId: string,
+    publicMessage: string,
+    researchOnly: boolean,
+    projectVersion: AiProjectVersion,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const runUpdated = await tx.consultationRun.updateMany({
+        where: { id: runId, projectId, userMessageId, status: 'running' },
+        data: { status: 'failed', errorMessage: publicMessage.slice(0, 500), completedAt: new Date() },
+      });
+      if (runUpdated.count !== 1) throw new StaleAiCompletionError();
+      const projectUpdated = researchOnly
+        ? await tx.project.updateMany({
+            where: aiProjectVersionWhere(projectId, projectVersion),
+            data: { updatedAt: nextProjectVersion(projectVersion) },
+          })
+        : await tx.project.updateMany({
+            where: aiProjectVersionWhere(projectId, projectVersion),
+            data: {
+              status: '待处理',
+              isFailed: true,
+              updatedAt: nextProjectVersion(projectVersion),
+            },
+          });
+      if (projectUpdated.count !== 1) throw new StaleAiCompletionError();
+      await tx.projectEvent.create({
+        data: {
+          projectId,
+          text: researchOnly
+            ? formatEventTime() + ' · 法律检索失败，等待用户重试或切换能力'
+            : formatEventTime() + ' · AI 服务不可用，已转人工处理',
+        },
+      });
+    });
+  }
+
+  private async settleRunAfterPersistenceError(
+    projectId: string,
+    runId: string,
+    userMessageId: string,
+    error: unknown,
+    failureMessage: string,
+  ): Promise<void> {
+    const stale = error instanceof StaleAiCompletionError;
+    await this.prisma.consultationRun.updateMany({
+      where: { id: runId, projectId, userMessageId, status: 'running' },
+      data: {
+        status: stale ? 'cancelled' : 'failed',
+        errorMessage: stale ? '执行上下文已变更，迟到结果未写入' : failureMessage,
+        completedAt: new Date(),
+      },
+    }).catch(() => undefined);
   }
 
   /** 风险分级输入：附上受限长度的附件正文（review 2026-08-12 P1-4），防「请审查附件」被路由为普通 P2 */
@@ -483,11 +572,11 @@ export class ConsultationReplyOrchestrator {
   ) {
     if (!runId) return;
     await this.prisma.$transaction(async (tx) => {
-      await tx.consultationRun.update({
-        where: { id: runId },
+      const updated = await tx.consultationRun.updateMany({
+        where: { id: runId, projectId, status: 'running' },
         data: { status: 'failed', errorMessage: reason.slice(0, 500), completedAt: new Date(), modelVersion },
       });
-      if (this.audit) {
+      if (updated.count === 1 && this.audit) {
         await this.audit.record({
           actor: { type: 'system' },
           action: 'ai.run.failed',
@@ -507,7 +596,7 @@ export class ConsultationReplyOrchestrator {
           retentionClass: 'ai',
         }, tx);
       }
-    }).catch((error) => this.logger.error(`AI 启动失败终态/审计写入失败：${error}`));
+    }).catch((error) => this.logger.error(`AI 启动失败终态/审计写入失败：${safeErrorTag(error)}`));
   }
 
 }
@@ -518,4 +607,11 @@ function buildToolSummary(trace: any): Array<{ tool: string; recordCount: number
     tool: String(call?.tool ?? '').slice(0, 80),
     recordCount: Array.isArray(call?.recordIds) ? call.recordIds.length : 0,
   }));
+}
+
+class StaleAiCompletionError extends Error {
+  constructor() {
+    super('执行上下文已变更，迟到结果未写入');
+    this.name = 'StaleAiCompletionError';
+  }
 }

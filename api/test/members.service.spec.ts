@@ -27,7 +27,14 @@ describe('MembersService', () => {
         findMany: vi.fn(),
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
-      dingTalkSyncBatch: { create: vi.fn().mockResolvedValue({ id: 'batch-1' }), update: vi.fn().mockResolvedValue({}) },
+      dingTalkSyncBatch: {
+        create: vi.fn().mockResolvedValue({
+          id: 'batch-1',
+          startedAt: new Date('2026-09-08T00:00:00.000Z'),
+        }),
+        findFirst: vi.fn().mockResolvedValue(null),
+        update: vi.fn().mockResolvedValue({}),
+      },
       user: {
         findMany: vi.fn(),
         findUnique: vi.fn(),
@@ -37,6 +44,7 @@ describe('MembersService', () => {
       },
       bpDomainMap: { findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn(), deleteMany: vi.fn() },
       project: { count: vi.fn() },
+      $queryRawUnsafe: vi.fn().mockResolvedValue([{ id: 'batch-1' }]),
       $transaction: vi.fn(async (arg: any) => {
         if (typeof arg === 'function') return arg(prisma);
         return Promise.all(arg);
@@ -99,6 +107,35 @@ describe('MembersService', () => {
     expect(prisma.dingTalkSyncBatch.update).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: 'batch-1' }, data: expect.objectContaining({ status: 'complete' }) }),
     );
+  });
+
+  it('syncContacts：startedAt 同毫秒时按 id 全序拒绝旧优先级批次覆盖', async () => {
+    const sameTime = new Date('2026-09-08T00:00:00.000Z');
+    prisma.dingTalkSyncBatch.create.mockResolvedValue({ id: 'batch-a', startedAt: sameTime });
+    prisma.dingTalkSyncBatch.findFirst.mockResolvedValue({ id: 'batch-z', startedAt: sameTime });
+    dingtalk.syncContacts.mockResolvedValue({
+      contacts: [{ userId: 'U-old', name: '旧批次联系人' }],
+      complete: true,
+      departmentCount: 1,
+      pageCount: 1,
+      warnings: [],
+    });
+
+    const result = await service.syncContacts();
+
+    expect(prisma.$queryRawUnsafe).toHaveBeenCalledWith(
+      'SELECT id FROM dingtalk_sync_batches ORDER BY started_at ASC, id ASC LIMIT 1 FOR UPDATE',
+    );
+    expect(result).toMatchObject({
+      complete: false,
+      batchId: 'batch-a',
+      error: '同步结果已被更新批次取代',
+    });
+    expect(prisma.dingTalkContact.upsert).not.toHaveBeenCalled();
+    expect(prisma.dingTalkSyncBatch.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'batch-a' },
+      data: expect.objectContaining({ status: 'failed' }),
+    }));
   });
 
   it('syncContacts：记录触发管理员、自动绑定前后值和同步批次', async () => {
@@ -476,7 +513,10 @@ describe('MembersService', () => {
     );
     // staging 清理:成功保留本批、删旧批
     expect(prisma.dingTalkContactStaging.deleteMany).toHaveBeenCalledWith({
-      where: { batchId: { not: 'batch-1' } },
+      where: {
+        batchId: { not: 'batch-1' },
+        batch: { status: { in: ['complete', 'failed'] } },
+      },
     });
   });
 

@@ -1,7 +1,8 @@
-import { Injectable, UnprocessableEntityException } from '@nestjs/common';
+import { Injectable, ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
 import { existsSync } from 'node:fs';
 import { open, readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
+import { Readable } from 'node:stream';
 import { Worker } from 'node:worker_threads';
 import JSZip from 'jszip';
 import * as mammoth from 'mammoth';
@@ -17,11 +18,14 @@ export interface ProcessedContractFile {
   text: string;
 }
 
-interface ContractFileWorkerResponse {
-  ok: boolean;
-  result?: ProcessedContractFile;
-  validationError?: string;
-  internalError?: string;
+type ContractFileWorkerResponse =
+  | { ok: true; result: ProcessedContractFile }
+  | { ok: false; errorType: 'validation'; message: string }
+  | { ok: false; errorType: 'internal' };
+
+interface WorkerWaiter {
+  resolve: () => void;
+  timer: NodeJS.Timeout;
 }
 
 /**
@@ -32,8 +36,11 @@ interface ContractFileWorkerResponse {
 export class ContractFileProcessor {
   private readonly workerPath = join(__dirname, 'contract-file.worker.js');
   private readonly maxWorkers = boundedWorkerCount(process.env.CONTRACT_FILE_PARSE_CONCURRENCY);
+  private readonly maxQueueSize = boundedPositiveInt(process.env.CONTRACT_FILE_PARSE_QUEUE_MAX_SIZE, 32, 1, 500);
+  private readonly queueTimeoutMs = boundedPositiveInt(process.env.CONTRACT_FILE_PARSE_QUEUE_TIMEOUT_MS, 15_000, 100, 120_000);
+  private readonly workerTimeoutMs = boundedPositiveInt(process.env.CONTRACT_FILE_PARSE_TIMEOUT_MS, 20_000, 1_000, 120_000);
   private activeWorkers = 0;
-  private readonly waiters: Array<() => void> = [];
+  private readonly waiters: WorkerWaiter[] = [];
 
   async validateAndExtract(filePath: string, originalName: string): Promise<ProcessedContractFile> {
     const ext = extname(originalName).toLowerCase();
@@ -41,7 +48,7 @@ export class ContractFileProcessor {
       throw fileValidationError('不支持的文件类型，仅支持 .docx/.pdf/.txt/.md');
     }
     // 生产构建会同时生成 worker.js；Vitest/ts-node 源码模式使用同一纯函数回退。
-    if (!existsSync(this.workerPath)) return processContractFileInline(filePath, originalName);
+    if (!this.shouldUseWorker()) return processContractFileInline(filePath, originalName);
     await this.acquireWorkerSlot();
     try {
       return await this.runWorker(filePath, originalName);
@@ -55,36 +62,82 @@ export class ContractFileProcessor {
       this.activeWorkers += 1;
       return;
     }
-    await new Promise<void>((resolve) => this.waiters.push(resolve));
-    this.activeWorkers += 1;
+    if (this.waiters.length >= this.maxQueueSize) {
+      throw new ServiceUnavailableException('合同文件解析队列已满，请稍后重试');
+    }
+    await new Promise<void>((resolve, reject) => {
+      const waiter: WorkerWaiter = {
+        resolve,
+        timer: setTimeout(() => {
+          const index = this.waiters.indexOf(waiter);
+          if (index >= 0) this.waiters.splice(index, 1);
+          reject(new ServiceUnavailableException('合同文件解析排队超时'));
+        }, this.queueTimeoutMs),
+      };
+      waiter.timer.unref?.();
+      this.waiters.push(waiter);
+    });
   }
 
   private releaseWorkerSlot(): void {
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      clearTimeout(waiter.timer);
+      // slot 直接交接给队首等待者；activeWorkers 保持不变，避免新请求插队造成超并发。
+      waiter.resolve();
+      return;
+    }
     this.activeWorkers -= 1;
-    this.waiters.shift()?.();
   }
 
   private runWorker(filePath: string, originalName: string): Promise<ProcessedContractFile> {
     return new Promise((resolve, reject) => {
-      const worker = new Worker(this.workerPath, { workerData: { filePath, originalName } });
+      const worker = this.createWorker(filePath, originalName);
       let settled = false;
-      const fail = (error: Error) => {
+      const settle = async (deliver: () => void) => {
         if (settled) return;
         settled = true;
-        reject(error);
+        clearTimeout(timer);
+        try {
+          await worker.terminate();
+        } catch {
+          // 原始解析结果优先；slot 仍会由外层 finally 释放。
+        }
+        worker.removeAllListeners();
+        deliver();
       };
+      const succeed = (value: ProcessedContractFile) => void settle(() => resolve(value));
+      const fail = (error: Error) => void settle(() => reject(error));
+      const timer = setTimeout(() => {
+        fail(new Error('合同文件解析 Worker 超时'));
+      }, this.workerTimeoutMs);
+      timer.unref?.();
       worker.once('message', (message: ContractFileWorkerResponse) => {
-        if (settled) return;
-        settled = true;
-        if (message.ok && message.result) resolve(message.result);
-        else if (message.validationError) reject(fileValidationError(message.validationError));
-        else reject(new Error(message.internalError || '合同文件解析 Worker 失败'));
+        if (message.ok) succeed(message.result);
+        else if (message.errorType === 'validation') fail(fileValidationError(message.message));
+        else fail(new Error('合同文件解析 Worker 失败'));
       });
-      worker.once('error', () => fail(new Error('合同文件解析 Worker 失败')));
+      // terminate 完成前保持 error listener，以免终止期间的错误变成未捕获事件。
+      worker.on('error', () => fail(new Error('合同文件解析 Worker 失败')));
       worker.once('exit', (code) => {
-        if (code !== 0) fail(new Error('合同文件解析 Worker 异常退出'));
+        fail(new Error(`合同文件解析 Worker 未返回结果（exit ${code}）`));
       });
     });
+  }
+
+  protected createWorker(filePath: string, originalName: string): Worker {
+    return new Worker(this.workerPath, {
+      workerData: { filePath, originalName },
+      resourceLimits: {
+        maxOldGenerationSizeMb: 128,
+        maxYoungGenerationSizeMb: 32,
+        stackSizeMb: 4,
+      },
+    });
+  }
+
+  protected shouldUseWorker(): boolean {
+    return existsSync(this.workerPath);
   }
 }
 
@@ -122,11 +175,14 @@ async function assertDocxArchiveSafe(filePath: string): Promise<void> {
   let totalBytes = 0;
   for (const entry of entries) {
     let entryBytes = 0;
-    const stream = entry.nodeStream('nodebuffer');
+    // JSZip 返回 readable-stream v2（非 Node 内置 Readable），没有
+    // Symbol.asyncIterator。wrap 后再以标准 Node 流按块计数，避免回退整个 entry 入内存。
+    const stream = new Readable({ read() {} }).wrap(entry.nodeStream('nodebuffer') as NodeJS.ReadableStream);
     try {
-      for await (const chunk of stream as AsyncIterable<Buffer>) {
-        entryBytes += chunk.length;
-        totalBytes += chunk.length;
+      for await (const value of stream) {
+        const chunkBytes = Buffer.isBuffer(value) ? value.length : Buffer.byteLength(String(value));
+        entryBytes += chunkBytes;
+        totalBytes += chunkBytes;
         if (entryBytes > DOCX_MAX_ENTRY_BYTES || totalBytes > DOCX_MAX_UNCOMPRESSED_BYTES) {
           throw fileValidationError('DOCX 解压后内容超过安全限制');
         }
@@ -194,6 +250,11 @@ async function extractReviewableText(filePath: string, ext: string): Promise<str
 function boundedWorkerCount(raw: string | undefined): number {
   const parsed = Number.parseInt(raw ?? '2', 10);
   return Number.isFinite(parsed) ? Math.min(4, Math.max(1, parsed)) : 2;
+}
+
+function boundedPositiveInt(raw: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number.parseInt(raw ?? '', 10);
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
 }
 
 function fileValidationError(error: string): UnprocessableEntityException {

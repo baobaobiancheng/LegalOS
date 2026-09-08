@@ -1,5 +1,6 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { ProjectAction, ProjectActor, ProjectLike } from './project-access.types';
+import { Prisma } from '@prisma/client';
 
 /**
  * 统一工单对象级权限策略（P1-01，任务书 5.2 权限矩阵）。
@@ -111,7 +112,7 @@ export class ProjectAccessPolicy {
    * - legal_bp：仅指派给自己 + 未分配（可认领摘要）
    * - legal_lead / admin：全部
    */
-  listScope(actor: ProjectActor): Record<string, unknown> {
+  listScope(actor: ProjectActor): Prisma.ProjectWhereInput {
     switch (actor.role) {
       case 'admin':
       case 'legal_lead':
@@ -119,7 +120,7 @@ export class ProjectAccessPolicy {
       case 'business':
         return { creatorId: actor.id };
       case 'legal_bp':
-        return { OR: [{ legalBpId: actor.id }, { legalBpId: null }] };
+        return { OR: [{ legalBpId: actor.id }, { ownerId: actor.id }, { legalBpId: null }] };
       default:
         return { creatorId: actor.id };
     }

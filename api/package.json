@@ -75,7 +75,7 @@
     "dotenv": "^16.6.1",
     "jszip": "^3.10.1",
     "mammoth": "^1.8.0",
-    "multer": "^2.2.0",
+    "multer": "2.3.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "pdf-parse": "^2.4.5",
@@ -109,5 +109,34 @@
     "@prisma/engines@6.19.3": true,
     "esbuild@0.28.1": true,
     "prisma@6.19.3": true
+  },
+  "overrides": {
+    "@angular-devkit/core": {
+      ".": "17.3.17",
+      "ajv": "8.18.0",
+      "picomatch": "4.0.5"
+    },
+    "@angular-devkit/schematics": "17.3.17",
+    "@angular-devkit/schematics-cli": "17.3.17",
+    "@nestjs/cli": {
+      "glob": "10.5.0",
+      "webpack": "5.110.3"
+    },
+    "@xmldom/xmldom": "0.8.15",
+    "multer": "2.3.0",
+    "body-parser@^1.0.0": "1.20.6",
+    "deepmerge-ts": "8.0.2",
+    "external-editor": {
+      "tmp": "0.2.7"
+    },
+    "fast-uri": "3.1.6",
+    "file-type": "21.3.2",
+    "js-yaml": "4.3.1",
+    "lodash": "4.18.1",
+    "postcss": {
+      "nanoid": "3.3.18"
+    },
+    "qs": "6.16.0",
+    "tar": "7.5.22"
   }
 }

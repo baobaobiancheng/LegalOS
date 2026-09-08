@@ -54,4 +54,40 @@ describe('RealCasAdapter.loginWithPassword', () => {
       type: CasAuthErrorType.INVALID_CREDENTIALS,
     });
   });
+
+  it('validate 调试日志不包含原始或 URL 编码后的 ticket', async () => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ status: 'success', username: 'safe.user', name: 'Safe' }),
+    }) as unknown as Response);
+    const adapter = new RealCasAdapter(config() as any);
+    const debug = vi.fn();
+    (adapter as any).logger = { debug };
+    const ticket = 'ST secret+/?&password';
+
+    await adapter.validateTicket(ticket);
+
+    const logged = String(debug.mock.calls[0][0]);
+    expect(logged).not.toContain(ticket);
+    expect(logged).not.toContain(encodeURIComponent(ticket));
+    expect(logged).not.toContain('secret');
+  });
+
+  it('密码登录日志不包含用户名、密码或摘要', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => url.includes('/api/login')
+      ? ({ ok: true, status: 200, text: async () => JSON.stringify({ code: 0, result: { ticket: 'safe-ticket' } }) } as unknown as Response)
+      : ({ ok: true, status: 200, text: async () => JSON.stringify({ status: 'success', username: 'safe.user', name: 'Safe' }) } as unknown as Response));
+    const adapter = new RealCasAdapter(config() as any);
+    const debug = vi.fn();
+    (adapter as any).logger = { debug };
+
+    await adapter.loginWithPassword('secret.user', 'SecretPass123!');
+
+    const logs = debug.mock.calls.flat().join(' ');
+    expect(logs).not.toContain('secret.user');
+    expect(logs).not.toContain('SecretPass123!');
+    expect(logs).not.toContain(crypto.createHash('md5').update('SecretPass123!').digest('hex'));
+    expect(logs).not.toContain('safe-ticket');
+  });
 });

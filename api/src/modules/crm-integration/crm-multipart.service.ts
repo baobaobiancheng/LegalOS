@@ -4,7 +4,7 @@ import Busboy from 'busboy';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, createWriteStream, mkdirSync, rmSync } from 'node:fs';
 import { extname, join } from 'node:path';
-import { Transform } from 'node:stream';
+import { Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { crmA1Error } from './crm-a1.errors';
 import {
@@ -79,6 +79,7 @@ export class CrmMultipartService {
     let parseError: HttpException | null = null;
     const files: CrmReceivedFile[] = [];
     const writes: Promise<void>[] = [];
+    let writeError: unknown;
     const indexes: Record<CrmFilePartName, number> = { files: 0, attachments: 0, mainContractFile: 0 };
 
     const rememberError = (error: HttpException) => { parseError ??= error; };
@@ -123,7 +124,7 @@ export class CrmMultipartService {
         hash.update(chunk);
       });
       writes.push(
-        pipeline(stream, createWriteStream(targetPath, { flags: 'wx', mode: 0o600 })).then(() => {
+        this.writeFilePart(stream, targetPath).then(() => {
           if (truncated) {
             rememberError(crmA1Error(HttpStatus.PAYLOAD_TOO_LARGE, 'PAYLOAD_TOO_LARGE', '单文件超过 20MB 限制'));
             return;
@@ -138,6 +139,10 @@ export class CrmMultipartService {
             storedName,
             path: targetPath,
           });
+        }).catch((error) => {
+          // 文件流可能早于整个 request 结束失败；立即挂 rejection handler，避免
+          // Node 在稍后的 allSettled 前把它判定为 unhandledRejection。
+          writeError ??= error;
         }),
       );
     });
@@ -160,10 +165,9 @@ export class CrmMultipartService {
     } catch (error) {
       requestError = error;
     }
-    const writeResults = await Promise.allSettled(writes);
+    await Promise.all(writes);
     if (requestError) throw requestError;
-    const rejectedWrite = writeResults.find((result) => result.status === 'rejected');
-    if (rejectedWrite?.status === 'rejected') throw rejectedWrite.reason;
+    if (writeError) throw writeError;
     if (parseError) throw parseError;
     if (payloadText === null) {
       throw crmA1Error(HttpStatus.BAD_REQUEST, 'INVALID_PARAM', '缺少 payload 字段');
@@ -195,6 +199,29 @@ export class CrmMultipartService {
 
   private cleanupDirectory(path: string): void {
     rmSync(path, { recursive: true, force: true });
+  }
+
+  /** 单测可注入可控写盘故障；生产路径始终使用独占、0600 文件。 */
+  protected openStagingWriteStream(path: string): Writable {
+    return createWriteStream(path, { flags: 'wx', mode: 0o600 });
+  }
+
+  /** 写盘失败时不销毁 busboy 的 file stream，而是继续有界地消费当前请求。 */
+  private writeFilePart(stream: NodeJS.ReadableStream, targetPath: string): Promise<void> {
+    const target = this.openStagingWriteStream(targetPath);
+    return new Promise<void>((resolve, reject) => {
+      target.once('finish', resolve);
+      target.once('error', (error) => {
+        stream.unpipe(target);
+        stream.resume();
+        reject(error);
+      });
+      stream.once('error', (error) => {
+        target.destroy();
+        reject(error);
+      });
+      stream.pipe(target);
+    });
   }
 }
 

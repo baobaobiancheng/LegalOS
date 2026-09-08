@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { RiskLevel } from '@prisma/client';
 import { OUTBOX_EVENT_DINGTALK_GROUP_CREATE, dingtalkGroupOutboxDedupKey } from './create-project.use-case';
+import { matchActiveLegalAssignee, requireActiveLegalAssignee } from '../domain/legal-assignee';
 
 /**
  * 统一法务升级用例（P1-10）：所有"咨询/合同进入人工法务流程"的入口共用本用例。
@@ -50,10 +51,12 @@ export class EscalateProjectToLegalUseCase {
     const result = await this.prisma.$transaction(async (tx) => {
       let matchedBpId: string | null = null;
       if (cmd.legalBpId === undefined) {
-        matchedBpId = await this.matchLegalBp(tx, cmd.domain ?? null);
+        matchedBpId = await matchActiveLegalAssignee(tx, cmd.domain ?? null);
       } else {
         matchedBpId = cmd.legalBpId;
+        if (matchedBpId) await requireActiveLegalAssignee(tx, matchedBpId);
       }
+      if (cmd.ownerId) await requireActiveLegalAssignee(tx, cmd.ownerId);
 
       // 条件更新：仅 route=llm 的工单可升级（并发防护，重复请求 count=0 → 幂等返回）
       const data: Record<string, unknown> = { route: 'legalbp' };
@@ -102,21 +105,4 @@ export class EscalateProjectToLegalUseCase {
     return result;
   }
 
-  /** 领域映射优先，找不到时取最早创建且已绑定钉钉的法务负责人。 */
-  private async matchLegalBp(tx: any, domain: string | null): Promise<string | null> {
-    if (domain) {
-      const maps = await tx.bpDomainMap.findMany({
-        where: { domain },
-        include: { user: { select: { id: true, dingtalkUserId: true } } },
-      });
-      const bound = maps.find((m: any) => m.user?.dingtalkUserId);
-      if (bound) return bound.user.id;
-    }
-    const lead = await tx.user.findFirst({
-      where: { role: 'legal_lead', dingtalkUserId: { not: null } },
-      orderBy: { createdAt: 'asc' },
-      select: { id: true },
-    });
-    return lead?.id ?? null;
-  }
 }

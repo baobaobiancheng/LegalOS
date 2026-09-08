@@ -19,6 +19,10 @@ const PROJECT = {
   id: 'c-1',
   kind: 'contract',
   status: '待复核',
+  route: 'llm',
+  result: null,
+  reviewStatus: null,
+  updatedAt: new Date('2026-09-08T00:00:00.000Z'),
   title: '合同草稿·测试',
   creatorId: 'u-biz',
   ownerId: 'u-bp',
@@ -38,13 +42,17 @@ describe('ContractService.reviewContract 源文档', () => {
 
   beforeEach(() => {
     prisma = {
-      project: { findUnique: vi.fn() },
+      project: { findUnique: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       skill: { findFirst: vi.fn() },
       projectMessage: { findFirst: vi.fn(), create: vi.fn() },
-      projectEvent: { create: vi.fn() },
+      projectEvent: { create: vi.fn().mockResolvedValue({}) },
       contractDocument: { findFirst: vi.fn(), create: vi.fn() },
-      contractReviewRun: { create: vi.fn(), update: vi.fn().mockResolvedValue({}) },
-      $transaction: vi.fn((ops: any[]) => Promise.all(ops)),
+      contractReviewRun: {
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      $transaction: vi.fn(async (arg: any) => typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
     };
     dsh = { executeStream: vi.fn() };
     template = { findBySlug: vi.fn() };
@@ -109,13 +117,13 @@ describe('ContractService.reviewContract 源文档', () => {
     const handle = makeHandle();
     dsh.executeStream.mockResolvedValue(handle);
 
-    await service.reviewContract('c-1', ACTOR);
+    const result = await service.reviewContract('c-1', ACTOR);
     handle.emit('text', '风险清单：违约金过高…');
     handle.emit('done', { text: '风险清单：违约金过高…' });
 
-    await vi.waitFor(() => expect(prisma.contractReviewRun.update).toHaveBeenCalled());
-    const update = prisma.contractReviewRun.update.mock.calls[0][0];
-    expect(update.where).toEqual({ id: 'run-1' });
+    await expect(result.completion).resolves.toMatchObject({ reviewRunId: 'run-1' });
+    const update = prisma.contractReviewRun.updateMany.mock.calls[0][0];
+    expect(update.where).toMatchObject({ id: 'run-1', status: 'running' });
     expect(update.data.status).toBe('succeeded');
     expect(update.data.result).toBe('风险清单：违约金过高…');
     expect(prisma.contractDocument.create).not.toHaveBeenCalled();
@@ -130,16 +138,67 @@ describe('ContractService.reviewContract 源文档', () => {
     const handle = makeHandle();
     dsh.executeStream.mockResolvedValue(handle);
 
-    await service.reviewContract('c-1', ACTOR);
+    const result = await service.reviewContract('c-1', ACTOR);
     handle.emit('error', new Error('dsh turn 失败'));
 
-    await vi.waitFor(() => expect(prisma.contractReviewRun.update).toHaveBeenCalled());
-    expect(prisma.contractReviewRun.update.mock.calls[0][0].data).toMatchObject({
+    await expect(result.completion).rejects.toThrow('AI 审查失败或超时');
+    expect(prisma.contractReviewRun.updateMany.mock.calls[0][0].data).toMatchObject({
       status: 'failed',
       errorMessage: 'dsh turn 失败',
     });
     expect(prisma.contractDocument.create).not.toHaveBeenCalled();
     // 源文档未被修改
     expect(prisma.contractDocument.findFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['成功结果', 'done'],
+    ['失败结果', 'error'],
+  ] as const)('人工正式回复后拒绝迟到审查%s，且运行不悬挂', async (_label, event) => {
+    const projectState: any = { ...PROJECT };
+    let runStatus = 'running';
+    prisma.project.findUnique.mockImplementation(async () => ({ ...projectState }));
+    prisma.project.updateMany.mockImplementation(async ({ where, data }: any) => {
+      const matches = where.updatedAt.getTime() === projectState.updatedAt.getTime()
+        && ['route', 'status', 'result', 'reviewStatus', 'ownerId', 'legalBpId']
+          .every((key) => where[key] === projectState[key]);
+      if (!matches) return { count: 0 };
+      Object.assign(projectState, data);
+      return { count: 1 };
+    });
+    prisma.contractDocument.findFirst.mockResolvedValue({ id: 'doc-race', content: '合同正文', version: 1 });
+    prisma.contractReviewRun.create.mockResolvedValue({ id: 'run-race' });
+    prisma.contractReviewRun.updateMany.mockImplementation(async ({ where, data }: any) => {
+      if (where.id !== 'run-race' || where.status !== runStatus) return { count: 0 };
+      runStatus = data.status;
+      return { count: 1 };
+    });
+    prisma.$transaction.mockImplementation(async (callback: any) => {
+      const before = runStatus;
+      try {
+        return await callback(prisma);
+      } catch (error) {
+        runStatus = before;
+        throw error;
+      }
+    });
+    const handle = makeHandle();
+    dsh.executeStream.mockResolvedValue(handle);
+
+    const result = await service.reviewContract('c-1', ACTOR);
+    Object.assign(projectState, {
+      status: '已回传', result: '人工审查结论', reviewStatus: 'review_completed',
+      updatedAt: new Date('2026-09-08T00:00:01.000Z'),
+    });
+    if (event === 'done') handle.emit('done', { text: '迟到 AI 审查' });
+    else handle.emit('error', new Error('迟到失败'));
+
+    await expect(result.completion).rejects.toThrow();
+    expect(projectState).toMatchObject({
+      status: '已回传', result: '人工审查结论', reviewStatus: 'review_completed',
+    });
+    expect(runStatus).toBe('cancelled');
+    expect(prisma.projectMessage.create).not.toHaveBeenCalled();
+    expect(prisma.projectEvent.create).not.toHaveBeenCalled();
   });
 });

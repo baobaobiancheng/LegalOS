@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
-import { RequestError, request, requestForm } from '../../api/client'
+import { RequestError, request, requestBlob, requestForm } from '../../api/client'
 import { requestStreamOrJson } from '../../api/sse'
 import MarkdownContent from '../../components/MarkdownContent.vue'
 import DownloadMenu from '../../components/DownloadMenu.vue'
@@ -181,8 +181,21 @@ const handleFinalUpload = async (e: Event) => {
   uploadingFinal.value = false
 }
 
-const downloadFile = (f: ContractFile) => {
-  window.open(`/api/projects/${id}/files/${f.id}`, '_blank')
+const downloadFile = async (f: ContractFile) => {
+  actionError.value = null
+  try {
+    const blob = await requestBlob(`/projects/${id}/files/${f.id}`)
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = f.originalName
+    anchor.click()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    actionError.value = error instanceof RequestError
+      ? error
+      : new RequestError({ error: '附件下载失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  }
 }
 
 const formatSize = (bytes: number): string => {

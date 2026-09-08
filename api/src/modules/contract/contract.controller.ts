@@ -38,9 +38,13 @@ const storageDir = process.env.CONTRACT_STORAGE_DIR
 const contractStorage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     const dir = join(storageDir, '.staging');
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    chmodSync(dir, 0o700);
-    cb(null, dir);
+    try {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      chmodSync(dir, 0o700);
+      cb(null, dir);
+    } catch (error) {
+      cb(error as Error, '');
+    }
   },
   filename: (_req, file, cb) => {
     const ext = extname(file.originalname).toLowerCase();
@@ -76,7 +80,13 @@ export class ContractController {
     const abort = new AbortController();
     const result = await this.contractService.generateDraft(dto, actor, abort.signal);
     if (result.stream) {
-      sendSSE(res, result.stream, { projectId: result.projectId, status: '待复核' }, () => abort.abort());
+      sendSSE(
+        res,
+        result.stream,
+        { projectId: result.projectId, status: '待复核' },
+        () => abort.abort(),
+        result.completion,
+      );
     } else {
       res.json(result);
     }
@@ -127,6 +137,7 @@ export class ContractController {
           sourceVersion: result.sourceVersion,
         },
         () => abort.abort(),
+        result.completion,
       );
     } else {
       res.json(result);
@@ -136,7 +147,17 @@ export class ContractController {
   /** 上传合同附件（multipart: file + kind） */
   @Post('projects/:id/files')
   @Roles(Role.admin, Role.business, Role.legal_bp, Role.legal_lead)
-  @UseInterceptors(FileInterceptor('file', { storage: contractStorage, limits: { fileSize: 20 * 1024 * 1024 } }))
+  @UseInterceptors(FileInterceptor('file', {
+    storage: contractStorage,
+    limits: {
+      fileSize: 20 * 1024 * 1024,
+      files: 1,
+      fields: 1,
+      parts: 3,
+      fieldSize: 64,
+      fieldNameSize: 32,
+    },
+  }))
   async upload(
     @Param('id') id: string,
     @UploadedFile() file: Express.Multer.File,

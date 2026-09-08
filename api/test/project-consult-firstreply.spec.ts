@@ -86,7 +86,7 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
       outboxEvent: { create: vi.fn() },
       bpDomainMap: { findMany: vi.fn(), upsert: vi.fn(), deleteMany: vi.fn() },
       user: { findUnique: vi.fn(), findFirst: vi.fn() },
-      consultationRun: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+      consultationRun: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     };
     makeTransaction(prisma);
     risk = { assess: vi.fn() };

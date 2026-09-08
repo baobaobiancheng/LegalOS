@@ -123,6 +123,7 @@ export class SkillService {
       if (group) where.group = group;
       if (scope === 'usable') {
         // 可用列表 = 公有 + 自己的私有（业务端仅公有 + 兜底由前端处理）
+        delete where.visibility;
         where.OR = [{ visibility: 'public' }, { creatorId: userId, visibility: 'private' }];
       }
     }
@@ -188,15 +189,24 @@ export class SkillService {
         : this.isLead(role);
     if (!canEdit) throw new ForbiddenException('无权编辑此技能');
 
-    return this.prisma.skill.update({
-      where: { id },
-      data: {
-        name: dto.name ?? skill.name,
-        group: dto.group ?? skill.group,
-        description: dto.description ?? skill.description,
-        prompt: dto.prompt ?? skill.prompt,
+    const data: Prisma.SkillUpdateManyMutationInput = {};
+    if (dto.name !== undefined) data.name = dto.name;
+    if (dto.group !== undefined) data.group = dto.group;
+    if (dto.description !== undefined) data.description = dto.description;
+    if (dto.prompt !== undefined) data.prompt = dto.prompt;
+    const updated = await this.prisma.skill.updateMany({
+      where: {
+        id,
+        visibility: skill.visibility,
+        updatedAt: skill.updatedAt,
+        ...(skill.visibility === 'private' ? { creatorId: userId } : {}),
       },
+      data,
     });
+    if (updated.count === 0) {
+      throw new ConflictException('技能状态或内容已变更，请刷新后重试');
+    }
+    return this.prisma.skill.findUnique({ where: { id } });
   }
 
   /** 提交审核：private → pending（仅创建者，条件更新） */

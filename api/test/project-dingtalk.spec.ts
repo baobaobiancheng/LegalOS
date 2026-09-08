@@ -86,10 +86,10 @@ describe('ProjectService 钉钉拉群链路', () => {
     prisma.project.findUnique.mockResolvedValue(mockProject());
     // 用户映射：业务（已绑定）/ BP 彭宇欣（已绑定）/ 负责人（已绑定）
     prisma.user.findUnique.mockImplementation(async ({ where }: any) => {
-      if (where.id === 'u-biz') return { id: 'u-biz', displayName: '业务-王五', role: 'business', dingtalkUserId: 'U-biz' };
-      if (where.id === 'u-bp') return { id: 'u-bp', displayName: '彭宇欣', role: 'legal_bp', dingtalkUserId: 'U-bp' };
-      if (where.id === 'u-lead') return { id: 'u-lead', displayName: '法务负责人', role: 'legal_lead', dingtalkUserId: 'U-lead' };
-      if (where.id === 'u-new') return { id: 'u-new', displayName: '法务BP-新', role: 'legal_bp', dingtalkUserId: 'U-new' };
+      if (where.id === 'u-biz') return { id: 'u-biz', displayName: '业务-王五', role: 'business', isActive: true, dingtalkUserId: 'U-biz' };
+      if (where.id === 'u-bp') return { id: 'u-bp', displayName: '彭宇欣', role: 'legal_bp', isActive: true, dingtalkUserId: 'U-bp' };
+      if (where.id === 'u-lead') return { id: 'u-lead', displayName: '法务负责人', role: 'legal_lead', isActive: true, dingtalkUserId: 'U-lead' };
+      if (where.id === 'u-new') return { id: 'u-new', displayName: '法务BP-新', role: 'legal_bp', isActive: true, dingtalkUserId: 'U-new' };
       return undefined;
     });
   });
@@ -98,7 +98,7 @@ describe('ProjectService 钉钉拉群链路', () => {
     risk.assess.mockResolvedValue({ risk: 'P1', route: 'legalbp', domain: null });
     prisma.skill.findFirst.mockResolvedValue({ id: 'sk-1', name: '数据合规评估', group: '合规法务', prompt: '你是数据合规专家' });
     prisma.bpDomainMap.findMany.mockResolvedValue([
-      { user: { id: 'u-bp', dingtalkUserId: 'U-bp' } },
+      { userId: 'u-bp' },
     ]);
 
     await service.create(
@@ -127,13 +127,16 @@ describe('ProjectService 钉钉拉群链路', () => {
   it('无技能：LLM 领域兜底匹配 BP', async () => {
     risk.assess.mockResolvedValue({ risk: 'P1', route: 'legalbp', domain: '合同与交易' });
     prisma.bpDomainMap.findMany.mockResolvedValue([
-      { user: { id: 'u-bp2', dingtalkUserId: 'U-bp2' } },
+      { userId: 'u-bp2' },
     ]);
 
     await service.create({ kind: 'consult', title: '测试工单', input: '这是一个足够长的测试问题' }, 'u-biz');
 
     expect(prisma.bpDomainMap.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { domain: '合同与交易' },
+      where: expect.objectContaining({
+        domain: '合同与交易',
+        user: expect.objectContaining({ isActive: true }),
+      }),
     }));
     const created = prisma.project.create.mock.calls[0][0].data;
     expect(created.legalBpId).toBe('u-bp2');
@@ -166,7 +169,7 @@ describe('ProjectService 钉钉拉群链路', () => {
 
   it('create 与钉钉解耦：即使建群可能失败，create 也只入队并成功返回（P1-04 语义）', async () => {
     risk.assess.mockResolvedValue({ risk: 'P1', route: 'legalbp', domain: '合规法务' });
-    prisma.bpDomainMap.findMany.mockResolvedValue([{ user: { id: 'u-bp', dingtalkUserId: 'U-bp' } }]);
+    prisma.bpDomainMap.findMany.mockResolvedValue([{ userId: 'u-bp' }]);
     dingtalk.createGroup.mockRejectedValue(new Error('errcode=50001'));
 
     await expect(
@@ -190,7 +193,7 @@ describe('ProjectService 钉钉拉群链路', () => {
 
   it('升级补建群：P2→legalbp 重新匹配 BP → 指派并入队建群 Outbox', async () => {
     risk.assess.mockResolvedValue({ risk: 'P1', route: 'legalbp', domain: '合规法务' });
-    prisma.bpDomainMap.findMany.mockResolvedValue([{ user: { id: 'u-bp', dingtalkUserId: 'U-bp' } }]);
+    prisma.bpDomainMap.findMany.mockResolvedValue([{ userId: 'u-bp' }]);
     prisma.project.findUnique.mockResolvedValue(mockProject({ route: 'llm', status: '分析中', legalBpId: null }));
     prisma.project.update.mockResolvedValue(mockProject({ route: 'legalbp', legalBpId: null }));
     prisma.projectMessage.findFirst.mockResolvedValue(null);
@@ -237,7 +240,7 @@ describe('ProjectService 钉钉拉群链路', () => {
     prisma.project.findUnique.mockResolvedValue(mockProject({ legalBpId: 'u-old', dingtalkChatId: 'c1' }));
     prisma.project.update.mockResolvedValue(mockProject({ legalBpId: 'u-new' }));
     prisma.user.findUnique.mockImplementation(async ({ where }: any) =>
-      where.id === 'u-new' ? { id: 'u-new', displayName: '法务BP-新', role: 'legal_bp', dingtalkUserId: null } : undefined,
+      where.id === 'u-new' ? { id: 'u-new', displayName: '法务BP-新', role: 'legal_bp', isActive: true, dingtalkUserId: null } : undefined,
     );
 
     await service.transfer('p-1', 'u-new', { id: 'u-lead', role: 'legal_lead' });
@@ -247,6 +250,17 @@ describe('ProjectService 钉钉拉群链路', () => {
     expect(prisma.outboxEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ eventType: 'dingtalk.member.add' }) }),
     );
+  });
+
+  it('转派目标已停用时拒绝，不改写工单', async () => {
+    prisma.project.findUnique.mockResolvedValue(mockProject({ legalBpId: 'u-old' }));
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'u-disabled', displayName: '已停用法务', role: 'legal_bp', isActive: false,
+    });
+
+    await expect(service.transfer('p-1', 'u-disabled', { id: 'u-lead', role: 'legal_lead' }))
+      .rejects.toThrow('账号须启用');
+    expect(prisma.project.update).not.toHaveBeenCalled();
   });
 
   it('法务 BP 不能自行转派（P1-01）：transfer 抛 Forbidden', async () => {
@@ -260,7 +274,7 @@ describe('ProjectService 钉钉拉群链路', () => {
 
   it('update：legalBpId 设为非法务角色 → 拒绝（工程评审 #3 角色校验）', async () => {
     prisma.project.findUnique.mockResolvedValue(mockProject());
-    prisma.user.findUnique.mockResolvedValue({ id: 'u-biz2', role: 'business' });
+    prisma.user.findUnique.mockResolvedValue({ id: 'u-biz2', role: 'business', isActive: true });
 
     await expect(
       service.update('p-1', { legalBpId: 'u-biz2' } as any, { id: 'u-lead', role: 'legal_lead' }),

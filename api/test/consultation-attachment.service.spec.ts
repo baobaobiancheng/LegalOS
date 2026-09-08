@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ConsultationAttachmentService } from '../src/common/services/consultation-attachment.service';
 import { DocumentExtractionService } from '../src/common/services/document-extraction.service';
+import { ContractFileProcessor, DOCX_MAX_ENTRIES } from '../src/modules/contract/application/contract-file.processor';
+import JSZip from 'jszip';
 
 /**
  * 咨询附件（2026-08-12 review：DOCX 正文从未交给模型）：
@@ -150,9 +152,27 @@ describe('ConsultationAttachmentService', () => {
 
 describe('DocumentExtractionService', () => {
   it('明显伪造或不完整的旧版 DOC 在进入解析器前被拒绝', async () => {
-    const service = new DocumentExtractionService();
+    const service = new DocumentExtractionService(new ContractFileProcessor());
     const signatureOnly = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
 
     await expect(service.extract(signatureOnly, '材料.DOC')).rejects.toThrow('DOC 文件头不完整');
+  });
+
+  it('咨询 DOCX 复用压缩包 entry 上限并拒绝小体积炸弹 fixture', async () => {
+    const archive = new JSZip();
+    for (let index = 0; index <= DOCX_MAX_ENTRIES; index += 1) {
+      archive.file(`word/item-${index}.xml`, '<x/>');
+    }
+    const buffer = await archive.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const service = new DocumentExtractionService(new ContractFileProcessor());
+
+    await expect(service.extract(buffer, '材料.docx')).rejects.toMatchObject({
+      response: expect.objectContaining({ error: expect.stringContaining('内部文件数') }),
+    });
+  });
+
+  it('咨询 txt/md 使用 fatal UTF-8，拒绝替换字符乱码', async () => {
+    const service = new DocumentExtractionService(new ContractFileProcessor());
+    await expect(service.extract(Buffer.from([0xc3, 0x28]), '材料.txt')).rejects.toThrow();
   });
 });

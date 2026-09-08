@@ -101,7 +101,7 @@ describe('ProjectAccessPolicy 权限矩阵', () => {
   it('listScope：business 仅自己创建；legal_bp 自己+未分配；lead/admin 全部', () => {
     expect(policy.listScope(actor('bizA', 'business'))).toEqual({ creatorId: 'bizA' });
     expect(policy.listScope(actor('bpA', 'legal_bp'))).toEqual({
-      OR: [{ legalBpId: 'bpA' }, { legalBpId: null }],
+      OR: [{ legalBpId: 'bpA' }, { ownerId: 'bpA' }, { legalBpId: null }],
     });
     expect(policy.listScope(actor('lead', 'legal_lead'))).toEqual({});
     expect(policy.listScope(actor('admin', 'admin'))).toEqual({});

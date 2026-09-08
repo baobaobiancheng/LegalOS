@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { ConsultationChatService } from './consultation-chat.service';
 import { DocumentExtractionService } from './document-extraction.service';
 import { ConsultationAttachmentService } from './consultation-attachment.service';
+import { ContractFileProcessor } from '../../modules/contract/application/contract-file.processor';
 
 /**
  * 咨询直连网关全局模块（2026-08-12）：
@@ -10,7 +11,7 @@ import { ConsultationAttachmentService } from './consultation-attachment.service
  */
 @Global()
 @Module({
-  providers: [ConsultationChatService, DocumentExtractionService, ConsultationAttachmentService],
+  providers: [ConsultationChatService, ContractFileProcessor, DocumentExtractionService, ConsultationAttachmentService],
   exports: [ConsultationChatService, DocumentExtractionService, ConsultationAttachmentService],
 })
 export class ConsultationChatModule {}

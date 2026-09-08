@@ -4,8 +4,12 @@ import { apiLogger } from './logger'
 /** accessToken 存内存（Pinia），不落 localStorage，防 XSS */
 let accessToken: string | null = null
 let refreshing: Promise<boolean> | null = null
+let authGeneration = 0
 
-export const setAccessToken = (token: string | null) => { accessToken = token }
+export const setAccessToken = (token: string | null) => {
+  accessToken = token
+  authGeneration += 1
+}
 export const getAccessToken = () => accessToken
 
 export class RequestError extends Error {
@@ -17,22 +21,29 @@ export class RequestError extends Error {
 
 /** 单飞刷新：并发 401 只触发一次 refresh */
 async function refreshAccessToken(): Promise<boolean> {
+  const generation = authGeneration
   refreshing ??= (async () => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 10_000)
     try {
       const response = await fetch('/api/auth/refresh', {
         method: 'POST',
         credentials: 'include',
+        signal: controller.signal,
       })
       if (!response.ok) return false
       const text = await response.text()
       const data = JSON.parse(text) as { accessToken?: string }
       if (!data.accessToken) return false
+      // logout/重新登录发生在 refresh 飞行期间时，迟到响应不得恢复旧会话。
+      if (generation !== authGeneration) return false
       accessToken = data.accessToken
       return true
     } catch (error) {
       apiLogger.warn('auth.refresh_failed', { reason: error instanceof Error ? error.name : 'unknown' })
       return false
     } finally {
+      clearTimeout(timer)
       refreshing = null
     }
   })()
@@ -139,21 +150,78 @@ export async function apiFetch(path: string, options: RequestOptions = {}): Prom
       statusCode: 0,
     })
     apiLogger.warn('http.transport_error', { path, method, code: requestError.payload.code })
-    throw requestError
-  } finally {
     clearTimeout(timer)
     if (signal) signal.removeEventListener('abort', abortFromCaller)
+    throw requestError
   }
+  clearTimeout(timer)
+  response = keepCallerAbortUntilBodyEnds(response, signal, abortFromCaller)
 
   const requestId = readRequestId(response)
   // 只有 GET/HEAD/OPTIONS 可安全重放；POST 401 必须让调用方决定，避免重复业务写入。
   if (response.status === 401 && retry && path !== '/auth/refresh' && isSafeRetryMethod(method)) {
+    // refresh 失败时仍需向调用方返回原始 401 契约；先完整读取，
+    // 同时让 caller abort listener 在 body 结束时正常释放。
+    const unauthorizedBody = await response.arrayBuffer()
+    const unauthorizedResponse = new Response(unauthorizedBody, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    })
     if (await refreshAccessToken()) return apiFetch(path, { ...options, retry: false })
+    return unauthorizedResponse
   }
   if (response.status === 401 && retry && path !== '/auth/refresh' && !isSafeRetryMethod(method)) {
     apiLogger.warn('http.unsafe_401_no_replay', { path, method, requestId, statusCode: response.status })
   }
   return response
+}
+
+function keepCallerAbortUntilBodyEnds(
+  response: Response,
+  signal: AbortSignal | undefined,
+  abortFromCaller: () => void,
+): Response {
+  if (!signal) return response
+  if (!response.body) {
+    signal.removeEventListener('abort', abortFromCaller)
+    return response
+  }
+  const reader = response.body.getReader()
+  let finished = false
+  const finish = () => {
+    if (finished) return
+    finished = true
+    signal.removeEventListener('abort', abortFromCaller)
+  }
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const chunk = await reader.read()
+        if (chunk.done) {
+          finish()
+          controller.close()
+        } else {
+          controller.enqueue(chunk.value)
+        }
+      } catch (error) {
+        finish()
+        controller.error(error)
+      }
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason)
+      } finally {
+        finish()
+      }
+    },
+  })
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  })
 }
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -162,4 +230,10 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 
 export async function requestForm<T>(path: string, formData: FormData, options: Omit<RequestOptions, 'body'> = {}): Promise<T> {
   return parseApiResponse<T>(await apiFetch(path, { ...options, body: formData }))
+}
+
+export async function requestBlob(path: string, options: RequestOptions = {}): Promise<Blob> {
+  const response = await apiFetch(path, options)
+  if (!response.ok) await parseApiResponse(response)
+  return response.blob()
 }

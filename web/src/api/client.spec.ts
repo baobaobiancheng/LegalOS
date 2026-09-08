@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getAccessToken, request, RequestError, setAccessToken } from './client'
+import { apiFetch, getAccessToken, request, RequestError, setAccessToken } from './client'
 import { redactApiLogContext } from './logger'
 
 const jsonResponse = (body: unknown, status = 200, requestId?: string) => new Response(JSON.stringify(body), {
@@ -13,6 +13,7 @@ const jsonResponse = (body: unknown, status = 200, requestId?: string) => new Re
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+  vi.useRealTimers()
   setAccessToken(null)
 })
 
@@ -84,6 +85,74 @@ describe('P2-03 API client', () => {
     expect(error).toBeInstanceOf(RequestError)
     if (error instanceof RequestError) expect(error.payload.statusCode).toBe(401)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('收到响应头后，调用方仍可中止正文流并释放监听', async () => {
+    const abort = new AbortController()
+    const removeListener = vi.spyOn(abort.signal, 'removeEventListener')
+    let transportSignal: AbortSignal | null = null
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
+      transportSignal = init.signal!
+      return Promise.resolve(new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          init.signal!.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true })
+        },
+      })))
+    }))
+
+    const response = await apiFetch('/download', { signal: abort.signal })
+    const consumed = expect(response.text()).rejects.toMatchObject({ name: 'AbortError' })
+    abort.abort()
+    await consumed
+    expect(transportSignal!.aborted).toBe(true)
+    expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function))
+  })
+
+  it('刷新超时后释放单飞状态，下一次请求可以重新刷新', async () => {
+    vi.useFakeTimers()
+    let refreshCalls = 0
+    vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit) => {
+      if (url === '/api/auth/refresh') {
+        refreshCalls += 1
+        if (refreshCalls === 1) {
+          return new Promise<Response>((_resolve, reject) => {
+            init.signal!.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+          })
+        }
+        return Promise.resolve(jsonResponse({ accessToken: 'recovered-token' }))
+      }
+      return Promise.resolve(getAccessToken() === 'recovered-token'
+        ? jsonResponse({ ok: true })
+        : jsonResponse({ error: '未登录', code: 'UNAUTHORIZED' }, 401))
+    }))
+
+    const failed = expect(request('/first')).rejects.toMatchObject({ payload: { statusCode: 401 } })
+    await vi.advanceTimersByTimeAsync(10_001)
+    await failed
+    await expect(request('/second')).resolves.toEqual({ ok: true })
+    expect(refreshCalls).toBe(2)
+  })
+
+  it.each([null, 'new-login-token'])('刷新期间会话变为 %s 时，迟到响应不能覆盖新状态', async (nextToken) => {
+    let resolveRefresh!: (response: Response) => void
+    const refreshStarted = new Promise<void>((started) => {
+      vi.stubGlobal('fetch', vi.fn((url: string) => {
+        if (url === '/api/auth/refresh') {
+          return new Promise<Response>((resolve) => {
+            resolveRefresh = resolve
+            started()
+          })
+        }
+        return Promise.resolve(jsonResponse({ error: '未登录', code: 'UNAUTHORIZED' }, 401))
+      }))
+    })
+    setAccessToken('expired-token')
+    const failed = expect(request('/session')).rejects.toMatchObject({ payload: { statusCode: 401 } })
+    await refreshStarted
+    setAccessToken(nextToken)
+    resolveRefresh(jsonResponse({ accessToken: 'stale-refresh-token' }))
+    await failed
+    expect(getAccessToken()).toBe(nextToken)
   })
 
   it('日志上下文会脱敏，不输出 token、body 等秘密字段', () => {

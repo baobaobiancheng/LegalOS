@@ -14,7 +14,7 @@
     "setup": "cd api && npm install && cd ../web && npm install && cd .. && npm run prisma:migrate && npm run prisma:seed",
     "lint": "npm --prefix api run lint && npm --prefix web run lint",
     "typecheck": "npm --prefix api run typecheck && npm --prefix web run typecheck",
-    "test": "npm --prefix api run test:unit && npm --prefix api run test:integration",
+    "test": "npm --prefix api run test:unit && npm --prefix web run test && npm --prefix api run test:integration",
     "ci": "npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "devDependencies": {
