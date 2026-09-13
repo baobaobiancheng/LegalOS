@@ -25,6 +25,7 @@ const mockProject = (over: any = {}) => ({
   title: '测试工单',
   route: 'llm',
   risk: 'P2',
+  updatedAt: new Date('2026-09-13T00:00:00Z'),
   legalBpId: null,
   ownerId: 'u-biz',
   dingtalkChatId: null,
@@ -40,6 +41,7 @@ function makeTransaction(prisma: any) {
         project: prisma.project,
         projectMessage: prisma.projectMessage,
         projectEvent: prisma.projectEvent,
+        consultationRun: prisma.consultationRun,
         outboxEvent: prisma.outboxEvent,
         bpDomainMap: prisma.bpDomainMap,
         user: prisma.user,
@@ -110,7 +112,7 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
       new EscalateProjectToLegalUseCase(prisma) as any,
       // 真实编排器：内部调用 consultationChat/contextBuilder mock，原断言不变
       new ConsultationReplyOrchestrator(
-        prisma,
+        prisma, { resolve: vi.fn().mockResolvedValue('general') } as any,
         { execute: vi.fn((input: any) => consultationChat.stream(input.messages, input)) } as any,
         contextBuilder,
         { get: vi.fn((_k: string, d: unknown) => d) } as any,
@@ -254,7 +256,7 @@ describe('首轮咨询链路（双重提交回归 + 多轮幂等）', () => {
       service.createMessage('p-1', { text: '问题', idempotencyKey: 'key-cas' }, { id: 'u-biz', role: 'business' }),
     ]);
 
-    expect(prisma.consultationRun.updateMany).toHaveBeenCalledTimes(2);
+    expect(prisma.consultationRun.updateMany.mock.calls.filter(([args]: any[]) => args.data.status === 'running')).toHaveLength(2);
     expect(consultationChat.stream).toHaveBeenCalledTimes(1); // 只有 CAS 获胜者触发
   });
 

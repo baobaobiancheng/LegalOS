@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { ConsultationCapabilityChoice } from '../../types'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { gsap } from 'gsap'
 import { useRoute, useRouter } from 'vue-router'
@@ -20,6 +21,8 @@ import type { ContractDocStyle } from '../../utils/markdown-to-docx'
 
 type TimelineEvent = EventDto & { _event: true }
 type TimelineItem = MessageDto | TimelineEvent
+
+const selectedCapability = ref<ConsultationCapabilityChoice>('auto')
 
 const route = useRoute()
 const router = useRouter()
@@ -139,7 +142,7 @@ const refreshMessages = async () => {
       : new RequestError({ error: '记录刷新失败，请重试', code: 'UNKNOWN', statusCode: 0 })
   }
 }
-const handleSend = async (text: string, files: AttachedFile[]) => {
+const handleSend = async (text: string, files: AttachedFile[], capability = selectedCapability.value) => {
   if ((!text && !files.length) || sending.value || !canContinue.value) return
   const fullInput = buildFullInput(text, files)
   const displayText = buildDisplayText(text, files)
@@ -156,7 +159,7 @@ const handleSend = async (text: string, files: AttachedFile[]) => {
   try {
     const attachmentIds = files.filter(file => file.status === 'ready' || file.status === 'warning').map(file => file.id)
     const data = await requestStreamOrJson<ConsultStreamEvent | { route?: string }>(`/projects/${id}/messages`, {
-      method: 'POST', timeoutMs: 45_000, timeoutCode: 'SSE_HEADER_TIMEOUT', body: { text: fullInput, attachmentIds },
+      method: 'POST', timeoutMs: 45_000, timeoutCode: 'SSE_HEADER_TIMEOUT', body: { text: fullInput, attachmentIds, capability },
     }, (event) => {
       if (!('type' in event)) return
       if (event.type === 'message_start') {
@@ -408,6 +411,7 @@ onBeforeUnmount(() => {
           class="record-composer"
         >
           <ChatInputBar
+            v-model:capability="selectedCapability"
             :disabled="sending"
             placeholder="继续追问，或补充新的事实与材料"
             @send="handleSend"

@@ -27,7 +27,7 @@ import { ProjectListParams, ProjectQueryService } from './queries/project-query.
 import { ProjectStateMachine } from './domain/project-state-machine';
 import { ClaimProjectUseCase } from './application/claim-project.use-case';
 import { EscalateProjectToLegalUseCase } from './application/escalate-project-to-legal.use-case';
-import { normalizeConsultationCapability } from './domain/consultation-capability';
+import { normalizeConsultationCapabilityChoice } from './domain/consultation-capability';
 import { AuditService } from '../../common/audit/audit.service';
 import { AuditRequestContext } from '../../common/audit/audit.types';
 import { RecordDownloadDto } from './dto/record-download.dto';
@@ -502,7 +502,7 @@ export class ProjectService {
     signal?: AbortSignal,
   ): Promise<{ message: any; stream?: any; route: string; status?: 'succeeded' | 'running'; completion?: Promise<unknown> }> {
     const role = actor.role === 'business' ? 'user' : 'legal';
-    const capability = normalizeConsultationCapability(dto.capability);
+    const capability = normalizeConsultationCapabilityChoice(dto.capability);
 
     // 统一前置：加载工单 + 鉴权（F5：幂等快捷返回也须过鉴权；idempotencyKey 不是访问凭证）
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });

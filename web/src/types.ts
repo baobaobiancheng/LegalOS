@@ -1,3 +1,6 @@
+export type ConsultationCapability = 'general' | 'law_search' | 'similar_case'
+export type ConsultationCapabilityChoice = 'auto' | ConsultationCapability
+
 /** 认证域类型 — 严格对齐设计文档 */
 
 export const Role = {

@@ -1,3 +1,4 @@
+import type { ConsultationCapability } from '../types'
 import { apiFetch, parseApiResponse, readRequestId, RequestError, type RequestOptions } from './client'
 import { apiLogger } from './logger'
 
@@ -16,7 +17,7 @@ export const isTerminalEvent = (event: SseEvent): boolean =>
 
 /** 咨询流式协议（2026-08-12，与后端 sendConsultSSE 对齐）：runId/seq 去重，messageId 唯一节点 */
 export type ConsultStreamEvent =
-  | { type: 'message_start'; runId: string; messageId: string }
+  | { type: 'message_start'; runId: string; messageId: string; capability?: ConsultationCapability }
   | { type: 'reasoning_delta'; runId: string; seq: number; delta: string }
   | { type: 'text_delta'; runId: string; seq: number; delta: string }
   | { type: 'message_end'; runId: string; seq: number; messageId: string; finalText: string; research?: unknown }

@@ -20,6 +20,8 @@ import { ConsultationContextBuilder } from './application/consultation-context-b
 import { ConsultationReplyOrchestrator } from './application/consultation-reply.orchestrator';
 import { ConsultationExecutionRouter } from './application/consultation-execution.router';
 
+import { ConsultationIntentRouter } from './application/consultation-intent.router';
+
 @Module({
   imports: [PrismaModule, DingTalkAdapterModule],
   controllers: [ProjectController, OutboxAdminController, ConsultationAttachmentsController],
@@ -37,6 +39,7 @@ import { ConsultationExecutionRouter } from './application/consultation-executio
     ConsultationContextBuilder,
     ConsultationReplyOrchestrator,
     ConsultationExecutionRouter,
+    ConsultationIntentRouter,
     { provide: CRM_ADAPTER, useClass: MockCrmAdapter },
   ],
   exports: [ProjectService],

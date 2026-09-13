@@ -3,25 +3,26 @@ import { nextTick, ref } from 'vue'
 import { useFileUpload } from '../composables/useFileUpload'
 import type { AttachedFile } from '../composables/useFileUpload'
 
-type ConsultationCapability = 'general' | 'law_search' | 'similar_case'
+import type { ConsultationCapabilityChoice } from '../types'
 
 const props = withDefaults(defineProps<{
   disabled?: boolean
   placeholder?: string
-  capability?: ConsultationCapability
+  capability?: ConsultationCapabilityChoice
   appearance?: 'welcome' | 'conversation'
 }>(), {
   appearance: 'conversation',
   placeholder: '',
-  capability: 'general',
+  capability: 'auto',
 })
 
 const emit = defineEmits<{
-  send: [text: string, files: AttachedFile[], capability: ConsultationCapability]
-  'update:capability': [capability: ConsultationCapability]
+  send: [text: string, files: AttachedFile[], capability: ConsultationCapabilityChoice]
+  'update:capability': [capability: ConsultationCapabilityChoice]
 }>()
 
-const capabilities: Array<{ id: ConsultationCapability; label: string; description: string }> = [
+const capabilities: Array<{ id: ConsultationCapabilityChoice; label: string; description: string }> = [
+  { id: 'auto', label: '自动识别', description: '按问题意图选择通用咨询、AI 搜法或 AI 类案' },
   { id: 'general', label: '通用法务咨询', description: '直接分析并回答，不检索外部法律数据' },
   { id: 'law_search', label: 'AI 搜法', description: '检索国内法规，并核验回答引用的具体条文' },
   { id: 'similar_case', label: 'AI 类案', description: '检索相似案例，结果取决于案例库可用性' },
@@ -31,7 +32,7 @@ const menuOpen = ref(false)
 const activeOption = ref(0)
 const trigger = ref<HTMLButtonElement | null>(null)
 const optionRefs = ref<HTMLButtonElement[]>([])
-const selectedCapability = () => props.capability ?? 'general'
+const selectedCapability = () => props.capability ?? 'auto'
 const selected = () => capabilities.find(item => item.id === selectedCapability()) ?? capabilities[0]
 const fileFormatLabel = (file: AttachedFile) => {
   const lower = file.name.toLowerCase()
@@ -54,7 +55,7 @@ const closeMenu = (restoreFocus = true) => {
   if (restoreFocus) nextTick(() => trigger.value?.focus())
 }
 
-const selectCapability = (capability: ConsultationCapability) => {
+const selectCapability = (capability: ConsultationCapabilityChoice) => {
   emit('update:capability', capability)
   closeMenu()
 }

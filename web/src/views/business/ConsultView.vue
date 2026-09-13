@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { ConsultationCapabilityChoice } from '../../types'
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { gsap } from 'gsap'
 import { request, RequestError } from '../../api/client'
@@ -61,11 +62,10 @@ const thinkingTail = computed(() => {
 })
 
 const lastError = ref<RequestError | null>(null)
-type ConsultationCapability = 'general' | 'law_search' | 'similar_case'
-const selectedCapability = ref<ConsultationCapability>('general')
-const runningCapability = ref<ConsultationCapability>('general')
+const selectedCapability = ref<ConsultationCapabilityChoice>('auto')
+const runningCapability = ref<ConsultationCapabilityChoice>('auto')
 const expandedReportIds = ref<string[]>([])
-const lastSubmission = ref<{ text: string; files: AttachedFile[]; capability: ConsultationCapability } | null>(null)
+const lastSubmission = ref<{ text: string; files: AttachedFile[]; capability: ConsultationCapabilityChoice } | null>(null)
 
 function reportKey(message: any) {
   return String(message.id ?? message._key ?? '')
@@ -337,6 +337,7 @@ const handleSend = async (text: string, files: AttachedFile[], capability = sele
         // - message_end.finalText 权威覆盖，绝不追加
         if (evt.type === 'message_start') {
           // P0-2：只保存运行身份，不创建可见消息（避免思考期出现空白 AI 框/头像/操作按钮）
+          if (evt.capability) runningCapability.value = evt.capability
           if (!pendingRun) pendingRun = { runId: evt.runId, messageId: evt.messageId }
           return
         }
@@ -790,6 +791,13 @@ onUnmounted(() => {
                 </div>
               </div>
               <!-- 思考过程：紧跟最后一条用户消息下方,每次回答仅一个框（P1-2：无内部滚动条,展示尾部,正文开始自动收起） -->
+              <p
+                v-if="(m.id ?? m._key) === lastUserMsgKey && expectingAI"
+                class="execution-capability"
+                role="status"
+              >
+                {{ { auto: '正在识别任务意图…', general: '本轮由通用法务咨询处理', law_search: '本轮由 AI 搜法处理', similar_case: '本轮由 AI 类案处理' }[runningCapability] }}
+              </p>
               <div
                 v-if="(m.id ?? m._key) === lastUserMsgKey && expectingAI && aiThinking"
                 class="thinking-panel"
@@ -851,6 +859,7 @@ onUnmounted(() => {
 <script lang="ts">export default { name: 'ConsultView' }</script>
 
 <style scoped>
+.execution-capability { margin: 12px 0 12px 47px; color: #738197; font-size: 11px; }
 .consult-page {
   width: min(100%, 1540px);
   height: 100%;

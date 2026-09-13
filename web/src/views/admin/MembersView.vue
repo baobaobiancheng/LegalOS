@@ -21,7 +21,6 @@ type Member = {
   department: string | null
   loginStatus: 'pending' | 'active'
 }
-type BpMember = { id: string; displayName: string; avatarUrl: string | null; bound: boolean; domains: string[] }
 type Contact = { userId: string; name: string; mobile?: string; avatarUrl?: string | null; department?: string }
 type SyncSummary = {
   total: number
@@ -41,14 +40,11 @@ const auth = useAuthStore()
 const pageRoot = ref<HTMLElement | null>(null)
 const syncing = ref(false)
 const actingUserId = ref('')
-const togglingKey = ref('')
 const loadError = ref<RequestError | null>(null)
 const actionError = ref<RequestError | null>(null)
 const syncResult = ref<SyncSummary | null>(null)
 const failures = ref<number | null>(null)
 const users = ref<Member[]>([])
-const bpUsers = ref<BpMember[]>([])
-const bpDomains = ref<string[]>([])
 const userKeyword = ref('')
 const activeTab = ref<TabKey>('users')
 const bindingFilter = ref<BindingFilter>('all')
@@ -95,9 +91,8 @@ const animatePage = async () => {
 
 const loadAll = async () => {
   try {
-    const [userData, bpData, failData, syncData] = await Promise.all([
+    const [userData, failData, syncData] = await Promise.all([
       request<{ items: Member[] } | Member[]>('/admin/members/users'),
-      request<{ users: BpMember[]; domains: string[] }>('/admin/members/bp-domains'),
       request<{ noGroup: number }>('/admin/members/failures'),
       request<Omit<SyncSummary, 'ambiguous'> | null>('/admin/members/last-sync'),
     ])
@@ -107,8 +102,6 @@ const loadAll = async () => {
       // 成员同步/绑定/解绑可能同时改变当前管理员头像，立即刷新侧栏而无需重新登录。
       auth.user = { ...auth.user, avatarUrl: currentMember.avatarUrl }
     }
-    bpUsers.value = bpData.users ?? []
-    bpDomains.value = bpData.domains ?? []
     failures.value = failData.noGroup ?? null
     if (syncResult.value === null && syncData) syncResult.value = { ...syncData, ambiguous: [] }
     loadError.value = null
@@ -291,23 +284,6 @@ const unbind = async (user: Member) => {
     actingUserId.value = ''
   }
 }
-const toggleDomain = async (user: BpMember, domain: string, enabled: boolean) => {
-  const key = `${user.id}:${domain}`
-  if (togglingKey.value) return
-  togglingKey.value = key
-  actionError.value = null
-  try {
-    await request('/admin/members/bp-domains', { method: 'PUT', body: { userId: user.id, domain, enabled } })
-    const target = bpUsers.value.find(item => item.id === user.id)
-    if (target) target.domains = enabled ? [...new Set([...target.domains, domain])] : target.domains.filter(item => item !== domain)
-  } catch (error) {
-    actionError.value = error instanceof RequestError
-      ? error
-      : new RequestError({ error: '工作范围配置失败，请重试', code: 'UNKNOWN', statusCode: 0 })
-  } finally {
-    togglingKey.value = ''
-  }
-}
 const selectTab = (tab: TabKey) => { activeTab.value = tab }
 const selectFilter = (filter: BindingFilter) => { bindingFilter.value = filter }
 const goToPage = (page: number) => {
@@ -426,7 +402,7 @@ onBeforeUnmount(() => animationContext?.revert())
         管理工作台 <span>/</span> 成员管理
       </p>
       <header class="members-heading">
-        <div><h1>成员管理</h1><p>统一管理系统账号、钉钉身份绑定与法务 BP 工作范围</p></div>
+        <div><h1>成员管理</h1><p>统一管理系统账号、钉钉身份与业务职责路由</p></div>
         <div class="heading-actions">
           <button
             class="provision-button"
@@ -462,6 +438,7 @@ onBeforeUnmount(() => animationContext?.revert())
       />
       <template v-else>
         <section
+          v-show="activeTab !== 'bp'"
           class="members-stats"
           aria-label="成员统计"
         >
@@ -493,7 +470,7 @@ onBeforeUnmount(() => animationContext?.revert())
             :class="{ active: activeTab === 'bp' }"
             @click="selectTab('bp')"
           >
-            法务 BP 工作范围
+            分配与路由
           </button>
           <button
             :class="{ active: activeTab === 'sync' }"
@@ -631,53 +608,7 @@ onBeforeUnmount(() => animationContext?.revert())
         </template>
 
         <template v-else-if="activeTab === 'bp'">
-          <LegalResponsibilities />
-          <div class="section-intro">
-            <div><strong>法务专业领域标签</strong><span>以下标签保留作专业能力资料，不再用于自动指派。工单按上方业务职责规则分配。</span></div><small>共 {{ bpUsers.length }} 名法务成员</small>
-          </div>
-          <section class="domain-table-shell">
-            <div
-              class="domain-table-head"
-              :style="{ '--domain-count': bpDomains.length }"
-            >
-              <span>法务成员</span><span>钉钉状态</span><span
-                v-for="domain in bpDomains"
-                :key="domain"
-              >{{ domain }}</span>
-            </div>
-            <div
-              v-for="user in bpUsers"
-              :key="user.id"
-              class="domain-row member-row"
-              :style="{ '--domain-count': bpDomains.length }"
-            >
-              <span class="member-identity"><UserAvatar
-                class="member-avatar"
-                :src="user.avatarUrl"
-                :name="user.displayName"
-              /><strong>{{ user.displayName }}</strong></span>
-              <span class="binding-state"><i :class="{ off: !user.bound }" /><span>{{ user.bound ? '已绑定' : '未绑定' }}</span></span>
-              <label
-                v-for="domain in bpDomains"
-                :key="domain"
-                class="domain-check"
-              >
-                <input
-                  type="checkbox"
-                  :checked="user.domains.includes(domain)"
-                  :disabled="Boolean(togglingKey)"
-                  @change="toggleDomain(user, domain, ($event.target as HTMLInputElement).checked)"
-                >
-                <span />
-              </label>
-            </div>
-            <div
-              v-if="!bpUsers.length"
-              class="empty-table"
-            >
-              暂无可配置的法务 BP
-            </div>
-          </section>
+          <LegalResponsibilities :key="syncResult?.completedAt" />
         </template>
 
         <template v-else>
@@ -862,10 +793,11 @@ onBeforeUnmount(() => animationContext?.revert())
 <script lang="ts">export default { name: 'MembersView' }</script>
 
 <style scoped>
+@media (max-width: 760px) { .admin-sidebar .admin-brand-copy { display: none; }.admin-sidebar .admin-user { margin-top: auto; } }
 .admin-shell{min-height:100vh;background:#f7f8fa;color:#111827;font-family:Outfit,Geist,"Noto Sans SC","PingFang SC",-apple-system,BlinkMacSystemFont,sans-serif}.admin-sidebar{position:fixed;inset:0 auto 0 0;z-index:20;display:flex;width:254px;height:100vh;flex-direction:column;border-right:1px solid #e3e8ef;background:#fff}.admin-brand{display:flex;min-height:152px;padding:30px 27px;align-items:flex-start;gap:12px;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}.admin-logo{display:grid;width:47px;height:47px;overflow:hidden;place-items:center}.admin-logo img{display:block;width:47px;height:47px;object-fit:contain}.admin-brand-copy{display:grid;padding-top:3px;gap:10px}.admin-brand-copy strong{color:#0f172a;font-size:24px;font-weight:720;letter-spacing:-.04em}.admin-brand-copy small{width:150px;color:#526174;font-size:12px;letter-spacing:.12em;line-height:1.65}.admin-nav-label{margin:5px 35px 10px;color:#9aa4b2;font-size:10px;font-weight:650;letter-spacing:.12em}.admin-nav{display:grid}.admin-nav button{position:relative;display:flex;width:100%;height:64px;padding:0 35px;align-items:center;gap:15px;border:0;background:#fff;color:#26344d;font:inherit;font-size:14px;font-weight:580;text-align:left;cursor:pointer}.admin-nav button.active{background:#f1f6ff;color:#1260ee;font-weight:650}.admin-nav button.active::before{position:absolute;inset:0 auto 0 0;width:4px;background:#1b66f0;content:""}.admin-nav button:disabled{color:#99a4b4;cursor:default}.admin-nav svg{width:20px;height:20px}.admin-user{display:flex;min-height:108px;margin:auto 24px 0;padding:18px 7px;align-items:center;gap:11px;border-top:1px solid #e5e9ef}.admin-avatar{display:grid;width:44px;height:44px;border-radius:50%;place-items:center;background:#1764ef;color:#fff;font-weight:700}.admin-user-copy{display:grid;min-width:0;gap:3px}.admin-user-copy strong,.admin-user-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.admin-user-copy strong{font-size:13px}.admin-user-copy small{color:#6b7280;font-size:12px}.admin-logout{display:grid;width:36px;height:36px;margin-left:auto;padding:0;border:0;border-radius:6px;place-items:center;background:transparent;color:#60708a;cursor:pointer}.admin-logout:hover{background:#f1f5f9;color:#1764ef}.admin-logout svg{width:20px;height:20px}
 .members-page{height:100vh;margin-left:254px;padding:30px 38px 34px;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.members-breadcrumb{margin:0 0 24px;color:#5f6e84;font-size:13px}.members-breadcrumb span{margin:0 9px;color:#a4adba}.members-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px}.members-heading h1{margin:0 0 8px;color:#0b1222;font-size:38px;font-weight:690;letter-spacing:-.045em}.members-heading p{margin:0;color:#66758a;font-size:13px}.sync-button{display:flex;height:44px;padding:0 17px;align-items:center;gap:8px;border:1px solid #1764ef;border-radius:6px;background:#1764ef;color:#fff;font:inherit;font-size:13px;font-weight:650;cursor:pointer}.sync-button:hover:not(:disabled){background:#0755d8}.sync-button:disabled{opacity:.55;cursor:wait}.sync-button svg{width:17px;height:17px}.members-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:25px;border:1px solid #dce3ec;border-radius:8px;background:#fff}.member-stat{position:relative;display:grid;min-height:88px;padding:18px 27px;align-content:space-between}.member-stat+.member-stat::before{position:absolute;inset:17px auto 17px 0;width:1px;background:#e0e6ee;content:""}.member-stat span{color:#66758a;font-size:11px}.member-stat strong{font-size:27px;font-weight:650;letter-spacing:-.04em}.member-stat.attention strong{color:#db6b24}.member-tabs{display:flex;height:54px;margin-top:20px;border-bottom:1px solid #dce3ec;align-items:flex-end;gap:30px}.member-tabs button{position:relative;height:54px;padding:0 4px;border:0;background:transparent;color:#5d6b80;font:inherit;font-size:13px;font-weight:600;cursor:pointer}.member-tabs button.active{color:#1764ef}.member-tabs button.active::after{position:absolute;inset:auto 0 -1px;height:3px;background:#1764ef;content:""}.members-error,.action-error{margin-top:18px}.member-toolbar{display:flex;min-height:67px;align-items:center;gap:18px}.member-search{display:flex;width:310px;height:40px;padding:0 12px;align-items:center;gap:8px;border:1px solid #d5dde7;border-radius:6px;background:#fff}.member-search svg{width:17px;height:17px;color:#718096}.member-search input{min-width:0;flex:1;border:0;outline:0;color:#334155;font:inherit;font-size:12px}.binding-filters{display:flex;gap:9px}.binding-filters button,.section-intro>button{height:36px;padding:0 12px;border:1px solid #d5dde7;border-radius:5px;background:#fff;color:#59677b;font:inherit;font-size:11px;cursor:pointer}.binding-filters button.active{border-color:#9dbbf1;background:#f4f8ff;color:#1764ef}.last-sync{margin-left:auto;color:#8490a1;font-size:11px}
-.member-table-shell,.domain-table-shell{overflow:auto;border:1px solid #dce3ec;border-radius:7px 7px 0 0;background:#fff}.member-table-head,.member-row{display:grid;min-width:900px;grid-template-columns:1.15fr .9fr 1.35fr 1.4fr .75fr;align-items:center;column-gap:15px}.member-table-head{height:43px;padding:0 21px;border-bottom:1px solid #e4e9ef;background:#fafbfc;color:#6c788a;font-size:11px;font-weight:650}.member-table-shell>.member-row{width:100%;min-height:54px;padding:0 21px;border:0;border-bottom:1px solid #e8ecf2;background:#fff;color:#46556a;font:inherit;font-size:12px;text-align:left;cursor:default}.member-table-shell>.member-row:hover{background:#f8faff}.member-identity{display:flex;align-items:center;gap:10px;color:#1f2b3d}.member-avatar{width:30px;height:30px;border-radius:50%;background:#edf3ff;color:#1764ef;font-size:11px;font-weight:700}.member-identity strong{font-weight:620}.role-badge{display:inline-flex;width:max-content;height:24px;padding:0 8px;align-items:center;border-radius:4px;background:#eef3f9;color:#4d5e76;font-style:normal;font-size:10px;font-weight:650}.role-badge.bp{background:#eaf8ef;color:#15804a}.role-badge.admin{background:#f2edff;color:#6e50b5}.binding-state{display:flex;align-items:center;gap:7px}.binding-state>i{width:7px;height:7px;border-radius:50%;background:#16a05d}.binding-state>i.off{background:#c0c8d2}.binding-state small{color:#8792a2;font-size:10px}.row-operation button{height:29px;padding:0 10px;border:1px solid #b9c8dc;border-radius:5px;background:#fff;color:#315a91;font:inherit;font-size:10px;cursor:pointer}.row-operation button.bind{border-color:#8db2f3;color:#1764ef}.row-operation button:disabled{opacity:.5;cursor:wait}.empty-table{display:grid;min-height:180px;place-items:center;color:#7b8798;font-size:12px}.member-pagination{display:flex;min-height:51px;padding:9px 15px;align-items:center;justify-content:space-between;border:1px solid #dce3ec;border-top:0;border-radius:0 0 7px 7px;background:#fff;color:#7b8798;font-size:11px}.member-pagination nav{display:flex;gap:6px;align-items:center}.member-pagination button{display:grid;min-width:30px;height:30px;padding:0 8px;border:1px solid #d5dde7;border-radius:5px;place-items:center;background:#fff;color:#526174;font:inherit;font-size:11px;cursor:pointer}.member-pagination button.active{border-color:#1764ef;color:#1764ef;box-shadow:inset 0 0 0 1px #1764ef}.member-pagination button:disabled{opacity:.35;cursor:not-allowed}.member-pagination nav>span{min-width:20px;text-align:center}.member-notice{display:flex;min-height:38px;margin-top:14px;padding:9px 13px;align-items:center;border:1px solid #f1d9bd;border-radius:5px;background:#fffaf3;color:#9a672b;font-size:11px;line-height:1.5}
-.section-intro{display:flex;min-height:67px;align-items:center;justify-content:space-between;gap:20px}.section-intro>div{display:grid;gap:4px}.section-intro strong{color:#27364c;font-size:13px}.section-intro span{color:#7b8798;font-size:11px}.section-intro small{color:#8490a1;font-size:11px}.domain-table-shell{border-radius:7px}.domain-table-head,.domain-row{display:grid;min-width:1000px;grid-template-columns:220px 130px repeat(var(--domain-count),minmax(105px,1fr));align-items:center}.domain-table-head{min-height:43px;padding:0 20px;border-bottom:1px solid #e4e9ef;background:#fafbfc;color:#6c788a;font-size:11px;font-weight:650}.domain-table-head span:nth-child(n+3){text-align:center}.domain-row{min-height:56px;padding:0 20px;border-bottom:1px solid #e8ecf2;color:#46556a;font-size:12px}.domain-row:last-child{border-bottom:0}.domain-check{display:grid;place-items:center;cursor:pointer}.domain-check input{position:absolute;width:1px;height:1px;opacity:0}.domain-check span{display:grid;width:18px;height:18px;border:1px solid #c4ceda;border-radius:4px;place-items:center;background:#fff}.domain-check input:checked+span{border-color:#1764ef;background:#1764ef}.domain-check input:checked+span::after{width:8px;height:4px;border-bottom:2px solid #fff;border-left:2px solid #fff;content:"";transform:translateY(-1px) rotate(-45deg)}.domain-check input:focus-visible+span{outline:2px solid #8eb5f6;outline-offset:2px}.domain-check input:disabled+span{opacity:.55;cursor:wait}.sync-summary-card{display:grid;min-width:0;grid-template-columns:1.6fr repeat(4,1fr);overflow:hidden;border:1px solid #dce3ec;border-radius:7px;background:#fff}.sync-summary-card>div{position:relative;display:grid;min-height:112px;padding:22px;align-content:space-between;gap:14px}.sync-summary-card>div+div::before{position:absolute;inset:20px auto 20px 0;width:1px;background:#e3e8ef;content:""}.sync-summary-card span{color:#718096;font-size:11px}.sync-summary-card strong{color:#223047;font-size:18px;font-weight:650}
+.member-table-shell{overflow:auto;border:1px solid #dce3ec;border-radius:7px 7px 0 0;background:#fff}.member-table-head,.member-row{display:grid;min-width:900px;grid-template-columns:1.15fr .9fr 1.35fr 1.4fr .75fr;align-items:center;column-gap:15px}.member-table-head{height:43px;padding:0 21px;border-bottom:1px solid #e4e9ef;background:#fafbfc;color:#6c788a;font-size:11px;font-weight:650}.member-table-shell>.member-row{width:100%;min-height:54px;padding:0 21px;border:0;border-bottom:1px solid #e8ecf2;background:#fff;color:#46556a;font:inherit;font-size:12px;text-align:left;cursor:default}.member-table-shell>.member-row:hover{background:#f8faff}.member-identity{display:flex;align-items:center;gap:10px;color:#1f2b3d}.member-avatar{width:30px;height:30px;border-radius:50%;background:#edf3ff;color:#1764ef;font-size:11px;font-weight:700}.member-identity strong{font-weight:620}.role-badge{display:inline-flex;width:max-content;height:24px;padding:0 8px;align-items:center;border-radius:4px;background:#eef3f9;color:#4d5e76;font-style:normal;font-size:10px;font-weight:650}.role-badge.bp{background:#eaf8ef;color:#15804a}.role-badge.admin{background:#f2edff;color:#6e50b5}.binding-state{display:flex;align-items:center;gap:7px}.binding-state>i{width:7px;height:7px;border-radius:50%;background:#16a05d}.binding-state>i.off{background:#c0c8d2}.binding-state small{color:#8792a2;font-size:10px}.row-operation button{height:29px;padding:0 10px;border:1px solid #b9c8dc;border-radius:5px;background:#fff;color:#315a91;font:inherit;font-size:10px;cursor:pointer}.row-operation button.bind{border-color:#8db2f3;color:#1764ef}.row-operation button:disabled{opacity:.5;cursor:wait}.empty-table{display:grid;min-height:180px;place-items:center;color:#7b8798;font-size:12px}.member-pagination{display:flex;min-height:51px;padding:9px 15px;align-items:center;justify-content:space-between;border:1px solid #dce3ec;border-top:0;border-radius:0 0 7px 7px;background:#fff;color:#7b8798;font-size:11px}.member-pagination nav{display:flex;gap:6px;align-items:center}.member-pagination button{display:grid;min-width:30px;height:30px;padding:0 8px;border:1px solid #d5dde7;border-radius:5px;place-items:center;background:#fff;color:#526174;font:inherit;font-size:11px;cursor:pointer}.member-pagination button.active{border-color:#1764ef;color:#1764ef;box-shadow:inset 0 0 0 1px #1764ef}.member-pagination button:disabled{opacity:.35;cursor:not-allowed}.member-pagination nav>span{min-width:20px;text-align:center}.member-notice{display:flex;min-height:38px;margin-top:14px;padding:9px 13px;align-items:center;border:1px solid #f1d9bd;border-radius:5px;background:#fffaf3;color:#9a672b;font-size:11px;line-height:1.5}
+.section-intro{display:flex;min-height:67px;align-items:center;justify-content:space-between;gap:20px}.section-intro>div{display:grid;gap:4px}.section-intro strong{color:#27364c;font-size:13px}.section-intro span{color:#7b8798;font-size:11px}.section-intro small{color:#8490a1;font-size:11px}.sync-summary-card{display:grid;min-width:0;grid-template-columns:1.6fr repeat(4,1fr);overflow:hidden;border:1px solid #dce3ec;border-radius:7px;background:#fff}.sync-summary-card>div{position:relative;display:grid;min-height:112px;padding:22px;align-content:space-between;gap:14px}.sync-summary-card>div+div::before{position:absolute;inset:20px auto 20px 0;width:1px;background:#e3e8ef;content:""}.sync-summary-card span{color:#718096;font-size:11px}.sync-summary-card strong{color:#223047;font-size:18px;font-weight:650}
 .bind-modal-mask{position:fixed;inset:0;z-index:100;display:grid;padding:24px;place-items:center;background:rgba(15,23,42,.38);backdrop-filter:blur(5px)}.bind-modal{width:min(480px,100%);max-height:min(620px,88vh);overflow-y:auto;border:1px solid #dbe3ed;border-radius:10px;background:#fff;box-shadow:0 24px 70px rgba(15,23,42,.2)}.bind-modal>header{display:flex;padding:21px 22px 16px;align-items:flex-start;justify-content:space-between;border-bottom:1px solid #e7ebf0}.bind-modal h2{margin:0 0 5px;color:#172033;font-size:19px}.bind-modal header p{margin:0;color:#718096;font-size:12px}.bind-modal header button{display:grid;width:30px;height:30px;border:0;border-radius:5px;place-items:center;background:#f3f5f8;color:#526174;font-size:20px;cursor:pointer}.bind-search{display:grid;padding:18px 22px 10px;gap:7px;color:#526174;font-size:11px;font-weight:600}.bind-search input{height:40px;padding:0 12px;border:1px solid #d5dde7;border-radius:6px;outline:0;color:#27364c;font:inherit;font-size:13px}.bind-search input:focus{border-color:#8db2f3;box-shadow:0 0 0 3px rgba(23,100,239,.08)}.contact-list{display:grid;max-height:330px;padding:6px 22px 22px;gap:7px;overflow-y:auto}.contact-item{display:flex;min-height:58px;padding:8px 11px;align-items:center;justify-content:space-between;gap:16px;border:1px solid #dfe5ec;border-radius:6px;background:#fff;color:#26344d;text-align:left;cursor:pointer}.contact-item:hover{border-color:#8db2f3;background:#f7faff}.contact-person{display:flex;min-width:0;align-items:center;gap:9px}.contact-avatar{width:34px;height:34px;border-radius:50%;background:#edf3ff;color:#1764ef;font-size:11px;font-weight:700}.contact-copy{display:grid;min-width:0;gap:3px}.contact-item strong{font-size:12px}.contact-item small{color:#8490a1;font-size:10px}.contact-item code{color:#60708a;font-size:10px}.contact-empty{margin:0;padding:28px 8px;color:#8490a1;font-size:12px;text-align:center}
 .heading-actions{display:flex;align-items:center;gap:10px}.provision-button{display:flex;height:44px;padding:0 17px;align-items:center;gap:7px;border:1px solid #1764ef;border-radius:6px;background:#fff;color:#1764ef;font:inherit;font-size:13px;font-weight:650;cursor:pointer}.provision-button:hover{background:#f3f7ff}.provision-button span{font-size:18px;font-weight:450}.member-identity>span{display:grid;min-width:0;gap:2px}.member-identity>span small{overflow:hidden;color:#8994a5;font-size:9px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}.contact-item.selected{border-color:#8db2f3;background:#f7faff;box-shadow:inset 3px 0 #1764ef}.provision-modal{width:min(560px,100%)}.provision-form-body{padding-bottom:4px}.provision-form-body .bind-search{padding-bottom:4px}.provision-account small{color:#8a95a5;font-size:10px;font-weight:450}.provision-contact-list{max-height:250px;padding-top:8px;padding-bottom:14px}.provision-error{margin:10px 22px 0}.provision-actions{display:flex;min-height:67px;padding:13px 22px;align-items:center;gap:9px;border-top:1px solid #e7ebf0}.provision-actions>span{margin-right:auto;color:#7f8b9c;font-size:10px}.provision-actions button{height:36px;padding:0 14px;border:1px solid #ccd5e0;border-radius:5px;background:#fff;color:#536176;font:inherit;font-size:11px;font-weight:600;cursor:pointer}.provision-actions button.primary{border-color:#1764ef;background:#1764ef;color:#fff}.provision-actions button:disabled{opacity:.48;cursor:not-allowed}
 @media(max-width:1100px){.members-page{padding-right:26px;padding-left:26px}.last-sync{display:none}.member-search{width:260px}.sync-summary-card{grid-template-columns:repeat(2,1fr)}.sync-summary-card>div:first-child{grid-column:1/-1}.sync-summary-card>div:nth-child(2)::before{display:none}}

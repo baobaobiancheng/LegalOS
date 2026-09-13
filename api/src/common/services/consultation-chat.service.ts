@@ -102,7 +102,7 @@ export class ConsultationChatService {
    */
   async complete(
     messages: ChatMessage[],
-    options?: { maxTokens?: number; timeout?: number; runId?: string; projectId?: string },
+    options?: { maxTokens?: number; timeout?: number; runId?: string; projectId?: string; signal?: AbortSignal },
   ): Promise<string> {
     if (!this.aiEnabled()) throw new Error('AI 执行已禁用（AI_EXECUTION_ENABLED=false）');
     if (!this.baseUrl || !this.apiKey) throw new Error('咨询直连网关未配置');
@@ -134,7 +134,7 @@ export class ConsultationChatService {
           // thinking.type/disable_thinking/reasoning_effort 均无效，仅 chat_template_kwargs 生效。
           chat_template_kwargs: { enable_thinking: false },
         }),
-        signal: controller.signal,
+        signal: options?.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
       });
       if (!resp.ok) {
         // C9：不记录网关错误响应体（可能回显请求内容）；只记状态码

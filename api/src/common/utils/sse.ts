@@ -118,6 +118,7 @@ export interface SseStream {
   __answerItemId?: string | null;
   __cancelled?: boolean;
   __runId?: string;
+  __capability?: 'general' | 'law_search' | 'similar_case';
   __errorMessage?: string;
   __errorCode?: string;
 }
@@ -153,7 +154,7 @@ export function sendConsultSSE(
   const start = () => {
     if (started) return;
     started = true;
-    emit({ type: 'message_start', runId, messageId: runId });
+    emit({ type: 'message_start', runId, messageId: runId, capability: stream.__capability });
   };
 
   // P1：SSE 心跳（注释行 keep-alive）——长时间无数据时不让代理/网关断开；前端忽略非 data 行

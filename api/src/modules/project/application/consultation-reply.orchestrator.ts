@@ -8,11 +8,13 @@ import { formatEventTime } from '../../../common/utils/event-time';
 import { ConsultationExecutionRouter } from './consultation-execution.router';
 import {
   ConsultationCapability,
+  ConsultationCapabilityChoice,
   normalizeConsultationCapability,
 } from '../domain/consultation-capability';
 import { AuditService } from '../../../common/audit/audit.service';
 import { createHash } from 'node:crypto';
 import { safeErrorTag } from '../../../common/utils/safe-error';
+import { ConsultationIntentRouter } from './consultation-intent.router';
 import { DSH_SESSION_PREFIX } from '../../../common/services/dsh-runtime';
 import {
   AiProjectVersion,
@@ -40,6 +42,7 @@ export class ConsultationReplyOrchestrator {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly intentRouter: ConsultationIntentRouter,
     private readonly executionRouter: ConsultationExecutionRouter,
     private readonly contextBuilder: ConsultationContextBuilder,
     private readonly config: ConfigService,
@@ -56,7 +59,7 @@ export class ConsultationReplyOrchestrator {
   async claimRun(
     projectId: string,
     userMessageId: string,
-    capability: ConsultationCapability = 'general',
+    capability: ConsultationCapabilityChoice = 'general',
   ): Promise<{ runId: string; status: 'succeeded' | 'running' | 'new'; answer?: any }> {
     const staleMs =
       Number.parseInt(String(this.config.get('CONSULT_RUN_STALE_MS', '600000')), 10) || 600_000;
@@ -133,7 +136,7 @@ export class ConsultationReplyOrchestrator {
     currentUserMessageId: string,
     signal: AbortSignal | undefined,
     runId: string,
-    requestedCapability: ConsultationCapability = 'general',
+    requestedCapability: ConsultationCapabilityChoice = 'general',
   ): Promise<any> {
     // release 只会删除自己仍是最新 tail 的条目；A 完成时不会误删已经排队的 B/C。
     const finishTurn = await this.acquireProjectTurn(projectId);
@@ -147,7 +150,7 @@ export class ConsultationReplyOrchestrator {
     });
     let child: any;
     let projectVersion!: AiProjectVersion;
-    let capability: ConsultationCapability = requestedCapability;
+    let capability = normalizeConsultationCapability(requestedCapability);
     let modelVersion = capability === 'general'
       ? String(this.config.get('LLM_MODEL', 'glm-5-2'))
       : String(this.config.get('DSH_LLM_MODEL') || this.config.get('LLM_MODEL', 'glm-5-2'));
@@ -167,6 +170,41 @@ export class ConsultationReplyOrchestrator {
 
       const run = await this.prisma.consultationRun.findUnique({ where: { id: runId } });
       capability = normalizeConsultationCapability(run?.capability ?? requestedCapability);
+      let context;
+      try {
+        context = await this.contextBuilder.build({
+          projectId,
+          currentUserMessageId,
+          // 技能段复用共享 util：剥边界标记 + 硬边界模板（防 prompt 注入）
+          skillPrompt: skillName && skillPrompt ? buildSkillSection(skillName, skillPrompt) : undefined,
+        });
+      } catch (e) {
+        this.logger.error(`咨询上下文构建失败（${projectId}/${currentUserMessageId}）：${safeErrorTag(e)}`);
+        throw new BadRequestException('咨询上下文构建失败，请重试');
+      }
+      if ((run?.capability ?? requestedCapability) === 'auto') {
+        capability = await this.intentRouter.resolve(context.messages, { projectId, runId, signal });
+        signal?.throwIfAborted();
+        // 分类调用在事务外；只为仍在运行且工单版本未变化的本轮保存选择。
+        await this.prisma.$transaction(async (tx) => {
+          const nextVersion = nextProjectVersion(projectVersion);
+          const projectSaved = await tx.project.updateMany({
+            where: aiProjectVersionWhere(projectId, projectVersion),
+            data: { updatedAt: nextVersion },
+          });
+          if (projectSaved.count !== 1) throw new BadRequestException('工单状态已变化，请刷新后重试');
+          const saved = await tx.consultationRun.updateMany({
+            where: {
+              id: runId, projectId, userMessageId: currentUserMessageId, status: 'running', capability: 'auto',
+            },
+            data: { capability },
+          });
+          if (saved.count !== 1) throw new BadRequestException('工单或运行状态已变化，请刷新后重试');
+          const label = { general: '通用法务咨询', law_search: 'AI 搜法', similar_case: 'AI 类案' }[capability];
+          await tx.projectEvent.create({ data: { projectId, text: formatEventTime() + ' · 已按问题意图选择：' + label } });
+          projectVersion = { ...projectVersion, updatedAt: nextVersion };
+        });
+      }
       modelVersion = capability === 'general'
         ? String(this.config.get('LLM_MODEL', 'glm-5-2'))
         : String(this.config.get('DSH_LLM_MODEL') || this.config.get('LLM_MODEL', 'glm-5-2'));
@@ -197,18 +235,6 @@ export class ConsultationReplyOrchestrator {
           retentionClass: 'ai',
         });
       }
-      let context;
-      try {
-        context = await this.contextBuilder.build({
-          projectId,
-          currentUserMessageId,
-          // 技能段复用共享 util：剥边界标记 + 硬边界模板（防 prompt 注入）
-          skillPrompt: skillName && skillPrompt ? buildSkillSection(skillName, skillPrompt) : undefined,
-        });
-      } catch (e) {
-        this.logger.error(`咨询上下文构建失败（${projectId}/${currentUserMessageId}）：${safeErrorTag(e)}`);
-        throw new BadRequestException('咨询上下文构建失败，请重试');
-      }
       child = await this.executionRouter.execute({
         capability,
         messages: context.messages,
@@ -231,6 +257,7 @@ export class ConsultationReplyOrchestrator {
 
     // P0-3：流式协议身份——一次 Run 一个稳定 runId，SSE 事件据此去重/丢弃过期
     child.__runId = runId;
+    child.__capability = capability;
 
     let fullText = '';
     let finalized = false;

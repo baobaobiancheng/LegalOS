@@ -82,11 +82,76 @@ function statefulConsultationDb() {
 }
 
 describe('ConsultationReplyOrchestrator 审计关联', () => {
+  it.each(['general', 'law_search', 'similar_case'])('自动识别后先保存 %s 再执行，重试复用选择', async capability => {
+    const { prisma, state } = statefulConsultationDb();
+    state.run.capability = 'auto';
+    const child: any = Object.assign(new EventEmitter(), { stdout: new PassThrough(), __cancelled: true });
+    const intent = { resolve: vi.fn().mockResolvedValue(capability) };
+    const execute = vi.fn(async () => {
+      expect(state.run.capability).toBe(capability);
+      return child;
+    });
+    const orchestrator = new ConsultationReplyOrchestrator(prisma, intent as any, { execute } as any,
+      { build: vi.fn().mockResolvedValue({ messages: [{ role: 'user', content: '测试本轮意图' }] }) } as any,
+      { get: (_key: string, fallback?: unknown) => fallback } as any, {} as any);
+    const result = await orchestrator.reply('p-late', 'm-late', undefined, 'run-late', 'auto');
+    expect(intent.resolve).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ capability }));
+    expect(child.__capability).toBe(capability);
+    expect(state.events).toHaveLength(1);
+    const cancelled = expect(result.completion).rejects.toThrow('cancelled');
+    child.emit('close', 0);
+    await cancelled;
+    state.run.status = 'running';
+    child.removeAllListeners();
+    const retry = await orchestrator.reply('p-late', 'm-late', undefined, 'run-late', 'auto');
+    expect(intent.resolve).toHaveBeenCalledTimes(1);
+    expect(state.events).toHaveLength(1);
+    const cancelledRetry = expect(retry.completion).rejects.toThrow('cancelled');
+    child.emit('close', 0);
+    await cancelledRetry;
+  });
+
+  it('人工流程或分类期间工单变更都不能启动能力执行', async () => {
+    const { prisma, state } = statefulConsultationDb();
+    state.run.capability = 'auto';
+    const execute = vi.fn();
+    const intent = { resolve: vi.fn(async () => { state.project.route = 'legalbp'; return 'law_search'; }) };
+    const orchestrator = new ConsultationReplyOrchestrator(prisma, intent as any, { execute } as any,
+      { build: vi.fn().mockResolvedValue({ messages: [{ role: 'user', content: '测试' }] }) } as any,
+      { get: (_key: string, fallback?: unknown) => fallback } as any, {} as any);
+    await expect(orchestrator.reply('p-late', 'm-late', undefined, 'run-late', 'auto')).rejects.toThrow('工单状态已变化');
+    expect(execute).not.toHaveBeenCalled();
+    expect(state.events).toHaveLength(0);
+    expect(state.run.capability).toBe('auto');
+    await expect(orchestrator.reply('p-late', 'm-late', undefined, 'run-late', 'auto')).rejects.toThrow('人工流程');
+    expect(intent.resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('分类或保存失败不启动模型、不写成功事件，并释放串行锁', async () => {
+    for (const failure of ['classification', 'persistence']) {
+      const { prisma, state } = statefulConsultationDb();
+      state.run.capability = 'auto';
+      const execute = vi.fn();
+      const intent = { resolve: failure === 'classification' ? vi.fn().mockRejectedValue(new Error('识别失败')) : vi.fn().mockResolvedValue('law_search') };
+      if (failure === 'persistence') prisma.projectEvent.create.mockRejectedValueOnce(new Error('db unavailable'));
+      const orchestrator = new ConsultationReplyOrchestrator(prisma, intent as any, { execute } as any,
+        { build: vi.fn().mockResolvedValue({ messages: [{ role: 'user', content: '测试' }] }) } as any,
+        { get: (_key: string, fallback?: unknown) => fallback } as any, {} as any);
+      await expect(orchestrator.reply('p-late', 'm-late', undefined, 'run-late', 'auto')).rejects.toThrow();
+      expect(execute).not.toHaveBeenCalled();
+      expect(state.run.capability).toBe('auto');
+      expect(state.events).toHaveLength(0);
+      const release = await (orchestrator as any).acquireProjectTurn('p-late');
+      release();
+    }
+  });
+
   it('数据库及失败审计同时故障时，完成回调不泄漏拒绝且释放串行锁', async () => {
     const { prisma } = statefulConsultationDb();
     const child: any = Object.assign(new EventEmitter(), { stdout: new PassThrough(), __finalText: '测试结果' });
     const audit = { record: vi.fn().mockResolvedValue({}), digestCanonical: vi.fn().mockReturnValue('hash') };
-    const orchestrator = new ConsultationReplyOrchestrator(prisma,
+    const orchestrator = new ConsultationReplyOrchestrator(prisma, { resolve: vi.fn().mockResolvedValue('general') } as any,
       { execute: vi.fn().mockResolvedValue(child) } as any,
       { build: vi.fn().mockResolvedValue({ messages: [] }) } as any,
       { get: (_key: string, fallback?: unknown) => fallback } as any, {} as any, audit as any);
@@ -101,7 +166,7 @@ describe('ConsultationReplyOrchestrator 审计关联', () => {
   });
   it('A 释放后 B 执行期间新来的 C 仍排在 B 之后', async () => {
     const orchestrator = new ConsultationReplyOrchestrator(
-      {} as any,
+      {} as any, { resolve: vi.fn().mockResolvedValue('general') } as any,
       {} as any,
       {} as any,
       {} as any,
@@ -154,7 +219,7 @@ describe('ConsultationReplyOrchestrator 审计关联', () => {
       digestCanonical: vi.fn().mockReturnValue('output-hash'),
     };
     const orchestrator = new ConsultationReplyOrchestrator(
-      prisma,
+      prisma, { resolve: vi.fn().mockResolvedValue('general') } as any,
       { execute: vi.fn().mockResolvedValue(child) } as any,
       { build: vi.fn().mockResolvedValue({ messages: [{ role: 'user', content: '问题' }] }) } as any,
       { get: (key: string, fallback?: unknown) => key === 'LLM_MODEL' ? 'glm-5-2' : fallback } as any,
@@ -214,7 +279,7 @@ describe('ConsultationReplyOrchestrator 审计关联', () => {
       digestCanonical: vi.fn().mockReturnValue('degraded-output-hash'),
     };
     const orchestrator = new ConsultationReplyOrchestrator(
-      prisma,
+      prisma, { resolve: vi.fn().mockResolvedValue('general') } as any,
       { execute: vi.fn().mockResolvedValue(child) } as any,
       { build: vi.fn().mockResolvedValue({ messages: [{ role: 'user', content: '法律问题' }] }) } as any,
       { get: (_key: string, fallback?: unknown) => fallback } as any,
@@ -249,7 +314,7 @@ describe('ConsultationReplyOrchestrator 审计关联', () => {
       digestCanonical: vi.fn().mockReturnValue('error-hash'),
     };
     const orchestrator = new ConsultationReplyOrchestrator(
-      prisma,
+      prisma, { resolve: vi.fn().mockResolvedValue('general') } as any,
       { execute: vi.fn().mockRejectedValue(new Error('spawn failed')) } as any,
       { build: vi.fn().mockResolvedValue({ messages: [] }) } as any,
       { get: (_key: string, fallback?: unknown) => fallback } as any,
@@ -295,7 +360,7 @@ describe('ConsultationReplyOrchestrator 审计关联', () => {
       digestCanonical: vi.fn().mockReturnValue('error-hash'),
     };
     const orchestrator = new ConsultationReplyOrchestrator(
-      prisma,
+      prisma, { resolve: vi.fn().mockResolvedValue('general') } as any,
       { execute: vi.fn().mockResolvedValue(child) } as any,
       { build: vi.fn().mockResolvedValue({ messages: [] }) } as any,
       { get: (_key: string, fallback?: unknown) => fallback } as any,
@@ -324,7 +389,7 @@ describe('ConsultationReplyOrchestrator 审计关联', () => {
     };
     prisma.$transaction = vi.fn(async (callback: any) => callback(prisma));
     const orchestrator = new ConsultationReplyOrchestrator(
-      prisma,
+      prisma, { resolve: vi.fn().mockResolvedValue('general') } as any,
       { execute } as any,
       { build: vi.fn() } as any,
       { get: (_key: string, fallback?: unknown) => fallback } as any,
@@ -357,7 +422,7 @@ describe('ConsultationReplyOrchestrator 审计关联', () => {
     const { prisma, state } = statefulConsultationDb();
     const audit = { record: vi.fn(), digestCanonical: vi.fn().mockReturnValue('hash') };
     const orchestrator = new ConsultationReplyOrchestrator(
-      prisma,
+      prisma, { resolve: vi.fn().mockResolvedValue('general') } as any,
       { execute: vi.fn().mockResolvedValue(child) } as any,
       { build: vi.fn().mockResolvedValue({ messages: [] }) } as any,
       { get: (_key: string, fallback?: unknown) => fallback } as any,
@@ -391,7 +456,7 @@ describe('ConsultationReplyOrchestrator 审计关联', () => {
     });
     const { prisma, state } = statefulConsultationDb();
     const orchestrator = new ConsultationReplyOrchestrator(
-      prisma,
+      prisma, { resolve: vi.fn().mockResolvedValue('general') } as any,
       { execute: vi.fn().mockResolvedValue(child) } as any,
       { build: vi.fn().mockResolvedValue({ messages: [] }) } as any,
       { get: (_key: string, fallback?: unknown) => fallback } as any,
