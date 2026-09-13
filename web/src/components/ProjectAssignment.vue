@@ -30,7 +30,10 @@ onMounted(() => candidates.load())
     class="assignment"
     aria-label="法务领导分配工单"
   >
-    <span>当前法务：{{ assigneeName || '待领导分配' }}</span>
+    <div class="assignment-summary">
+      <strong>工单分配</strong>
+      <span>当前法务 <b>{{ assigneeName || '待领导分配' }}</b></span>
+    </div>
     <form @submit.prevent="assign">
       <label for="legal-assignee">分配给</label>
       <select
@@ -39,7 +42,7 @@ onMounted(() => candidates.load())
         :disabled="candidates.status.value === 'loading' || transfer.status.value === 'loading'"
       >
         <option value="">
-          请选择法务
+          {{ candidates.status.value === 'loading' ? '正在加载法务…' : '请选择法务' }}
         </option>
         <option
           v-for="candidate in candidates.data.value"
@@ -80,10 +83,20 @@ onMounted(() => candidates.load())
 </template>
 
 <style scoped>
-.assignment { padding: 14px 18px; border: 1px solid var(--line, #dbe2ec); border-radius: 12px; background: var(--surface, #fff); }
-.assignment form { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
-.assignment select, .assignment button { min-height: 36px; padding: 6px 12px; border: 1px solid var(--line, #dbe2ec); border-radius: 8px; background: transparent; color: inherit; font: inherit; }
-.assignment button { cursor: pointer; }
-.assignment button:disabled { opacity: .5; cursor: default; }
-.assignment p { margin: 8px 0 0; font-size: 13px; }
+.assignment { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; padding: 18px 24px; border-bottom: 1px solid #e5e7eb; background: #fff; font-size: 13px; }
+.assignment-summary { display: grid; gap: 6px; }
+.assignment-summary strong { font-size: 14px; color: #111827; }
+.assignment-summary span { color: #6b7280; }
+.assignment-summary b { margin-left: 8px; color: #374151; font-weight: 500; }
+.assignment form { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.assignment label { color: #6b7280; }
+.assignment select, .assignment button { min-height: 38px; padding: 7px 12px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; color: #374151; font: inherit; }
+.assignment select { min-width: 160px; }
+.assignment button { border-color: #2563eb; background: #2563eb; color: #fff; cursor: pointer; }
+.assignment button:hover:not(:disabled) { background: #1d4ed8; }
+.assignment button:disabled { border-color: #e5e7eb; background: #f3f4f6; color: #9ca3af; cursor: not-allowed; }
+.assignment :is(select, button):focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+.assignment p { flex-basis: 100%; margin: 0; font-size: 13px; color: #6b7280; }
+.assignment p[role="status"] { color: #15803d; }
+@media (max-width: 600px) { .assignment { padding: 16px; } .assignment form { width: 100%; } .assignment select { flex: 1; min-width: 0; } }
 </style>

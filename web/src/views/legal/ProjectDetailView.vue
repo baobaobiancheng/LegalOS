@@ -11,8 +11,9 @@ import type { ContractFile, ContractTemplate, ProjectDetail, MessageDto, EventDt
 import ErrorState from '../../components/ErrorState.vue'
 import ProjectHistoryButton from '../../components/ProjectHistoryButton.vue'
 import ProjectAssignment from '../../components/ProjectAssignment.vue'
+import LegalWorkspaceLayout from '../../components/LegalWorkspaceLayout.vue'
 import { prependProjectHistory } from '../../utils/project-history'
-import { crmDeliveryStatusLabel, statusLabel } from '../../domain/project-status'
+import { crmDeliveryStatusLabel, isStatusInGroup, statusLabel } from '../../domain/project-status'
 
 const route = useRoute()
 const router = useRouter()
@@ -31,6 +32,14 @@ const contractFiles = ref<ContractFile[]>([])
 const uploadingFinal = ref(false)
 const finalInput = ref<HTMLInputElement | null>(null)
 const selectedDeliveryFileId = ref('')
+const assigneeLabel = computed(() => {
+  const current = project.value
+  if (!current) return ''
+  if (current.legalBp) return current.legalBp.displayName
+  if (current.route !== 'legalbp') return '数字分身处理'
+  return isStatusInGroup(current.status, 'processing') && current.reviewStatus !== 'review_completed'
+    ? '待领导分配' : '无指派法务'
+})
 
 onMounted(async () => {
   try {
@@ -213,7 +222,7 @@ const formatSize = (bytes: number): string => {
 }
 
 const reply = async () => {
-  if (!input.value.trim()) return
+  if (!input.value.trim() || sending.value) return
   if (isCrmProject.value && !selectedDeliveryFileId.value) {
     actionError.value = new RequestError({
       error: '请先上传并选择一个由法务确认的回传文件',
@@ -223,7 +232,8 @@ const reply = async () => {
     return
   }
   const text = input.value.trim()
-  input.value = ''
+  sending.value = true
+  actionError.value = null
   try {
     await request(`/projects/${id}/reply`, {
       method: 'POST',
@@ -232,162 +242,74 @@ const reply = async () => {
         ...(isCrmProject.value ? { deliveryFileId: selectedDeliveryFileId.value } : {}),
       },
     })
+    input.value = ''
     await refreshMessages()
   } catch (error) {
     actionError.value = error instanceof RequestError
       ? error
       : new RequestError({ error: '回传失败，请重试', code: 'UNKNOWN', statusCode: 0 })
+  } finally {
+    sending.value = false
   }
 }
 
 const goBack = () => router.push('/legal/projects')
 
-const avatarLabel = (role: string) => ({ user: auth.user?.displayName?.[0] || 'U', assistant: 'AI', legal: '法' })[role] || '?'
+const avatarLabel = (role: string) => ({ user: '业', assistant: 'AI', legal: '法' })[role] || '?'
 const authorLabel = (role: string) => ({ user: '业务人员', assistant: 'AI 助手', legal: '法务 BP' })[role] || role
 const timeFmt = (ts: string) => { const d = new Date(ts); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}` }
-
-async function handleLogout() { await auth.logout(); await router.replace('/login') }
 </script>
 
 <template>
-  <div class="app-shell">
-    <div class="aurora">
-      <div class="orb orb-1" /><div class="orb orb-2" /><div class="orb orb-3" />
-    </div>
-
-    <aside class="app-sidebar sidebar-glass">
-      <button
-        class="app-brand"
-        @click="router.push('/legal/projects')"
-      >
-        <span class="brand-icon">⚖</span>
-        <span class="brand-text"><b>法务 Legal OS</b><small>法律团队项目空间</small></span>
-      </button>
-      <div class="nav-section">
-        <span class="nav-label">项目</span>
-        <button
-          class="nav-btn active"
-          @click="goBack"
+  <LegalWorkspaceLayout active-key="projects">
+    <div class="project-detail-page">
+      <header class="detail-header">
+        <nav
+          class="detail-breadcrumb"
+          aria-label="面包屑"
         >
-          <span class="nav-ico"><svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-          ><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" /><rect
-            x="9"
-            y="3"
-            width="6"
-            height="4"
-            rx="1"
-          /><path d="M9 12h6M9 16h4" /></svg></span>
-          工单管理
-        </button>
-        <button
-          class="nav-btn"
-          disabled
-        >
-          <span class="nav-ico"><svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-          ><circle
-            cx="11"
-            cy="11"
-            r="8"
-          /><line
-            x1="21"
-            y1="21"
-            x2="16.65"
-            y2="16.65"
-          /></svg></span>
-          法规检索
-        </button>
-        <button
-          class="nav-btn"
-          disabled
-        >
-          <span class="nav-ico"><svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-          ><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg></span>
-          技能库
-        </button>
-      </div>
-      <div class="sidebar-footer">
-        <div class="user-avatar">
-          {{ auth.user?.displayName?.[0] || '法' }}
-        </div>
-        <div class="user-info">
-          <span class="user-name">{{ auth.user?.displayName || '用户' }}</span>
-          <span class="user-role">{{ auth.user?.role === 'legal_lead' ? '法务负责人' : '法务 BP' }}</span>
-        </div>
-        <button
-          class="logout-link"
-          title="退出登录"
-          @click="handleLogout"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-          ><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line
-            x1="21"
-            y1="12"
-            x2="9"
-            y2="12"
-          /></svg>
-        </button>
-      </div>
-    </aside>
-
-    <div class="app-main">
-      <header class="app-topbar topbar-glass">
-        <div class="tb-left">
           <button
             class="back-link"
             @click="goBack"
           >
-            ← 工单管理
+            工单管理
           </button>
-          <template v-if="project">
-            <span class="sep">/</span>
-            <strong class="tb-title">{{ project.title }}</strong>
+          <span aria-hidden="true">/</span>
+          <span>工单详情</span>
+        </nav>
+        <template v-if="project">
+          <div class="detail-heading">
+            <h1>{{ project.title }}</h1>
+            <div class="detail-badges">
+              <span
+                v-if="project.skillName"
+                class="skill-chip"
+              >{{ project.skillName }}</span>
+              <span :class="['risk-chip', 'risk-' + project.risk + '-bg']">{{ project.risk }}</span>
+              <span :class="['status-chip', 'status-' + project.status]">{{ statusLabel(project.status) }}</span>
+              <span
+                v-if="project.crmDeliveryStatus"
+                class="status-chip"
+              >{{ crmDeliveryStatusLabel(project.crmDeliveryStatus) }}</span>
+            </div>
+          </div>
+          <div class="detail-meta">
+            <span>申请人 <strong>{{ project.requesterName || project.creator.displayName }}</strong></span>
+            <span>处理归属 <strong>{{ assigneeLabel }}</strong></span>
             <span
-              v-if="project.skillName"
-              class="skill-chip"
-            >{{ project.skillName }}</span>
-            <span :class="['risk-chip', 'risk-' + project.risk + '-bg']">{{ project.risk }}</span>
-            <span :class="['status-chip', 'status-' + project.status]">{{ statusLabel(project.status) }}</span>
-            <span
-              v-if="project.crmDeliveryStatus"
-              class="status-chip"
-            >{{ crmDeliveryStatusLabel(project.crmDeliveryStatus) }}</span>
-          </template>
-        </div>
-        <span
-          v-if="loading"
-          class="tb-muted"
-        >加载中…</span>
+              class="detail-id"
+              :title="project.id"
+            >工单 ID {{ project.id }}</span>
+          </div>
+        </template>
+        <h1 v-else>
+          工单详情
+        </h1>
       </header>
 
       <div
         v-if="!loading && !loadError"
-        class="app-content chat-content animate-in"
+        class="chat-content detail-conversation"
       >
         <ErrorState
           v-if="actionError"
@@ -445,7 +367,7 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
                     </template>
                   </div>
                   <div
-                    v-if="(m as MessageDto).role === 'assistant' || (m as MessageDto).role === 'legal'"
+                    v-if="(m as MessageDto).role === 'assistant'"
                     class="ai-disclaimer"
                   >
                     AI 生成 · 仅供参考
@@ -463,101 +385,98 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
               </div>
             </template>
           </div>
-        </div>
 
-        <!-- 合同附件 -->
-        <div
-          v-if="project && project.kind === 'contract'"
-          class="attach-panel"
-        >
-          <div class="attach-head">
-            <span class="attach-title">📎 合同附件</span>
-            <button
-              v-if="canUploadFinal"
-              class="attach-upload-btn"
-              :disabled="uploadingFinal"
-              @click="triggerFinalUpload"
-            >
-              {{ uploadingFinal ? '上传中…' : '上传定稿' }}
-            </button>
-            <input
-              ref="finalInput"
-              type="file"
-              class="attach-file-input"
-              accept=".docx,.doc,.pdf,.md,.txt"
-              @change="handleFinalUpload"
-            >
-          </div>
+          <!-- 合同附件 -->
           <div
-            v-if="contractFiles.length"
-            class="attach-list"
+            v-if="project && project.kind === 'contract'"
+            class="attach-panel"
           >
-            <div
-              v-for="f in contractFiles"
-              :key="f.id"
-              :class="['attach-item', { 'attach-item-selected': selectedDeliveryFileId === f.id }]"
-            >
-              <label
-                v-if="isCrmProject"
-                class="delivery-choice"
-                :title="!isLegalDeliveryFile(f) ? '仅法务角色上传的文件可回传' : canReply() ? '选择为 CRM 回传文件' : '审核已完成，回传文件不可变更'"
-              >
-                <input
-                  v-model="selectedDeliveryFileId"
-                  type="radio"
-                  name="crm-delivery-file"
-                  :value="f.id"
-                  :disabled="!isLegalDeliveryFile(f) || !canReply()"
-                >
-                <span>回传</span>
-              </label>
+            <div class="attach-head">
+              <span class="attach-title">合同附件 <small>{{ contractFiles.length }}</small></span>
               <button
-                type="button"
-                class="att-download"
-                @click="downloadFile(f)"
+                v-if="canUploadFinal"
+                class="attach-upload-btn"
+                :disabled="uploadingFinal"
+                @click="triggerFinalUpload"
               >
-                <span class="att-icon">📄</span>
-                <span class="att-name">{{ f.originalName }}</span>
-                <span :class="['att-kind', 'att-kind-' + f.kind]">{{ contractFileKindLabel(f.kind) }}</span>
-                <span class="att-size">{{ formatSize(f.size) }}</span>
-                <span class="att-uploader">{{ f.uploader?.displayName || '' }}</span>
+                {{ uploadingFinal ? '上传中…' : '上传定稿' }}
               </button>
+              <input
+                ref="finalInput"
+                type="file"
+                class="attach-file-input"
+                accept=".docx,.doc,.pdf,.md,.txt"
+                @change="handleFinalUpload"
+              >
             </div>
-          </div>
-          <div
-            v-else
-            class="attach-empty"
-          >
-            暂无合同附件
+            <div
+              v-if="contractFiles.length"
+              class="attach-list"
+            >
+              <div
+                v-for="f in contractFiles"
+                :key="f.id"
+                :class="['attach-item', { 'attach-item-selected': selectedDeliveryFileId === f.id }]"
+              >
+                <label
+                  v-if="isCrmProject"
+                  class="delivery-choice"
+                  :title="!isLegalDeliveryFile(f) ? '仅法务角色上传的文件可回传' : canReply() ? '选择为 CRM 回传文件' : '审核已完成，回传文件不可变更'"
+                >
+                  <input
+                    v-model="selectedDeliveryFileId"
+                    type="radio"
+                    name="crm-delivery-file"
+                    :value="f.id"
+                    :disabled="!isLegalDeliveryFile(f) || !canReply()"
+                  >
+                  <span>回传</span>
+                </label>
+                <button
+                  type="button"
+                  class="att-download"
+                  @click="downloadFile(f)"
+                >
+                  <span class="att-icon">📄</span>
+                  <span class="att-name">{{ f.originalName }}</span>
+                  <span :class="['att-kind', 'att-kind-' + f.kind]">{{ contractFileKindLabel(f.kind) }}</span>
+                  <span class="att-size">{{ formatSize(f.size) }}</span>
+                  <span class="att-uploader">{{ f.uploader?.displayName || '' }}</span>
+                </button>
+              </div>
+            </div>
+            <div
+              v-else
+              class="attach-empty"
+            >
+              暂无合同附件
+            </div>
           </div>
         </div>
 
         <div
           v-if="project && project.status !== '已取消'"
-          class="chat-input-bar"
+          class="detail-composer"
         >
+          <label for="project-reply">{{ canReply() ? '法务回传意见' : '继续沟通' }}</label>
           <textarea
+            id="project-reply"
             v-model="input"
-            :placeholder="canReply() ? '输入回传意见…' : '输入消息…'"
-            rows="1"
+            :placeholder="canReply() ? '填写审核结论、处理意见或需要业务补充的内容…' : '输入消息，继续沟通…'"
+            :disabled="sending"
+            rows="2"
             @keydown.enter.exact.prevent="canReply() ? reply() : sendMessage()"
           />
-          <button
-            v-if="canReply()"
-            class="reply-btn"
-            :disabled="!input.trim() || sending || (isCrmProject && !selectedDeliveryFileId)"
-            @click="reply"
-          >
-            回传
-          </button>
-          <button
-            v-else
-            class="chat-send-btn"
-            :disabled="!input.trim() || sending"
-            @click="sendMessage"
-          >
-            ↑
-          </button>
+          <div class="composer-actions">
+            <span>{{ isCrmProject && canReply() && !selectedDeliveryFileId ? '请先上传并选择法务确认的 CRM 回传文件' : 'Enter 提交 · Shift + Enter 换行' }}</span>
+            <button
+              class="submit-reply"
+              :disabled="!input.trim() || sending || (canReply() && isCrmProject && !selectedDeliveryFileId)"
+              @click="canReply() ? reply() : sendMessage()"
+            >
+              {{ sending ? '提交中…' : canReply() ? '回传意见' : '发送消息' }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -569,105 +488,97 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
       />
       <div
         v-else
-        class="welcome-hero"
+        class="detail-loading"
+        role="status"
       >
-        <div class="welcome-icon">
-          <svg
-            width="32"
-            height="32"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="#86868b"
-            stroke-width="1.6"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          ><circle
-            cx="12"
-            cy="12"
-            r="9"
-          /><path d="M12 7v5l3 3" /></svg>
-        </div>
-        <h2 class="text-h2">
-          加载中…
-        </h2>
+        <span
+          class="loading-indicator"
+          aria-hidden="true"
+        />
+        正在加载工单…
       </div>
     </div>
-  </div>
+  </LegalWorkspaceLayout>
 </template>
 
 <script lang="ts">export default { name: 'ProjectDetailView' }</script>
 
 <style scoped>
-.tb-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.back-link { background: none; border: none; font-size: 13px; color: var(--blue); cursor: pointer; font-weight: 500; }
-.sep { color: var(--text-tertiary); font-size: 13px; }
-.tb-title { font-size: 14px; font-weight: 650; color: var(--text); letter-spacing: -0.01em; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tb-muted { font-size: 11px; color: var(--text-tertiary); }
-
-.chat-content { display: flex; flex-direction: column; height: calc(100vh - 56px); max-width: 960px; padding: 0; }
-.msg-scroll { flex: 1; overflow-y: auto; padding: 24px 32px 8px; }
-.ai-disclaimer { margin-top: 4px; font-size: 10px; color: var(--text-tertiary); padding-left: 4px; }
-
-/* ── 消息作者标签 ── */
-.msg-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.msg-author { font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+.project-detail-page { display: flex; flex-direction: column; height: 100dvh; min-height: 600px; max-width: 1440px; margin: 0 auto; padding: 28px 36px 24px; color: var(--workspace-text); }
+.detail-header { flex-shrink: 0; padding-bottom: 22px; }
+.detail-breadcrumb { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; color: var(--workspace-tertiary); font-size: 13px; }
+.back-link { padding: 0; border: 0; background: none; color: var(--workspace-secondary); font: inherit; cursor: pointer; }
+.back-link:hover { color: var(--workspace-blue); }
+.detail-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 14px 24px; }
+.detail-header h1 { flex: 1 1 480px; margin: 0; font-size: 22px; font-weight: 650; line-height: 1.5; letter-spacing: -.025em; overflow-wrap: anywhere; }
+.detail-badges { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 5px; }
+.detail-badges :is(.skill-chip, .status-chip, .risk-chip) { font-size: 12px; border-radius: 6px; }
+.detail-meta { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 14px; color: var(--workspace-tertiary); font-size: 12px; line-height: 1.6; }
+.detail-meta strong { margin-left: 6px; color: var(--workspace-secondary); font-weight: 500; }
+.detail-id { overflow-wrap: anywhere; }
+.detail-conversation { flex: 1; min-height: 0; height: auto; max-width: none; border: 1px solid var(--workspace-border); border-radius: 12px; background: #fff; }
+.detail-conversation > :not(.msg-scroll) { flex-shrink: 0; }
+.detail-conversation .msg-scroll { padding: 0; background: #fff; }
+.detail-conversation .msg-thread { width: min(calc(100% - 48px), 1040px); gap: 18px; padding: 28px 0; }
+.msg-row.out { max-width: min(80%, 720px); }
+.msg-row.in { width: min(100%, 880px); }
+.msg-avatar { width: 32px; height: 32px; border-radius: 8px; font-size: 12px; }
+.msg-avatar.user, .msg-avatar.legal, .msg-avatar.assistant { color: #2563eb; background: #eff6ff; }
+.msg-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.msg-author { font-size: 12px; font-weight: 600; color: var(--workspace-secondary); }
+.msg-time { padding: 0; font-size: 11px; color: var(--workspace-tertiary); }
 .msg-row.out .msg-meta { justify-content: flex-end; }
-.msg-row.out .msg-author { color: var(--blue); }
-.msg-row.in.legal .msg-author { color: #0E7A3C; }
-.msg-row.in .msg-meta .msg-author:not(:first-child) { margin-left: 8px; }
-
-.reply-btn {
-  padding: 10px 22px; border: none; border-radius: 22px;
-  background: #34C759; color: #fff; font-family: inherit;
-  font-size: 14px; font-weight: 650; cursor: pointer;
-  transition: all 0.3s var(--spring);
-}
-.reply-btn:hover:not(:disabled) { transform: scale(1.04); }
-.reply-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-
-/* ── 合同附件 ── */
-.attach-panel {
-  padding: 12px 24px 16px;
-  background: rgba(255,255,255,0.72);
-  backdrop-filter: blur(20px);
-  border-top: 1px solid rgba(0,0,0,0.05);
-  max-height: 220px; overflow-y: auto;
-}
-.attach-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.attach-title { font-size: 12px; font-weight: 650; color: var(--text-secondary); }
-.attach-upload-btn {
-  padding: 5px 14px; border: none; border-radius: 14px;
-  background: #1E3A8A; color: #fff; font-family: inherit;
-  font-size: 11px; font-weight: 600; cursor: pointer;
-  transition: all 0.3s var(--spring);
-}
-.attach-upload-btn:hover:not(:disabled) { background: #1E40AF; }
-.attach-upload-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.msg-bubble { padding: 14px 18px; font-size: 14px; line-height: 1.8; border-radius: 10px; }
+.msg-row.out .msg-bubble { border: 1px solid #dbeafe; background: #eff6ff; color: #1e3a8a; border-bottom-right-radius: 4px; }
+.msg-row.in .msg-bubble, .msg-row.in.legal .msg-bubble { border: 1px solid var(--workspace-border); background: #fff; color: var(--workspace-text); box-shadow: none; border-bottom-left-radius: 4px; }
+.msg-event { max-width: 100%; padding: 0; border-radius: 0; background: transparent; color: var(--workspace-tertiary); font-size: 12px; line-height: 1.6; text-align: center; overflow-wrap: anywhere; }
+.ai-disclaimer { margin-top: 4px; font-size: 11px; color: var(--workspace-tertiary); }
+.detail-composer { padding: 18px 24px; border-top: 1px solid var(--workspace-border); background: #fff; }
+.detail-composer label { display: block; margin-bottom: 10px; font-size: 13px; font-weight: 600; }
+.detail-composer textarea { display: block; width: 100%; padding: 12px 14px; border: 1px solid var(--workspace-border); border-radius: 8px; background: #f9fafb; font: inherit; font-size: 14px; line-height: 1.6; resize: vertical; min-height: 76px; max-height: 160px; }
+.detail-composer textarea:focus { outline: 2px solid #bfdbfe; border-color: var(--workspace-blue); background: #fff; }
+.detail-composer textarea::placeholder { color: #9ca3af; }
+.composer-actions { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 12px; }
+.composer-actions > span { color: var(--workspace-tertiary); font-size: 11px; line-height: 1.6; }
+.submit-reply { flex-shrink: 0; min-height: 38px; padding: 8px 20px; border: 1px solid #2563eb; border-radius: 8px; background: #2563eb; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.submit-reply:hover:not(:disabled) { background: #1d4ed8; }
+.submit-reply:disabled { border-color: #e5e7eb; background: #f3f4f6; color: #9ca3af; cursor: not-allowed; }
+.project-detail-page :is(button, input):focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+.attach-panel { padding: 16px 24px; border-top: 1px solid var(--workspace-border); }
+.attach-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.attach-title { font-size: 13px; font-weight: 600; }
+.attach-title small { margin-left: 6px; color: var(--workspace-tertiary); font-weight: 400; }
+.attach-upload-btn { min-height: 32px; padding: 6px 12px; border: 1px solid #bfdbfe; border-radius: 6px; background: #eff6ff; color: #2563eb; font: inherit; font-size: 12px; cursor: pointer; }
+.attach-upload-btn:disabled { opacity: .5; cursor: not-allowed; }
 .attach-file-input { display: none; }
 .attach-list { display: flex; flex-direction: column; gap: 6px; }
-.attach-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 12px; border: 1px solid transparent; border-radius: 10px;
-  background: rgba(0,0,0,0.02); font-family: inherit;
-  transition: all 0.2s; font-size: 12px;
-}
-.attach-item:hover { background: rgba(0,113,227,0.06); }
-.attach-item-selected { border-color: rgba(0,113,227,0.35); background: rgba(0,113,227,0.06); }
-.delivery-choice { display: inline-flex; align-items: center; gap: 4px; color: #0055B3; font-size: 10px; cursor: pointer; }
-.delivery-choice:has(input:disabled) { color: var(--text-tertiary); cursor: not-allowed; }
-.att-download {
-  display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;
-  padding: 0; border: none; background: transparent; font: inherit; text-align: left; cursor: pointer;
-}
+.attach-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--workspace-border); border-radius: 8px; background: #f9fafb; font-size: 12px; }
+.attach-item:hover, .attach-item-selected { border-color: #bfdbfe; background: #eff6ff; }
+.delivery-choice { display: inline-flex; align-items: center; gap: 4px; color: #2563eb; cursor: pointer; }
+.delivery-choice:has(input:disabled) { color: var(--workspace-tertiary); cursor: not-allowed; }
+.att-download { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; padding: 0; border: none; background: transparent; font: inherit; text-align: left; cursor: pointer; }
 .att-icon { font-size: 14px; flex-shrink: 0; }
-.att-name {
-  font-weight: 600; color: var(--text); flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.att-name { font-weight: 500; color: var(--workspace-text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-kind { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 4px; flex-shrink: 0; background: #f3f4f6; color: #4b5563; }
+.att-kind-revised { background: #eff6ff; color: #2563eb; }
+.att-kind-final { background: #f0fdf4; color: #15803d; }
+.att-size, .att-uploader { color: var(--workspace-tertiary); font-size: 11px; flex-shrink: 0; }
+.att-uploader { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-empty { font-size: 12px; color: var(--workspace-tertiary); padding: 6px 0; }
+.detail-loading { display: flex; flex: 1; align-items: center; justify-content: center; gap: 12px; color: var(--workspace-tertiary); font-size: 14px; }
+.loading-indicator { width: 18px; height: 18px; border: 2px solid #dbeafe; border-top-color: #2563eb; border-radius: 50%; animation: loading-spin 1s linear infinite; }
+@keyframes loading-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .loading-indicator { animation: none; } }
+@media (max-width: 1100px) { .project-detail-page { padding: 24px; } .detail-header h1 { font-size: 20px; } }
+@media (max-width: 600px) {
+  .project-detail-page { height: auto; min-height: 100dvh; padding: 18px 12px; }
+  .detail-header { padding-bottom: 16px; }
+  .detail-header h1 { font-size: 18px; }
+  .detail-conversation { min-height: 520px; }
+  .detail-conversation .msg-thread { width: calc(100% - 24px); padding: 20px 0; }
+  .msg-row.out { max-width: 100%; }
+  .msg-avatar { display: none; }
+  .detail-composer, .attach-panel { padding: 16px 12px; }
+  .att-uploader, .att-size { display: none; }
 }
-.att-kind { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 8px; flex-shrink: 0; }
-.att-kind-revised { background: rgba(0,113,227,0.08); color: #0055B3; }
-.att-kind-final { background: rgba(52,199,89,0.10); color: #0E7A3C; }
-.att-size { color: var(--text-tertiary); font-size: 11px; flex-shrink: 0; }
-.att-uploader { color: var(--text-tertiary); font-size: 11px; flex-shrink: 0; max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.attach-empty { font-size: 12px; color: var(--text-tertiary); padding: 6px 0; }
 </style>
