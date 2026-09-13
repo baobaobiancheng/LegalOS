@@ -42,6 +42,7 @@ describe.skipIf(!HAS_DB)('行为级集成（MySQL）', () => {
   it('P1-03/P1-11：工单创建事务原子写 Project+首消息+事件+Outbox+RiskLog', async () => {
     const uc = new CreateProjectUseCase(prisma as any);
     const u = await mkUser();
+    const bp = await mkUser('legal_bp');
     const { project } = await uc.execute({
       kind: 'consult',
       title: '事务测试',
@@ -49,7 +50,7 @@ describe.skipIf(!HAS_DB)('行为级集成（MySQL）', () => {
       creatorId: u.id,
       risk: 'P1',
       route: 'legalbp',
-      legalBpId: null,
+      legalBpId: bp.id,
       events: ['x · 工单已创建'],
       enqueueDingtalkGroup: true,
       riskLog: { finalRisk: 'P1', route: 'legalbp', ruleFloor: 'P1', matchedRuleIds: ['R101'], modelRisk: 'P2', classifierVersion: 'test' },
@@ -168,7 +169,7 @@ describe.skipIf(!HAS_DB)('行为级集成（MySQL）', () => {
     }
   });
 
-  it('P1-10：统一法务升级 use-case——升级 route+写事件+Outbox 建群，重复升级幂等', async () => {
+  it('统一法务升级：组织未知交领导，不提前建群，重复升级幂等', async () => {
     const uc = new EscalateProjectToLegalUseCase(prisma as any);
     const u = await mkUser();
     const p = await prisma.project.create({ data: { kind: 'consult', title: 't', risk: 'P2', route: 'llm', creatorId: u.id, ownerId: u.id } });
@@ -176,7 +177,7 @@ describe.skipIf(!HAS_DB)('行为级集成（MySQL）', () => {
     expect(upgraded).toBe(true);
     expect((project as any).route).toBe('legalbp');
     const outbox = await prisma.outboxEvent.count({ where: { projectId: p.id, eventType: 'dingtalk.group.create' } });
-    expect(outbox).toBe(1);
+    expect(outbox).toBe(0);
     const again = await uc.execute({ projectId: p.id, route: 'legalbp' } as any);
     expect(again.upgraded).toBe(false);
   });

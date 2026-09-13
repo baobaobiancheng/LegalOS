@@ -22,11 +22,7 @@ import { ConsultationReplyOrchestrator } from './application/consultation-reply.
 import { formatEventTime } from '../../common/utils/event-time';
 import { ProjectAccessPolicy } from './domain/project-access.policy';
 import { ProjectAction, ProjectActor } from './domain/project-access.types';
-import {
-  CreateProjectUseCase,
-  dingtalkMemberOutboxDedupKey,
-  OUTBOX_EVENT_DINGTALK_MEMBER_ADD,
-} from './application/create-project.use-case';
+import { CreateProjectUseCase } from './application/create-project.use-case';
 import { ProjectListParams, ProjectQueryService } from './queries/project-query.service';
 import { ProjectStateMachine } from './domain/project-state-machine';
 import { ClaimProjectUseCase } from './application/claim-project.use-case';
@@ -39,7 +35,8 @@ import {
   crmReviewDeliveryOutboxDedupKey,
   OUTBOX_EVENT_CRM_REVIEW_RESULT_DELIVER,
 } from './application/crm-delivery';
-import { matchActiveLegalAssignee, requireActiveLegalAssignee } from './domain/legal-assignee';
+import { requireActiveLegalAssignee } from './domain/legal-assignee';
+import { queueAssignmentNotification } from './application/assignment-notification';
 
 // 用户选择器，避免暴露密码哈希
 const userSelect = { id: true, username: true, displayName: true, role: true };
@@ -92,7 +89,6 @@ export class ProjectService {
     // 1.5 技能服务端解析（仅解析 active 的公有技能或创建者自己的私有技能）
     let skillId: string | null = null;
     let skillName: string | null = null;
-    let skillGroup: string | null = null;
     let skillPrompt: string | null = null;
     if (dto.skillId) {
       const skill = await this.prisma.skill
@@ -110,18 +106,10 @@ export class ProjectService {
       if (skill) {
         skillId = skill.id;
         skillName = skill.name;
-        skillGroup = skill.group;
         skillPrompt = skill.prompt;
       } else {
         this.logger.warn(`skillId=${dto.skillId} 解析失败（不存在/停用/无权），工单按无技能处理`);
       }
-    }
-
-    // 1.6 领域解析 + BP 匹配（仅 legalbp 路由拉群）
-    let legalBpId: string | null = null;
-    if (route === 'legalbp') {
-      const effectiveDomain = skillGroup ?? domain ?? null;
-      legalBpId = await matchActiveLegalAssignee(this.prisma, effectiveDomain);
     }
 
     // 2. 事件文案（事务内写入）
@@ -132,7 +120,7 @@ export class ProjectService {
     events.push(formatEventTime() + ' · 工单已创建');
     events.push(
       formatEventTime() +
-        ` · 系统判定 ${risk} 风险${route === 'llm' ? '，AI 正在生成答复…' : legalBpId ? '，已提交法务 BP 处理' : '，等待法务 BP 分配'}`,
+        ` · 系统判定 ${risk} 风险${route === 'llm' ? '，AI 正在生成答复…' : '，进入人工法务流程'}`,
     );
 
     // 3. 事务创建（幂等由 use case 处理：同一幂等键返回旧工单前校验创建者一致）
@@ -143,7 +131,8 @@ export class ProjectService {
       creatorId: currentUserId,
       risk,
       route,
-      legalBpId,
+      legalBpId: null,
+      autoAssignLegal: route === 'legalbp',
       // P1-11：分类证据随事务写入 RiskAssessmentLog（审计可追溯）
       ...(evidence
         ? {
@@ -199,6 +188,14 @@ export class ProjectService {
    */
   async findAll(actor: ProjectActor, params: ProjectListParams) {
     return this.query.findAll(actor, params);
+  }
+
+  async listAssignees() {
+    return this.prisma.user.findMany({
+      where: { isActive: true, role: { in: ['legal_bp', 'legal_lead'] } },
+      select: { id: true, displayName: true, role: true },
+      orderBy: [{ displayName: 'asc' }, { id: 'asc' }],
+    });
   }
 
   /** 工单详情 — 委派 ProjectQueryService（P2-01） */
@@ -276,7 +273,7 @@ export class ProjectService {
       ...(dto.route && { route: dto.route }),
       ...(dto.result && { result: dto.result }),
     };
-    const { result: updated, previousLegalBpId } = await this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       const before = await this.lockProjectForAudit(tx, id, project);
       this.accessPolicy.assertCan(actor, ProjectAction.Update, before);
       if (dto.legalBpId) await requireActiveLegalAssignee(tx, dto.legalBpId);
@@ -290,7 +287,7 @@ export class ProjectService {
         ...(dto.status && { status: before.status }),
       };
       if (actor.role === 'legal_bp') {
-        guardedWhere.OR = [{ legalBpId: actor.id }, { ownerId: actor.id }];
+        guardedWhere.legalBpId = actor.id;
       }
       const updatedCount = await tx.project.updateMany({ where: guardedWhere, data: updateData });
       if (updatedCount.count === 0) {
@@ -307,6 +304,7 @@ export class ProjectService {
         },
       });
       if (!result) throw new NotFoundException('工单不存在');
+      if (result.legalBpId) await queueAssignmentNotification(tx, result, result.legalBpId, before.legalBpId);
       if (this.audit) {
         const assignmentChanged = before.legalBpId !== result.legalBpId || before.ownerId !== result.ownerId;
         await this.audit.record({
@@ -324,16 +322,8 @@ export class ProjectService {
           retentionClass: 'business',
         }, tx);
       }
-      return { result, previousLegalBpId: before.legalBpId };
+      return result;
     });
-
-    // 钉钉联动：
-    // - legalBpId 变更 → 新 BP 进群（异步，不阻塞 PATCH 响应）
-    if (dto.legalBpId && dto.legalBpId !== previousLegalBpId) {
-      void this.onLegalBpChanged(id, dto.legalBpId, previousLegalBpId).catch((e) =>
-        this.logger.error(`转派加群失败（${id}）：${e}`),
-      );
-    }
     return updated;
   }
 
@@ -401,6 +391,7 @@ export class ProjectService {
         },
       });
       await tx.projectEvent.create({ data: { projectId: id, text: formatEventTime() + ` · 工单已转派给 ${bp.displayName}` } });
+      await queueAssignmentNotification(tx, before, legalBpId, before.legalBpId);
       if (this.audit) {
         await this.audit.record({
           actor,
@@ -424,7 +415,6 @@ export class ProjectService {
     });
 
     // 钉钉：新 BP 加群改由 Outbox Worker 执行，HTTP 请求只提交本地事件。
-    await this.onLegalBpChanged(id, legalBpId, before.legalBpId);
     try {
       if (before.dingtalkChatId) {
         await this.dingtalk.sendNotification(
@@ -473,8 +463,7 @@ export class ProjectService {
       projectId,
       route: 'legalbp',
       status: '待复核',
-      domain: null,
-      eventTexts: [formatEventTime() + ' · 用户申请升级为人工处理，已通知法务 BP'],
+      eventTexts: [formatEventTime() + ' · 用户申请升级为人工处理'],
     });
 
     if (this.audit) {
@@ -633,7 +622,7 @@ export class ProjectService {
     if (txProject.route === 'llm' && role === 'user') {
       // P2 追问：重新风险判定
       const riskInput = await this.replyOrchestrator.buildRiskInput(dto.text, dto.attachmentIds);
-      const { risk, route, domain } = await this.riskService.assess(riskInput);
+      const { risk, route } = await this.riskService.assess(riskInput);
 
       if (route === 'legalbp') {
         // 追问触发升级：匹配、条件切换、事件、Outbox 全部由统一用例完成。
@@ -642,7 +631,6 @@ export class ProjectService {
           route: 'legalbp',
           status: '待复核',
           risk,
-          domain: domain ?? null,
           eventTexts: [
             formatEventTime() + ` · 追问触发 ${risk} 风险判定，已升级人工处理，等待 BP 分配`,
           ],
@@ -680,9 +668,9 @@ export class ProjectService {
     // 原子化：状态=待复核 + （legal_bp 需已指派给自己）
     const where: Prisma.ProjectWhereInput = { id: projectId, status: '待复核' };
     if (actor.role === 'legal_bp') {
-      where.OR = [{ legalBpId: actor.id }, { ownerId: actor.id }];
+      where.legalBpId = actor.id;
     }
-    const { result: fresh, before } = await this.prisma.$transaction(async (tx) => {
+    const fresh = await this.prisma.$transaction(async (tx) => {
       const before = await this.lockProjectForAudit(tx, projectId, project);
       this.accessPolicy.assertCan(actor, ProjectAction.Reply, before);
       const reviewCompletedAt = new Date();
@@ -734,6 +722,7 @@ export class ProjectService {
         data: { projectId, role: 'legal', text: dto.text, label: '法务BP 正式回复' },
       });
       await tx.projectEvent.create({ data: { projectId, text: formatEventTime() + ' · 法务审核已完成' } });
+      await queueAssignmentNotification(tx, before, actor.id, before.legalBpId);
       await tx.projectEvent.create({ data: { projectId, text: formatEventTime() + ' · 通知业务端 + 钉钉群同步' } });
       if (needsCrmDelivery && deliveryFileId) {
         await tx.outboxEvent.create({
@@ -790,15 +779,8 @@ export class ProjectService {
           });
         }
       }
-      return { result, before };
+      return result;
     });
-
-    // 钉钉：若此前不在群则加人（.catch 防崩溃）
-    if (actor.id !== before.legalBpId) {
-      void this.onLegalBpChanged(projectId, actor.id, before.legalBpId).catch((e) =>
-        this.logger.error(`认领加群失败（${projectId}）：${e}`),
-      );
-    }
 
     // 钉钉通知
     try {
@@ -859,50 +841,6 @@ export class ProjectService {
     if (!project) throw new NotFoundException('工单不存在');
     return project;
   }
-
-
-  // ═══════════════════════════════════════════
-  // 钉钉联动
-  // ═══════════════════════════════════════════
-
-  /**
-   * 转派/认领检测（transfer/update/reply 共用）：新 BP 进群，旧 BP 留群。
-   * 这里只写 Outbox，不直接调用钉钉，避免外部成功后本地请求失败造成不可追踪状态。
-   */
-  private async onLegalBpChanged(projectId: string, newBpId: string, oldBpId: string | null) {
-    if (!newBpId || newBpId === oldBpId) return;
-    try {
-      const project = await this.prisma.project.findUnique({
-        where: { id: projectId },
-        select: { dingtalkChatId: true },
-      });
-      if (!project?.dingtalkChatId) return; // 无群跳过
-
-      const dedupKey = dingtalkMemberOutboxDedupKey(projectId, newBpId);
-      await this.prisma.outboxEvent.create({
-        data: {
-          eventType: OUTBOX_EVENT_DINGTALK_MEMBER_ADD,
-          aggregateType: 'project',
-          aggregateId: projectId,
-          dedupKey,
-          payload: { projectId, userId: newBpId },
-          projectId,
-        },
-      });
-    } catch (e) {
-      if ((e as any)?.code === 'P2002') return;
-      await this.addEvent(projectId, formatEventTime() + ' · 转派加群任务入队失败，请人工处理');
-      this.logger.warn(`转派加群失败（工单 ${projectId}）：${e}`);
-    }
-  }
-
-  /** 添加事件 */
-  private async addEvent(projectId: string, text: string) {
-    return this.prisma.projectEvent.create({
-      data: { projectId, text },
-    });
-  }
-
 }
 
 function projectAuditSnapshot(project: any) {

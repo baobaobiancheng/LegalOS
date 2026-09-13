@@ -52,6 +52,7 @@ export class ProjectController {
     @Query('group') group?: string,
     @Query('page') page?: string,
     @Query('size') size?: string,
+    @Query('assignment') assignment?: string,
   ) {
     const selectedGroup = group && isProjectGroupKey(group) ? group : undefined;
     if (group && !selectedGroup) throw new BadRequestException('未知工单分组');
@@ -60,13 +61,22 @@ export class ProjectController {
     const actor: ProjectActor = { id: userId, role };
     const selectedStatus = status && isProjectStatus(status) ? status : undefined;
     if (status && !selectedStatus) throw new BadRequestException('未知工单状态');
+    if (assignment !== undefined && assignment !== 'pending') throw new BadRequestException('未知分配筛选');
     return this.projectService.findAll(actor, {
       status: selectedStatus,
       kind: selectedKind,
       group: selectedGroup,
+      assignment,
       page: page ? Number(page) : 1,
       size: size ? Number(size) : 20,
     });
+  }
+
+  /** 法务领导指派用的最小成员投影，不暴露通讯录与登录凭据。 */
+  @Get('assignees')
+  @Roles(Role.admin, Role.legal_lead)
+  async assignees() {
+    return this.projectService.listAssignees();
   }
 
   /** 当前用户的工单（业务端"我的记录"） */
@@ -133,10 +143,10 @@ export class ProjectController {
     return this.projectService.update(id, dto, actor, auditRequestContext(request));
   }
 
-  /** 认领未分配工单（P1-01：legal_bp 原子条件认领；legal_lead/admin 可认领） */
+  /** 仅法务领导/管理员可接手未分配工单，普通 BP 必须由规则或领导指派。 */
   @Post(':id/claim')
   @HttpCode(200)
-  @Roles(Role.admin, Role.legal_bp, Role.legal_lead)
+  @Roles(Role.admin, Role.legal_lead)
   async claim(
     @Param('id') id: string,
     @CurrentUser('id') userId: string,

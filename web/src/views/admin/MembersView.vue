@@ -6,6 +6,7 @@ import bairongMark from '../../assets/bairong-intelligence-mark.png'
 import { RequestError, request } from '../../api/client'
 import ErrorState from '../../components/ErrorState.vue'
 import UserAvatar from '../../components/UserAvatar.vue'
+import LegalResponsibilities from '../../components/LegalResponsibilities.vue'
 import { buildPagination } from '../../domain/legal-research'
 import { useAuthStore } from '../../stores/auth'
 
@@ -630,8 +631,9 @@ onBeforeUnmount(() => animationContext?.revert())
         </template>
 
         <template v-else-if="activeTab === 'bp'">
+          <LegalResponsibilities />
           <div class="section-intro">
-            <div><strong>法务 BP 工作范围</strong><span>咨询领域命中后，系统会从已绑定且配置对应范围的法务成员中选择负责人。</span></div><small>共 {{ bpUsers.length }} 名法务成员</small>
+            <div><strong>法务专业领域标签</strong><span>以下标签保留作专业能力资料，不再用于自动指派。工单按上方业务职责规则分配。</span></div><small>共 {{ bpUsers.length }} 名法务成员</small>
           </div>
           <section class="domain-table-shell">
             <div

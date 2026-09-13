@@ -2,7 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { Role } from '../types'
 import { registerGuards } from './guards'
 
-const LEGAL_ROLES = [Role.LEGAL_BP, Role.LEGAL_LEAD]
+const LEGAL_ROLES = [Role.LEGAL_BP, Role.LEGAL_LEAD, Role.ADMIN]
 
 const router = createRouter({
   history: createWebHistory(),
@@ -35,13 +35,13 @@ const router = createRouter({
     {
       path: '/legal/research',
       name: 'legal-research',
-      meta: { roles: [...LEGAL_ROLES, Role.ADMIN], title: '法律检索' },
+      meta: { roles: LEGAL_ROLES, title: '法律检索' },
       component: () => import('../views/legal/LegalResearchView.vue'),
     },
     {
       path: '/legal/skills',
       name: 'legal-skills',
-      meta: { roles: [...LEGAL_ROLES, Role.ADMIN], title: '技能库' },
+      meta: { roles: LEGAL_ROLES, title: '技能库' },
       component: () => import('../views/legal/SkillsView.vue'),
     },
 

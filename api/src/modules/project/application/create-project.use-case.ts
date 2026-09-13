@@ -2,6 +2,8 @@ import { BadRequestException, ConflictException, Injectable, Logger } from '@nes
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ProjectKind, RiskLevel, Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
+import { assignLegalBp, assignmentEvent } from '../domain/legal-assignment';
+import { formatEventTime } from '../../../common/utils/event-time';
 
 /**
  * 工单创建事务用例（P1-03）：
@@ -23,6 +25,7 @@ export interface CreateProjectCommand {
   risk: RiskLevel;
   route: 'llm' | 'legalbp';
   legalBpId: string | null;
+  autoAssignLegal?: boolean;
   skillId?: string | null;
   skillName?: string | null;
   requesterName?: string | null;
@@ -119,6 +122,9 @@ export class CreateProjectUseCase {
 
     try {
       const project = await this.prisma.$transaction(async (tx) => {
+        const assignment = cmd.autoAssignLegal && cmd.route === 'legalbp'
+          ? await assignLegalBp(tx, cmd.creatorId) : null;
+        const legalBpId = assignment ? assignment.legalBpId : cmd.legalBpId;
         const p = await tx.project.create({
           data: {
             kind: cmd.kind,
@@ -127,8 +133,8 @@ export class CreateProjectUseCase {
             risk: cmd.risk,
             route: cmd.route,
             creatorId: cmd.creatorId,
-            ownerId: cmd.ownerId ?? cmd.creatorId,
-            legalBpId: cmd.legalBpId,
+            ownerId: cmd.ownerId ?? legalBpId ?? cmd.creatorId,
+            legalBpId,
             skillId: cmd.skillId ?? null,
             skillName: cmd.skillName ?? null,
             requesterName: cmd.requesterName ?? null,
@@ -160,9 +166,12 @@ export class CreateProjectUseCase {
         for (const ev of cmd.events ?? []) {
           await tx.projectEvent.create({ data: { projectId: p.id, text: ev } });
         }
+        if (assignment) await tx.projectEvent.create({ data: {
+          projectId: p.id, text: formatEventTime() + ' · ' + assignmentEvent(assignment),
+        } });
 
         // Outbox：需要建群时入队（事务内写入，事务提交后才由 Worker 消费）
-        if (cmd.enqueueDingtalkGroup) {
+        if (cmd.enqueueDingtalkGroup && legalBpId) {
           await tx.outboxEvent.create({
             data: {
               eventType: OUTBOX_EVENT_DINGTALK_GROUP_CREATE,
@@ -193,7 +202,7 @@ export class CreateProjectUseCase {
         }
 
         return p;
-      });
+      }, { isolationLevel: 'ReadCommitted' });
       return { project, created: true };
     } catch (e: any) {
       // 并发撞幂等键唯一约束（P2002）→ 重新读取返回已存在工单（先校验创建者）

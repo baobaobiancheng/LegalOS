@@ -88,7 +88,7 @@ describe('工单终态与历史分页', () => {
           .mockResolvedValue({ route: 'llm', status: '已取消' }),
         updateMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
-      user: { findFirst: vi.fn().mockResolvedValue(null) },
+      user: { findFirst: vi.fn().mockResolvedValue(null), findUnique: vi.fn().mockResolvedValue(null) },
       projectEvent: { create: vi.fn() }, outboxEvent: { create: vi.fn() },
     };
     tx.$transaction = vi.fn((run) => run(tx));

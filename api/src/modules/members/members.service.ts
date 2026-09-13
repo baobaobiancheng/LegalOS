@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Role } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import * as crypto from 'node:crypto';
 import { applyOrgRole, selectOrgDepartment } from '../../common/org/org-role';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -81,6 +81,7 @@ export class MembersService {
             mobile: c.mobile ?? null,
             avatarUrl: c.avatarUrl ?? null,
             department: c.department ?? null,
+            departmentIds: c.departmentIds ?? [],
           })),
         });
       }
@@ -120,7 +121,7 @@ export class MembersService {
         }
         const staged = await tx.dingTalkContactStaging.findMany({
           where: { batchId: batch.id },
-          select: { userId: true, name: true, mobile: true, avatarUrl: true, department: true },
+          select: { userId: true, name: true, mobile: true, avatarUrl: true, department: true, departmentIds: true },
         });
         const stagedContacts: ContactInfo[] = staged.map((c) => ({
           userId: c.userId,
@@ -128,9 +129,20 @@ export class MembersService {
           mobile: c.mobile ?? undefined,
           avatarUrl: c.avatarUrl ?? undefined,
           department: c.department ?? undefined,
+          departmentIds: Array.isArray(c.departmentIds) ? c.departmentIds.filter((id): id is string => typeof id === 'string') : [],
         }));
 
         await this.mergeContacts(tx, batch.id, stagedContacts);
+        if (result.departments) {
+          await tx.dingTalkDepartment.updateMany({ data: { isActive: false } });
+          if (result.departments.length) await tx.$executeRaw(Prisma.sql`
+            INSERT INTO dingtalk_departments (id, parent_id, name, is_active)
+            VALUES ${Prisma.join(result.departments.map(department => Prisma.sql`
+              (${department.id}, ${department.parentId}, ${department.name}, TRUE)
+            `))}
+            ON DUPLICATE KEY UPDATE parent_id = VALUES(parent_id), name = VALUES(name), is_active = TRUE
+          `);
+        }
 
         // 空快照也是完整快照：NOT EXISTS 会让上一批联系人全部软失效，绝不硬删除。
         if (typeof tx.$executeRaw === 'function') {
@@ -202,7 +214,7 @@ export class MembersService {
           }, tx);
         }
         return { ...binding, superseded: false };
-      });
+      }, { timeout: 30_000 });
 
       if (commitResult.superseded) {
         await this.prisma.dingTalkContactStaging
@@ -269,8 +281,8 @@ export class MembersService {
     if (typeof tx.$executeRaw === 'function') {
       await tx.$executeRaw`
         INSERT INTO dingtalk_contacts
-          (id, user_id, name, mobile, avatar_url, department, is_active, last_seen_batch_id, last_seen_at, synced_at)
-        SELECT UUID(), user_id, name, mobile, avatar_url, department, TRUE, batch_id, NOW(), NOW()
+          (id, user_id, name, mobile, avatar_url, department, department_ids, is_active, last_seen_batch_id, last_seen_at, synced_at)
+        SELECT UUID(), user_id, name, mobile, avatar_url, department, department_ids, TRUE, batch_id, NOW(), NOW()
         FROM dingtalk_contact_staging
         WHERE batch_id = ${batchId}
         ON DUPLICATE KEY UPDATE
@@ -278,6 +290,7 @@ export class MembersService {
           mobile = VALUES(mobile),
           avatar_url = VALUES(avatar_url),
           department = VALUES(department),
+          department_ids = VALUES(department_ids),
           is_active = TRUE,
           last_seen_batch_id = VALUES(last_seen_batch_id),
           last_seen_at = NOW(),
@@ -293,8 +306,8 @@ export class MembersService {
         chunk.map((c) =>
           tx.dingTalkContact.upsert({
             where: { userId: c.userId },
-            update: { name: c.name, mobile: c.mobile ?? null, avatarUrl: c.avatarUrl ?? null, department: c.department ?? null, isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
-            create: { userId: c.userId, name: c.name, mobile: c.mobile ?? null, avatarUrl: c.avatarUrl ?? null, department: c.department ?? null, isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
+            update: { name: c.name, mobile: c.mobile ?? null, avatarUrl: c.avatarUrl ?? null, department: c.department ?? null, departmentIds: c.departmentIds ?? [], isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
+            create: { userId: c.userId, name: c.name, mobile: c.mobile ?? null, avatarUrl: c.avatarUrl ?? null, department: c.department ?? null, departmentIds: c.departmentIds ?? [], isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
           }),
         ),
       );

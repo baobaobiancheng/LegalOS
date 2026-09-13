@@ -141,6 +141,7 @@ model User {
   createdSkills   Skill[]        @relation("CreatedSkills")
   approvedSkills  Skill[]        @relation("ApprovedSkills")
   bpDomainMaps    BpDomainMap[]
+  assignmentRules LegalAssignmentRule[]
 
   @@map("users")
 }
@@ -169,6 +170,7 @@ model DingTalkContact {
   avatarUrl       String?  @map("avatar_url") @db.Text
   // 部门（2026-08-11 手动绑定路径也带部门,review 修复）
   department      String?  @db.VarChar(128)
+  departmentIds   Json?    @map("department_ids")
   isActive        Boolean  @default(true) @map("is_active")
   lastSeenBatchId String?  @map("last_seen_batch_id") @db.VarChar(64)
   lastSeenAt      DateTime @default(now()) @map("last_seen_at")
@@ -209,10 +211,40 @@ model DingTalkContactStaging {
   avatarUrl  String?           @map("avatar_url") @db.Text
   // 部门名（2026-08-11 组织架构身份映射）：钉钉同步按部门拉取时写入
   department String?           @db.VarChar(128)
+  departmentIds Json?          @map("department_ids")
 
   @@unique([batchId, userId])
   @@index([batchId, name])
   @@map("dingtalk_contact_staging")
+}
+
+// 完整通讯录批次内更新部门树；失效部门保留，历史规则不因组织调整而错绑同名部门。
+model DingTalkDepartment {
+  id        String  @id @db.VarChar(32)
+  parentId  String? @map("parent_id") @db.VarChar(32)
+  name      String  @db.VarChar(128)
+  isActive  Boolean @default(true) @map("is_active")
+  rules     LegalAssignmentRule[]
+
+  @@index([parentId])
+  @@map("dingtalk_departments")
+}
+
+// 业务范围以真实钉钉部门 ID 定义，不使用 LLM 领域标签或申请人自报部门授权。
+model LegalAssignmentRule {
+  id                 String  @id @db.VarChar(64)
+  name               String  @db.VarChar(128)
+  description        String  @db.Text
+  departmentId       String  @map("department_id") @db.VarChar(32)
+  userId             String  @map("user_id")
+  includeDescendants Boolean @default(true) @map("include_descendants")
+  isActive           Boolean @default(true) @map("is_active")
+  department         DingTalkDepartment @relation(fields: [departmentId], references: [id])
+  user               User @relation(fields: [userId], references: [id])
+
+  @@index([departmentId])
+  @@index([userId])
+  @@map("legal_assignment_rules")
 }
 
 model Project {

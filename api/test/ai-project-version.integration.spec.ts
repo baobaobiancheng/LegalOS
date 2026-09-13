@@ -126,7 +126,7 @@ describe.skipIf(!databaseUrl)('AI 项目版本真实 MySQL CAS', () => {
     }
   });
 
-  it('升级事务已读取处理人后发生并发取消，仍返回冲突而非旧快照成功', async () => {
+  it('升级事务已读取申请人后发生并发取消，仍返回冲突而非旧快照成功', async () => {
     const project = await fixture();
     let signalRead!: () => void;
     let continueUpgrade!: () => void;
@@ -136,8 +136,8 @@ describe.skipIf(!databaseUrl)('AI 项目版本真实 MySQL CAS', () => {
       project: prisma.project,
       $transaction: (operation: (tx: any) => Promise<unknown>, options: any) => prisma.$transaction(async tx => operation({
         ...tx,
-        user: { ...tx.user, findFirst: async (args: any) => {
-          const user = await tx.user.findFirst(args);
+        user: { ...tx.user, findUnique: async (args: any) => {
+          const user = await tx.user.findUnique(args);
           signalRead();
           await proceed;
           return user;

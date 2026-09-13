@@ -32,6 +32,7 @@ function makeTransaction(prisma: any) {
   prisma.$transaction = vi.fn(async (arg: any) => {
     if (typeof arg === 'function') {
       const tx = {
+        user: { findUnique: vi.fn().mockResolvedValue(null) },
         project: prisma.project,
         projectMessage: prisma.projectMessage,
         projectEvent: prisma.projectEvent,

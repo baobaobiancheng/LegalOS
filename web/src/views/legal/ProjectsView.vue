@@ -8,6 +8,7 @@ import LegalWorkspaceLayout from '../../components/LegalWorkspaceLayout.vue'
 import { useRemoteData } from '../../composables/useRemoteData'
 import { buildPagination } from '../../domain/legal-research'
 import { statusLabel } from '../../domain/project-status'
+import { useAuthStore } from '../../stores/auth'
 import type { ProjectGroupKey, ProjectListItem, ProjectListResponse } from '../../types'
 
 const PAGE_SIZE = 10
@@ -19,13 +20,16 @@ const GROUPS: Array<{ key: ProjectGroupKey; label: string }> = [
 ]
 
 const router = useRouter()
+const auth = useAuthStore()
+const canAssign = computed(() => ['admin', 'legal_lead'].includes(auth.user?.role || ''))
+const pendingAssignment = ref(false)
 const pageRoot = ref<HTMLElement | null>(null)
 const activeGroup = ref<ProjectGroupKey>('待处理')
 const currentPage = ref(1)
 let animationContext: gsap.Context | null = null
 
 const remote = useRemoteData(() => request<ProjectListResponse>(
-  `/projects?group=${encodeURIComponent(activeGroup.value)}&page=${currentPage.value}&size=${PAGE_SIZE}`,
+  `/projects?group=${encodeURIComponent(activeGroup.value)}&page=${currentPage.value}&size=${PAGE_SIZE}${pendingAssignment.value ? '&assignment=pending' : ''}`,
 ))
 
 const loading = computed(() => remote.status.value === 'loading')
@@ -86,7 +90,12 @@ const kindLabel = (kind: ProjectListItem['kind']) => ({
 })[kind]
 
 const requester = (project: ProjectListItem) => project.requesterName || project.creator?.displayName || '信息已隐藏'
-const assignee = (project: ProjectListItem) => project.legalBp?.displayName || project.owner?.displayName || '未认领'
+const assignee = (project: ProjectListItem) => project.legalBp?.displayName || (project.route === 'llm' ? 'AI 处理' : '待领导分配')
+
+async function changeAssignmentFilter() {
+  currentPage.value = 1
+  await loadProjects()
+}
 
 const formatTime = (value: string) => {
   const time = new Date(value).getTime()
@@ -132,7 +141,7 @@ onBeforeUnmount(() => animationContext?.revert())
           <div class="heading-copy">
             <h1>工单管理</h1>
             <span class="workload-total">
-              <small>全部工单</small>
+              <small>{{ pendingAssignment ? '待分配工单' : canAssign ? '全部工单' : '分配给我' }}</small>
               <strong>{{ allCount }}</strong>
             </span>
           </div>
@@ -154,6 +163,19 @@ onBeforeUnmount(() => animationContext?.revert())
           </button>
         </div>
       </header>
+
+      <label
+        v-if="canAssign"
+        class="assignment-filter"
+      >
+        <input
+          v-model="pendingAssignment"
+          type="checkbox"
+          :disabled="loading"
+          @change="changeAssignmentFilter"
+        >
+        仅看待领导分配（含领导接手与处理人停用的工单）
+      </label>
 
       <nav
         class="workflow-tabs"

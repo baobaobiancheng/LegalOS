@@ -218,6 +218,7 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
       departmentIds: Set<number>;
     }>();
     const deptNames = new Map<number, string>(); // 部门 id → 部门名（2026-08-11 存部门）
+    const deptParents = new Map<number, number | null>([[1, null]]);
     let truncatedDepth = false;
     let truncatedPage = false;
     let pageCount = 0;
@@ -243,6 +244,7 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
         const list = res.result as Array<{ dept_id: number; name?: string }>;
         for (const d of list) {
           if (d?.dept_id && d.name) deptNames.set(d.dept_id, d.name);
+          deptParents.set(d.dept_id, id);
         }
         return list.map((d) => d.dept_id);
       });
@@ -318,6 +320,7 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
         avatarUrl: contact.avatarUrl,
         department: departments[0],
         departments,
+        departmentIds: allDepts.filter(id => contact.departmentIds.has(id)).map(String),
       };
     });
 
@@ -338,6 +341,10 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
       departmentCount: visitedDepts.size,
       pageCount,
       warnings: [],
+      departments: allDepts.map(id => ({
+        id: String(id), parentId: deptParents.get(id) == null ? null : String(deptParents.get(id)),
+        name: deptNames.get(id) ?? String(id),
+      })),
     };
   }
 

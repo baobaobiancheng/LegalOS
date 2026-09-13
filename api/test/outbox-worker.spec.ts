@@ -281,6 +281,33 @@ describe('OutboxWorker 钉钉建群幂等', () => {
     expect(outbox.markSucceeded).toHaveBeenCalledWith('e1', 'tok');
   });
 
+  it('领导首次指派无群工单：成员任务补建群，不依赖已被跳过的初始建群事件', async () => {
+    outbox.claimNext.mockResolvedValue([claim({ eventType: 'dingtalk.member.add', payload: { projectId: 'p1', userId: 'bp1' } })]);
+    prisma.project.findUnique.mockResolvedValue({ id: 'p1', creatorId: 'u1', legalBpId: 'bp1', status: '待复核', dingtalkChatId: null, title: '首次指派', sourceAppId: null });
+    await worker.pollOnce();
+    expect(dingtalk.createGroup).toHaveBeenCalledWith(['U1', 'B1'], expect.stringContaining('首次指派'), 'U1', 'legalos-p1');
+    expect(outbox.markSucceeded).toHaveBeenCalledWith('e1', 'tok');
+  });
+
+  it('CRM A1 指派事件不自动建群或加群', async () => {
+    outbox.claimNext.mockResolvedValue([claim({ eventType: 'dingtalk.member.add', payload: { projectId: 'p1', userId: 'bp1' } })]);
+    prisma.project.findUnique.mockResolvedValue({ id: 'p1', legalBpId: 'bp1', status: '待复核', dingtalkChatId: null, sourceAppId: 'crm' });
+    await worker.pollOnce();
+    expect(dingtalk.createGroup).not.toHaveBeenCalled();
+    expect(dingtalk.addMember).not.toHaveBeenCalled();
+  });
+
+  it('已绑定钉钉的管理员认领后可以补建群，但不会成为自动分配候选人', async () => {
+    outbox.claimNext.mockResolvedValue([claim({ eventType: 'dingtalk.member.add', payload: { projectId: 'p1', userId: 'admin1' } })]);
+    prisma.project.findUnique.mockResolvedValue({ id: 'p1', creatorId: 'u1', legalBpId: 'admin1', status: '待复核', dingtalkChatId: null, title: '管理员认领', sourceAppId: null });
+    prisma.user.findUnique.mockImplementation(async ({ where }) => where.id === 'u1'
+      ? { dingtalkUserId: 'U1', isActive: true, displayName: '业务' }
+      : { dingtalkUserId: 'A1', isActive: true, displayName: '管理员', role: 'admin' });
+    await worker.pollOnce();
+    expect(dingtalk.createGroup).toHaveBeenCalledWith(['U1', 'A1'], expect.any(String), 'U1', 'legalos-p1');
+    expect(outbox.markSucceeded).toHaveBeenCalledWith('e1', 'tok');
+  });
+
   it.each([
     { isActive: false, role: 'legal_bp', legalBpId: 'bp1' },
     { isActive: true, role: 'business', legalBpId: 'bp1' },

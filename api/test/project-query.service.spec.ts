@@ -1,5 +1,6 @@
 import { ProjectKind, ProjectStatus } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
+import { ProjectAccessPolicy } from '../src/modules/project/domain/project-access.policy';
 import {
   businessStatusGroupWhere,
   PROJECT_GROUP_KEYS,
@@ -35,7 +36,7 @@ describe('ProjectQueryService 工单分组分页', () => {
       .mockResolvedValueOnce(6)
       .mockResolvedValueOnce(13)
       .mockResolvedValueOnce(5);
-    const listScope = vi.fn().mockReturnValue({ OR: [{ legalBpId: 'bp-1' }, { ownerId: 'bp-1' }, { legalBpId: null }] });
+    const listScope = vi.fn().mockReturnValue({ legalBpId: 'bp-1' });
     const service = new ProjectQueryService(
       { project: { findMany, count } } as any,
       { listScope } as any,
@@ -49,7 +50,7 @@ describe('ProjectQueryService 工单分组分页', () => {
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: {
         AND: [
-          { OR: [{ legalBpId: 'bp-1' }, { ownerId: 'bp-1' }, { legalBpId: null }] },
+          { legalBpId: 'bp-1' },
           projectGroupWhere('待处理'),
         ],
       },
@@ -134,37 +135,31 @@ describe('ProjectQueryService 工单分组分页', () => {
     )).rejects.toThrow(message);
   });
 
-  it('legal_bp 未认领项只返回认领摘要，ownerId 指派项仍返回正常列表字段', async () => {
+  it('legal_bp 列表和全部分组统计在 SQL 层限制指派范围，不再查询未分配摘要', async () => {
     const base = {
-      id: 'p-unassigned', kind: 'consult', title: '待认领', status: '待处理', risk: 'P1',
-      route: 'legalbp', isFailed: false, legalBpId: null, ownerId: 'biz-1', result: 'PRIVATE_RESULT',
+      id: 'p-assigned', kind: 'consult', title: '已指派', status: '待处理', risk: 'P1',
+      route: 'legalbp', isFailed: false, legalBpId: 'bp-1', ownerId: 'biz-1', result: '正常可见',
       requesterName: 'PRIVATE_REQUESTER', creator: { id: 'biz-1', displayName: 'PRIVATE_USER' },
       owner: { id: 'biz-1', displayName: 'PRIVATE_USER' }, legalBp: null,
       createdAt: new Date(), updatedAt: new Date(), extra: { secret: true },
     };
-    const findMany = vi.fn().mockResolvedValue([
-      base,
-      { ...base, id: 'p-owned', title: '已指派', ownerId: 'bp-1', result: '正常可见' },
-    ]);
+    const findMany = vi.fn().mockResolvedValue([base]);
     const count = vi.fn().mockResolvedValue(0);
     const service = new ProjectQueryService(
       { project: { findMany, count } } as any,
-      { listScope: vi.fn().mockReturnValue({}) } as any,
+      new ProjectAccessPolicy(),
     );
 
     const result = await service.findAll({ id: 'bp-1', role: 'legal_bp' }, { page: 1, size: 20 });
 
-    expect(result.items[0]).toEqual({
-      id: 'p-unassigned', kind: 'consult', title: '待认领', status: '待处理', risk: 'P1',
-      route: 'legalbp', legalBpId: null, createdAt: base.createdAt, updatedAt: base.updatedAt,
-    });
-    expect(result.items[0]).not.toHaveProperty('result');
-    expect(result.items[0]).not.toHaveProperty('creator');
-    expect(result.items[1]).toMatchObject({ id: 'p-owned', ownerId: 'bp-1', result: '正常可见' });
-    expect(result.groups['待处理'].map((item) => item.id)).toEqual(['p-unassigned', 'p-owned']);
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { legalBpId: 'bp-1' } }));
+    for (const [args] of count.mock.calls) expect(args.where.AND[0]).toEqual({ legalBpId: 'bp-1' });
+    expect(result.items[0]).toMatchObject({ id: 'p-assigned', result: '正常可见' });
+    expect(result.items[0]).not.toHaveProperty('extra');
+    expect(result.groups['待处理'].map((item) => item.id)).toEqual(['p-assigned']);
   });
 
-  it('未认领数字分身摘要仍进入数字分身分组，与数据库分组计数一致', async () => {
+  it('领导仍可查看未分配的数字分身工单，分组与统计一致', async () => {
     const updatedAt = new Date('2026-09-08T00:00:00.000Z');
     const item = {
       id: 'p-unassigned-llm', kind: 'consult', title: 'AI处理中', status: '分析中', risk: 'P2',
@@ -183,13 +178,36 @@ describe('ProjectQueryService 工单分组分页', () => {
     );
 
     const result = await service.findAll(
-      { id: 'bp-1', role: 'legal_bp' },
+      { id: 'lead-1', role: 'legal_lead' },
       { group: '数字分身处理', page: 1, size: 20 },
     );
 
     expect(result.groupCounts['数字分身处理']).toBe(1);
     expect(result.groups['数字分身处理']).toEqual(result.items);
     expect(result.items[0]).toMatchObject({ id: item.id, route: 'llm', updatedAt });
-    expect(result.items[0]).not.toHaveProperty('result');
+    expect(result.items[0]).toHaveProperty('result');
+  });
+
+  it('普通 BP 的 mine 查询与状态统计不能绕过指派范围', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const count = vi.fn().mockResolvedValue(0);
+    const groupBy = vi.fn().mockResolvedValue([]);
+    const service = new ProjectQueryService({ project: { findMany, count, groupBy } } as any, new ProjectAccessPolicy());
+    await service.findAll({ id: 'bp-1', role: 'legal_bp' }, { mine: true });
+    const scope = { creatorId: 'bp-1', legalBpId: 'bp-1' };
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: scope }));
+    expect(groupBy).toHaveBeenCalledWith(expect.objectContaining({ where: scope }));
+  });
+
+  it('仅领导可筛选待分配池，保留合同/咨询分组的数据库分页与统计', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const count = vi.fn().mockResolvedValue(0);
+    const service = new ProjectQueryService({ project: { findMany, count } } as any, new ProjectAccessPolicy());
+    await expect(service.findAll({ id: 'bp-1', role: 'legal_bp' }, { assignment: 'pending' })).rejects.toThrow('仅法务领导');
+    expect(findMany).not.toHaveBeenCalled();
+    await service.findAll({ id: 'lead-1', role: 'legal_lead' }, { assignment: 'pending', group: '合同协作' });
+    const pending = findMany.mock.calls[0][0].where.AND[0];
+    expect(pending.AND[0]).toMatchObject({ route: 'legalbp', OR: [{ legalBpId: null }, { legalBp: { role: { not: 'legal_bp' } } }, { legalBp: { isActive: false } }] });
+    for (const [args] of count.mock.calls) expect(args.where.AND[0]).toEqual(pending);
   });
 });

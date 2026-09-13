@@ -79,12 +79,12 @@ describe('ProjectService.escalate（人工升级接口）', () => {
     );
   });
 
-  it('创建者升级成功：返回 upgraded=true/legalbp/待复核，写一条事件 + 一个 Outbox', async () => {
+  it('创建者升级成功但缺少组织：返回待复核，记录进入领导队列，不提前建群', async () => {
     const result = await service.escalate('p-1', { id: 'u-owner', role: 'business' });
 
     expect(result).toEqual({ upgraded: true, route: 'legalbp', status: '待复核' });
-    expect(prisma.projectEvent.create).toHaveBeenCalledTimes(1);
-    expect(prisma.outboxEvent.create).toHaveBeenCalledTimes(1);
+    expect(prisma.projectEvent.create).toHaveBeenCalledTimes(2);
+    expect(prisma.outboxEvent.create).not.toHaveBeenCalled();
   });
 
   it('其他 business 用户返回 403', async () => {

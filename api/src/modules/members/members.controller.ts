@@ -6,6 +6,7 @@ import { MembersService } from './members.service';
 import { BindContactDto, ProvisionMemberDto, SetBpDomainDto } from './dto/members.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { auditRequestContext } from '../../common/audit/audit-request';
+import { LegalResponsibilityService } from './legal-responsibility.service';
 
 /**
  * 管理端成员管理（2026-08-05 钉钉拉群模块）：
@@ -15,7 +16,21 @@ import { auditRequestContext } from '../../common/audit/audit-request';
 @Controller('admin/members')
 @Roles(Role.admin)
 export class MembersController {
-  constructor(private readonly membersService: MembersService) {}
+  constructor(private readonly membersService: MembersService, private readonly responsibilities: LegalResponsibilityService) {}
+
+  @Get('bp-responsibilities')
+  async previewResponsibilities() {
+    return this.responsibilities.preview();
+  }
+
+  @Post('bp-responsibilities/apply')
+  async applyResponsibilities(
+    @CurrentUser('id') id: string,
+    @CurrentUser('role') role: Role,
+    @Req() request: Request,
+  ) {
+    return this.responsibilities.apply({ id, role }, auditRequestContext(request));
+  }
 
   /** 一键同步钉钉通讯录（拉全量 → 快照 → 姓名自动匹配绑定） */
   @Post('sync')

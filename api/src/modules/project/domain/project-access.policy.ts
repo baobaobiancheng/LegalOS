@@ -9,19 +9,19 @@ import { Prisma } from '@prisma/client';
  * Controller 的 @Roles() 只做角色粗筛，不能替代对象级授权。
  *
  * 权限矩阵（business / legal_bp / legal_lead / admin）：
- *   - 查看列表    : 仅自己创建 / 仅指派给自己 + 未分配认领摘要 / 全部 / 全部
- *   - 查看详情    : 仅自己创建 / 仅 legalBpId 或 ownerId 为自己 / 全部 / 全部
+ *   - 查看列表    : 仅自己创建 / 仅 legalBpId 指派给自己 / 全部 / 全部
+ *   - 查看详情    : 仅自己创建 / 仅 legalBpId 指派给自己 / 全部 / 全部
  *   - 发送普通消息: 仅自己创建 / 仅已指派给自己 / 全部 / 全部
  *   - 更新状态/风险/结果: 禁止 / 仅已指派给自己（字段受限）/ 全部 / 全部
- *   - 认领        : 禁止 / 允许（原子条件更新）/ 允许 / 允许
+ *   - 认领        : 禁止 / 禁止 / 允许 / 允许
  *   - 转派        : 禁止 / 禁止 / 允许 / 允许
  *   - 法务正式回传: 禁止 / 仅已指派给自己 / 允许 / 允许
  *   - 取消        : 仅创建者且未完成 / 禁止 / 允许 / 允许
  *   - 合同审查    : 禁止 / 仅已指派给自己 / 允许 / 允许
  *   - 附件操作    : 仅自己创建 / 仅已指派给自己 / 全部 / 全部
  *
- * 产品决策说明：默认按最小权限执行上表。若产品明确要求"法务 BP 可互相转派/可直接
- * 回传认领未分配工单"，需产品确认后调整，本版本不回退为宽松语义。
+ * 未命中自动分配规则的工单由法务领导分配，普通 BP 不参与公共池认领。
+ * ownerId 在建单时也可能是申请人，不能作为法务处理权限的替代凭据。
  */
 @Injectable()
 export class ProjectAccessPolicy {
@@ -46,9 +46,9 @@ export class ProjectAccessPolicy {
     }
   }
 
-  /** 是否已指派给该法务 BP（legalBpId 或 ownerId 为自己） */
+  /** 法务处理权限只认明确的指派字段，不从创建者/历史 owner 推断。 */
   private isAssigned(actor: ProjectActor, project: ProjectLike): boolean {
-    return project.legalBpId === actor.id || project.ownerId === actor.id;
+    return project.legalBpId === actor.id;
   }
 
   private canLead(_actor: ProjectActor, _action: ProjectAction, _project: ProjectLike): boolean {
@@ -64,10 +64,9 @@ export class ProjectAccessPolicy {
       case ProjectAction.ReviewContract:
       case ProjectAction.ManageFile:
         return this.isAssigned(actor, project);
-      case ProjectAction.Claim:
-        return project.legalBpId === null;
       case ProjectAction.List:
         return true; // 列表范围由 listScope 服务端生成
+      case ProjectAction.Claim:
       case ProjectAction.Transfer:
       case ProjectAction.Cancel:
       case ProjectAction.SubmitReview:
@@ -109,7 +108,7 @@ export class ProjectAccessPolicy {
   /**
    * 列表服务端范围（5.3.4）：禁止客户端提交任意 creatorId/ownerId/legalBpId 绕过范围。
    * - business：仅自己创建
-   * - legal_bp：仅指派给自己 + 未分配（可认领摘要）
+   * - legal_bp：仅 legalBpId 指派给自己
    * - legal_lead / admin：全部
    */
   listScope(actor: ProjectActor): Prisma.ProjectWhereInput {
@@ -120,7 +119,7 @@ export class ProjectAccessPolicy {
       case 'business':
         return { creatorId: actor.id };
       case 'legal_bp':
-        return { OR: [{ legalBpId: actor.id }, { ownerId: actor.id }, { legalBpId: null }] };
+        return { legalBpId: actor.id };
       default:
         return { creatorId: actor.id };
     }

@@ -10,6 +10,7 @@ import type { ContractDocStyle } from '../../utils/markdown-to-docx'
 import type { ContractFile, ContractTemplate, ProjectDetail, MessageDto, EventDto } from '../../types'
 import ErrorState from '../../components/ErrorState.vue'
 import ProjectHistoryButton from '../../components/ProjectHistoryButton.vue'
+import ProjectAssignment from '../../components/ProjectAssignment.vue'
 import { prependProjectHistory } from '../../utils/project-history'
 import { crmDeliveryStatusLabel, statusLabel } from '../../domain/project-status'
 
@@ -392,6 +393,12 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
           v-if="actionError"
           :message="actionError.payload.error"
           :request-id="actionError.payload.requestId"
+        />
+        <ProjectAssignment
+          v-if="project && ['admin', 'legal_lead'].includes(auth.user?.role || '') && project.route === 'legalbp' && !['已回传', '已取消'].includes(project.status) && project.reviewStatus !== 'review_completed'"
+          :project-id="id"
+          :assignee-name="project.legalBp?.displayName"
+          @assigned="refreshMessages"
         />
         <div
           id="msg-container"

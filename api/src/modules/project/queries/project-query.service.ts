@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ProjectAccessPolicy } from '../domain/project-access.policy';
 import { ProjectAction, ProjectActor } from '../domain/project-access.types';
@@ -14,6 +14,7 @@ export interface ProjectListParams {
   group?: ProjectGroupKey;
   query?: string;
   mine?: boolean;
+  assignment?: 'pending';
   page?: number;
   size?: number;
 }
@@ -89,7 +90,13 @@ export class ProjectQueryService {
 
   /** 列表：服务端范围过滤 + 分页 + 按状态分组投影 */
   async findAll(actor: ProjectActor, params: ProjectListParams) {
-    const { status, statusGroup, kind, group, query, mine, page = 1, size = 20 } = params;
+    const { status, statusGroup, kind, group, query, mine, assignment, page = 1, size = 20 } = params;
+    if (assignment !== undefined && assignment !== 'pending') {
+      throw new BadRequestException('未知分配筛选');
+    }
+    if (assignment && !['admin', 'legal_lead'].includes(actor.role)) {
+      throw new ForbiddenException('仅法务领导可查看待分配队列');
+    }
     if (!Number.isSafeInteger(page) || page < 1) {
       throw new BadRequestException('page 必须是大于等于 1 的整数');
     }
@@ -103,7 +110,10 @@ export class ProjectQueryService {
     if (!Number.isSafeInteger(skip)) {
       throw new BadRequestException('分页参数超出安全范围');
     }
-    const mineScopeWhere: Prisma.ProjectWhereInput | undefined = mine ? { creatorId: actor.id } : undefined;
+    // 我的记录也必须与对象级权限一致，不能用 mine 参数绕过普通 BP 的指派范围。
+    const mineScopeWhere: Prisma.ProjectWhereInput | undefined = mine
+      ? { creatorId: actor.id, ...(actor.role === 'legal_bp' ? this.accessPolicy.listScope(actor) : {}) }
+      : undefined;
     const baseWhere: Prisma.ProjectWhereInput = mine
       ? { ...mineScopeWhere }
       : this.accessPolicy.listScope(actor);
@@ -111,6 +121,16 @@ export class ProjectQueryService {
     if (status) baseWhere.status = status;
     if (kind) baseWhere.kind = kind;
     if (query?.trim()) baseWhere.title = { contains: query.trim().slice(0, 100) };
+    if (assignment === 'pending') baseWhere.AND = [{
+      route: 'legalbp',
+      status: { notIn: [ProjectStatus.已回传, ProjectStatus.已取消] },
+      AND: [{ OR: [{ reviewStatus: null }, { reviewStatus: { not: 'review_completed' } }] }],
+      OR: [
+        { legalBpId: null },
+        { legalBp: { role: { not: 'legal_bp' } } },
+        { legalBp: { isActive: false } },
+      ],
+    }];
 
     const groupWhere = group
       ? projectGroupWhere(group)
@@ -164,13 +184,7 @@ export class ProjectQueryService {
       crmPayloadSha256: _crmPayloadSha256,
       crmFileManifestSha256: _crmFileManifestSha256,
       ...rest
-    }) => {
-      if (actor.role === 'legal_bp' && rest.legalBpId === null && rest.ownerId !== actor.id) {
-        const { id, kind, title, status, risk, route, legalBpId, createdAt, updatedAt } = rest;
-        return { id, kind, title, status, risk, route, legalBpId, createdAt, updatedAt };
-      }
-      return rest;
-    });
+    }) => rest);
 
     // 按状态分组
     const groups: Record<string, typeof safeItems> = { 待处理: [], 合同协作: [], 已回传: [], 数字分身处理: [] };

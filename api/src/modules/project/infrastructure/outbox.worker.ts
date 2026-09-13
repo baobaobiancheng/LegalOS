@@ -246,7 +246,7 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
 
   /**
    * 给已有群补拉新 BP。事件执行前重读工单和用户，避免使用请求时的过期指派；
-   * 没有群时抛错让建群/重试先完成，未绑定钉钉时记录人工处理事件并消费掉任务。
+   * 领导首次指派时可能还没有群，使用工单固定去重键补建；CRM 入站不自动建群。
    */
   private async handleDingtalkMemberAdd(event: any): Promise<void> {
     const { projectId, userId } = event.payload as { projectId?: string; userId?: string };
@@ -254,10 +254,10 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
 
     const project = await this.prisma.project.findUnique({
       where: { id: projectId },
-      select: { dingtalkChatId: true, dingtalkMembers: true, status: true, legalBpId: true },
+      select: { dingtalkChatId: true, dingtalkMembers: true, status: true, legalBpId: true, sourceAppId: true },
     });
-    if (!project || project.status === '已取消' || project.legalBpId !== userId) return;
-    if (!project.dingtalkChatId) throw new Error('钉钉群尚未创建，等待建群任务完成');
+    if (!project || project.sourceAppId || project.status === '已取消' || project.legalBpId !== userId) return;
+    if (!project.dingtalkChatId) return this.handleDingtalkGroupCreate(event);
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -383,5 +383,5 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
 }
 
 function isActiveLegalMember(user: { isActive: boolean; role: string }): boolean {
-  return user.isActive && (user.role === 'legal_bp' || user.role === 'legal_lead');
+  return user.isActive && ['legal_bp', 'legal_lead', 'admin'].includes(user.role);
 }

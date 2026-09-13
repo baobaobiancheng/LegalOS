@@ -41,6 +41,13 @@ export interface ContactInfo {
   department?: string;
   /** 同一员工可同时隶属多个钉钉部门；department 为后续业务选定的有效部门。 */
   departments?: string[];
+  departmentIds?: string[];
+}
+
+export interface DepartmentInfo {
+  id: string;
+  parentId: string | null;
+  name: string;
 }
 
 /** 通讯录同步结构化结果（P1-07）：complete=false 时不允许失效对账/自动绑定 */
@@ -50,6 +57,7 @@ export interface ContactSyncResult {
   departmentCount: number;
   pageCount: number;
   warnings: string[];
+  departments?: DepartmentInfo[];
 }
 
 /** 同步不完整（P1-07）：深度/分页达到上限、空结果 → 抛此错误，批次标记 failed，旧快照不受影响 */

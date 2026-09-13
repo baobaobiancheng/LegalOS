@@ -185,6 +185,15 @@ onBeforeUnmount(() => {
             aria-hidden="true"
           ><path d="M4 13h6V3H4v10Zm10 8h6V11h-6v10ZM4 21h6v-4H4v4Zm10-14h6V3h-6v4Z" /></svg>数据看板
         </button>
+        <button @click="router.push('/legal/projects')">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            aria-hidden="true"
+          ><path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5" /></svg>工单管理
+        </button>
         <button @click="router.push('/admin/members')">
           <svg
             viewBox="0 0 24 24"

@@ -125,6 +125,10 @@ describe('DingTalkAdapterImpl', () => {
     // 根(1) + 11 + 33 三个部门都被遍历到
     expect(result.complete).toBe(true);
     expect(result.contacts.map((c) => c.userId).sort()).toEqual(['U-1', 'U-11', 'U-33']);
+    expect(result.departments).toEqual([
+      { id: '1', parentId: null, name: '1' }, { id: '11', parentId: '1', name: '11' }, { id: '33', parentId: '11', name: '33' },
+    ]);
+    expect(result.contacts.find(contact => contact.userId === 'U-33')?.departmentIds).toEqual(['33']);
   });
 
   it('syncContacts：过滤机器人/离职/停用/测试账号，保留在岗真人', async () => {

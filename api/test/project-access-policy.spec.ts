@@ -6,9 +6,9 @@ import { ProjectAction, ProjectActor, ProjectLike } from '../src/modules/project
  * P1-01 权限矩阵单测（任务书 5.2/5.4）：
  * - business A 读取/发消息/操作 business B 的工单 → 失败
  * - legal_bp A 读取/修改指派给 legal_bp B 的工单 → 失败
- * - legal_bp 可认领未分配；不可转派/取消；可查看未分配队列摘要
+ * - legal_bp 不可认领未分配；不可转派/取消；不可查看未分配队列摘要
  * - legal_lead/admin 全部放行
- * - listScope 服务端生成查询范围（业务仅自己 / BP 自己+未分配 / 负责人全部）
+ * - listScope 服务端生成查询范围（业务仅自己 / BP 已指派 / 负责人全部）
  */
 
 const policy = new ProjectAccessPolicy();
@@ -62,21 +62,28 @@ describe('ProjectAccessPolicy 权限矩阵', () => {
     }
   });
 
-  it('legal_bp 可操作已指派给自己的工单（legalBpId 或 ownerId）', () => {
+  it('legal_bp 仅可操作 legalBpId 已指派给自己的工单', () => {
     const byLegal = project({ legalBpId: 'bpA', ownerId: 'bpA' });
-    const byOwner = project({ legalBpId: 'bpB', ownerId: 'bpA' });
-    for (const p of [byLegal, byOwner]) {
+    for (const p of [byLegal, project({ legalBpId: 'bpA', ownerId: 'bizA' })]) {
       expect(() => policy.assertCan(actor('bpA', 'legal_bp'), ProjectAction.Read, p)).not.toThrow();
       expect(() => policy.assertCan(actor('bpA', 'legal_bp'), ProjectAction.Update, p)).not.toThrow();
       expect(() => policy.assertCan(actor('bpA', 'legal_bp'), ProjectAction.ReviewContract, p)).not.toThrow();
     }
   });
 
-  it('legal_bp 可认领未分配；已分配则不可认领', () => {
+  it('legal_bp 不可认领未分配，也不可抢占已分配工单', () => {
     const unassigned = project({ legalBpId: null });
-    expect(() => policy.assertCan(actor('bpA', 'legal_bp'), ProjectAction.Claim, unassigned)).not.toThrow();
+    expect(() => policy.assertCan(actor('bpA', 'legal_bp'), ProjectAction.Claim, unassigned)).toThrow();
     const assigned = project({ legalBpId: 'bpB' });
     expect(() => policy.assertCan(actor('bpA', 'legal_bp'), ProjectAction.Claim, assigned)).toThrow();
+  });
+
+  it.each([null, 'bpB'])('ownerId/creatorId 不产生法务处理权限，legalBpId=%s', (legalBpId) => {
+    const p = project({ legalBpId, creatorId: 'bpA', ownerId: 'bpA' });
+    for (const action of [ProjectAction.Read, ProjectAction.SendMessage, ProjectAction.Update,
+      ProjectAction.Reply, ProjectAction.ReviewContract, ProjectAction.ManageFile]) {
+      expect(policy.can(actor('bpA', 'legal_bp'), action, p)).toBe(false);
+    }
   });
 
   it('legal_bp 不能转派 / 取消（P1-01：默认最小权限）', () => {
@@ -98,10 +105,10 @@ describe('ProjectAccessPolicy 权限矩阵', () => {
     }
   });
 
-  it('listScope：business 仅自己创建；legal_bp 自己+未分配；lead/admin 全部', () => {
+  it('listScope：business 仅自己创建；legal_bp 仅已指派；lead/admin 全部', () => {
     expect(policy.listScope(actor('bizA', 'business'))).toEqual({ creatorId: 'bizA' });
     expect(policy.listScope(actor('bpA', 'legal_bp'))).toEqual({
-      OR: [{ legalBpId: 'bpA' }, { ownerId: 'bpA' }, { legalBpId: null }],
+      legalBpId: 'bpA',
     });
     expect(policy.listScope(actor('lead', 'legal_lead'))).toEqual({});
     expect(policy.listScope(actor('admin', 'admin'))).toEqual({});

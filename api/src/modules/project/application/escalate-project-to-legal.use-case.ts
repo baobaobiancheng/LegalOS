@@ -2,14 +2,16 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { PrismaService } from '../../../prisma/prisma.service';
 import { RiskLevel } from '@prisma/client';
 import { OUTBOX_EVENT_DINGTALK_GROUP_CREATE, dingtalkGroupOutboxDedupKey } from './create-project.use-case';
-import { matchActiveLegalAssignee, requireActiveLegalAssignee } from '../domain/legal-assignee';
+import { requireActiveLegalAssignee } from '../domain/legal-assignee';
+import { assignLegalBp, assignmentEvent } from '../domain/legal-assignment';
+import { formatEventTime } from '../../../common/utils/event-time';
 
 /**
  * 统一法务升级用例（P1-10）：所有"咨询/合同进入人工法务流程"的入口共用本用例。
  * 一次升级必须完成（同一事务，任一失败整体回滚）：
  *   1. 条件更新 route/status/legalBpId/ownerId（并发防护：仅未进入法务流程的工单可升级）。
  *   2. 写 ProjectEvent（文案与真实状态一致，不谎报"已通知"）。
- *   3. 入队 Outbox 建群任务（稳定 dedupKey，重复请求只升级一次、只建一群）。
+ *   3. 有处理人时入队 Outbox 建群任务（稳定 dedupKey，重复请求只升级一次、只建一群）。
  * 真实钉钉通知由 Outbox Worker 在建群成功后发送——这里不持有/不使用假群 ID。
  */
 export interface EscalateToLegalCommand {
@@ -21,8 +23,6 @@ export interface EscalateToLegalCommand {
   legalBpId?: string | null;
   ownerId?: string | null;
   result?: string | null;
-  /** 风险/技能解析出的领域；未显式指定 legalBpId 时由用例统一匹配 BP。 */
-  domain?: string | null;
   /** 事件文案（含时间戳前缀） */
   eventTexts?: string[];
 }
@@ -39,7 +39,7 @@ export class EscalateProjectToLegalUseCase {
   async execute(cmd: EscalateToLegalCommand): Promise<{ upgraded: boolean; project: any }> {
     const existing = await this.prisma.project.findUnique({
       where: { id: cmd.projectId },
-      select: { route: true, status: true, reviewStatus: true, legalBpId: true, ownerId: true },
+      select: { route: true, status: true, reviewStatus: true, legalBpId: true, ownerId: true, creatorId: true },
     });
     if (!existing) throw new NotFoundException('工单不存在');
     if (existing.status === '已取消' || existing.reviewStatus === 'review_completed') {
@@ -51,8 +51,11 @@ export class EscalateProjectToLegalUseCase {
 
     const result = await this.prisma.$transaction(async (tx) => {
       let matchedBpId: string | null = null;
+      let assignmentText: string | null = null;
       if (cmd.legalBpId === undefined) {
-        matchedBpId = await matchActiveLegalAssignee(tx, cmd.domain ?? null);
+        const assignment = await assignLegalBp(tx, existing.creatorId);
+        matchedBpId = assignment.legalBpId;
+        assignmentText = assignmentEvent(assignment);
       } else {
         matchedBpId = cmd.legalBpId;
         if (matchedBpId) await requireActiveLegalAssignee(tx, matchedBpId);
@@ -85,19 +88,24 @@ export class EscalateProjectToLegalUseCase {
       for (const text of cmd.eventTexts ?? []) {
         await tx.projectEvent.create({ data: { projectId: cmd.projectId, text } });
       }
+      if (assignmentText) await tx.projectEvent.create({ data: {
+        projectId: cmd.projectId, text: formatEventTime() + ' · ' + assignmentText,
+      } });
       // Outbox 建群（Worker 建群成功后发真实通知；无需假群 ID）。
       // 幂等冲突(P2002,dedupKey 已存在)忽略;其他错误抛出让整个事务回滚,避免"升级成功但没建群任务"假成功
       try {
-        await tx.outboxEvent.create({
-          data: {
-            eventType: OUTBOX_EVENT_DINGTALK_GROUP_CREATE,
-            aggregateType: 'project',
-            aggregateId: cmd.projectId,
-            dedupKey: dingtalkGroupOutboxDedupKey(cmd.projectId),
-            payload: { projectId: cmd.projectId },
-            projectId: cmd.projectId,
-          },
-        });
+        if (matchedBpId) {
+          await tx.outboxEvent.create({
+            data: {
+              eventType: OUTBOX_EVENT_DINGTALK_GROUP_CREATE,
+              aggregateType: 'project',
+              aggregateId: cmd.projectId,
+              dedupKey: dingtalkGroupOutboxDedupKey(cmd.projectId),
+              payload: { projectId: cmd.projectId },
+              projectId: cmd.projectId,
+            },
+          });
+        }
       } catch (e: any) {
         if (e?.code !== 'P2002') throw e;
       }
