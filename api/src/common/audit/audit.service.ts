@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
-import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditRetentionClass, AuditWriter, RecordAuditEventInput } from './audit.types';
 
@@ -78,6 +78,9 @@ export class AuditService {
   }
 
   verifyEvent(event: Record<string, any>): boolean {
+    // 校验策略由服务配置决定；启用 HMAC 后，旧 SHA 记录不能被当作已认证事件。
+    const expectedVersion = this.integritySecret ? 'hmac-sha256-v1' : 'sha256-v1';
+    if (event.hashVersion !== expectedVersion || !/^[a-f0-9]{64}$/.test(event.eventHash)) return false;
     const core = {
       eventId: event.eventId,
       occurredAt: new Date(event.occurredAt).toISOString(),
@@ -103,7 +106,7 @@ export class AuditService {
       retentionClass: event.retentionClass,
       expiresAt: event.expiresAt ? new Date(event.expiresAt).toISOString() : null,
     };
-    return this.integrityDigest(core, event.hashVersion) === event.eventHash;
+    return timingSafeEqual(Buffer.from(this.integrityDigest(core), 'hex'), Buffer.from(event.eventHash, 'hex'));
   }
 
   retentionPolicy(): Record<AuditRetentionClass, number | null> {
@@ -115,9 +118,9 @@ export class AuditService {
     };
   }
 
-  private integrityDigest(value: unknown, version?: string): string {
+  private integrityDigest(value: unknown): string {
     const serialized = stableStringify(value);
-    if ((version ?? (this.integritySecret ? 'hmac-sha256-v1' : 'sha256-v1')) === 'hmac-sha256-v1') {
+    if (this.integritySecret) {
       return createHmac('sha256', this.integritySecret).update(serialized).digest('hex');
     }
     return createHash('sha256').update(serialized).digest('hex');

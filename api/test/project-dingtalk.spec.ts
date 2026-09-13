@@ -208,7 +208,7 @@ describe('ProjectService 钉钉拉群链路', () => {
     // 统一升级用例：匹配结果与 route/status 在条件更新中一次提交
     expect(prisma.project.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'p-1', route: 'llm' },
+        where: expect.objectContaining({ id: 'p-1', route: 'llm', status: { not: '已取消' } }),
         data: expect.objectContaining({ route: 'legalbp', legalBpId: 'u-bp' }),
       }),
     );

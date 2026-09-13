@@ -21,6 +21,7 @@ describe('ContractFileService.uploadFile staging 与文件签名', () => {
     root = mkdtempSync(join(tmpdir(), 'legalos-upload-'));
     process.env.CONTRACT_STORAGE_DIR = root;
     prisma = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
       project: { findUnique: vi.fn().mockResolvedValue({
         id: 'project-1', creatorId: 'business-1', ownerId: 'bp-1', legalBpId: 'bp-1', status: '待复核',
       }) },
@@ -98,6 +99,8 @@ describe('ContractFileService.uploadFile staging 与文件签名', () => {
     expect(prisma.contractFile.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ projectId: 'project-1', storedName: 'notes.txt' }),
     }));
+    expect(prisma.$queryRaw.mock.invocationCallOrder[0])
+      .toBeLessThan(prisma.contractFile.create.mock.invocationCallOrder[0]);
     expect(prisma.contractDocument.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ content: '合同备注', sourceFileId: 'file-1' }),
     }));

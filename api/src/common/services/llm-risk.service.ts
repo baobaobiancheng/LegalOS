@@ -140,11 +140,11 @@ P2（常规）：其他一般法律问题，合规咨询，合同条款询问，
         try {
           parsed = JSON.parse(match[0]);
         } catch {
-          this.logger.warn(`风险分类 JSON 解析失败（默认 P1）：${raw.slice(0, 80)}`);
+          this.logger.warn('风险分类 JSON 解析失败（默认 P1）');
           return none;
         }
       } else {
-        this.logger.warn(`风险分类输出非 JSON（默认 P1）：${raw.slice(0, 80)}`);
+        this.logger.warn('风险分类输出非 JSON（默认 P1）');
         return none;
       }
     }

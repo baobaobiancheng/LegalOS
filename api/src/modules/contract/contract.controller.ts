@@ -18,6 +18,7 @@ import { randomUUID } from 'crypto';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { sendSSE } from '../../common/utils/sse';
+import { withResponseAbort } from '../../common/utils/response-abort';
 import { ContractService } from './contract.service';
 import { ContractFileService } from './contract-file.service';
 import { ContractTemplateService } from './contract-template.service';
@@ -77,19 +78,21 @@ export class ContractController {
     @Res() res: Response,
   ) {
     const actor: ProjectActor = { id: userId, role };
-    const abort = new AbortController();
-    const result = await this.contractService.generateDraft(dto, actor, abort.signal);
-    if (result.stream) {
-      sendSSE(
-        res,
-        result.stream,
-        { projectId: result.projectId, status: '待复核' },
-        () => abort.abort(),
-        result.completion,
-      );
-    } else {
-      res.json(result);
-    }
+    return withResponseAbort(res, async (abort) => {
+      const result = await this.contractService.generateDraft(dto, actor, abort.signal);
+      if (abort.signal.aborted || res.destroyed) return;
+      if (result.stream) {
+        sendSSE(
+          res,
+          result.stream,
+          { projectId: result.projectId, status: '待复核' },
+          () => abort.abort(),
+          result.completion,
+        );
+      } else {
+        res.json(result);
+      }
+    });
   }
 
   /** business 发起法务审阅 */
@@ -118,30 +121,32 @@ export class ContractController {
     @Res() res: Response,
   ) {
     const actor: ProjectActor = { id: userId, role };
-    const abort = new AbortController();
-    const result = await this.contractService.reviewContract(
-      id,
-      actor,
-      body?.skillId,
-      body?.sourceDocumentId,
-      abort.signal,
-    );
-    if (result.stream) {
-      sendSSE(
-        res,
-        result.stream,
-        {
-          projectId: result.projectId,
-          reviewRunId: result.reviewRunId,
-          sourceDocumentId: result.sourceDocumentId,
-          sourceVersion: result.sourceVersion,
-        },
-        () => abort.abort(),
-        result.completion,
+    return withResponseAbort(res, async (abort) => {
+      const result = await this.contractService.reviewContract(
+        id,
+        actor,
+        body?.skillId,
+        body?.sourceDocumentId,
+        abort.signal,
       );
-    } else {
-      res.json(result);
-    }
+      if (abort.signal.aborted || res.destroyed) return;
+      if (result.stream) {
+        sendSSE(
+          res,
+          result.stream,
+          {
+            projectId: result.projectId,
+            reviewRunId: result.reviewRunId,
+            sourceDocumentId: result.sourceDocumentId,
+            sourceVersion: result.sourceVersion,
+          },
+          () => abort.abort(),
+          result.completion,
+        );
+      } else {
+        res.json(result);
+      }
+    });
   }
 
   /** 上传合同附件（multipart: file + kind） */

@@ -9,6 +9,7 @@ import {
 } from '../../common/services/ai-law-research-report';
 import { ResearchTraceV1 } from '../project/application/research-trace';
 import { AiLawResearchDto } from './dto/legal-research.dto';
+import { DSH_SESSION_PREFIX } from '../../common/services/dsh-runtime';
 
 export type AiResearchTurnOperation = 'new' | 'continue' | 'correct' | 'new_issue';
 
@@ -122,7 +123,10 @@ export class AiLegalResearchSessionService {
     };
     const previous = state.lastTurnId
       ? await this.prisma.consultationRun.findFirst({
-        where: { id: state.lastTurnId, projectId: project.id, status: 'succeeded' },
+        where: {
+          id: state.lastTurnId, projectId: project.id, status: 'succeeded',
+          dshSessionId: { startsWith: DSH_SESSION_PREFIX },
+        },
         select: { dshSessionId: true },
       })
       : null;

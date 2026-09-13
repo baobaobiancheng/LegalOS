@@ -82,6 +82,23 @@ function statefulConsultationDb() {
 }
 
 describe('ConsultationReplyOrchestrator 审计关联', () => {
+  it('数据库及失败审计同时故障时，完成回调不泄漏拒绝且释放串行锁', async () => {
+    const { prisma } = statefulConsultationDb();
+    const child: any = Object.assign(new EventEmitter(), { stdout: new PassThrough(), __finalText: '测试结果' });
+    const audit = { record: vi.fn().mockResolvedValue({}), digestCanonical: vi.fn().mockReturnValue('hash') };
+    const orchestrator = new ConsultationReplyOrchestrator(prisma,
+      { execute: vi.fn().mockResolvedValue(child) } as any,
+      { build: vi.fn().mockResolvedValue({ messages: [] }) } as any,
+      { get: (_key: string, fallback?: unknown) => fallback } as any, {} as any, audit as any);
+    const result = await orchestrator.reply('p-late', 'm-late', undefined, 'run-late', 'general');
+    prisma.$transaction.mockRejectedValue(new Error('database unavailable'));
+    audit.record.mockRejectedValue(new Error('audit unavailable'));
+    // 直接观察 EventEmitter 将忽略的返回值，确保这个异步监听器本身也已处理拒绝。
+    await expect(child.listeners('close')[0](0)).resolves.toBeUndefined();
+    await expect(result.completion).rejects.toThrow('database unavailable');
+    const release = await (orchestrator as any).acquireProjectTurn('p-late');
+    release();
+  });
   it('A 释放后 B 执行期间新来的 C 仍排在 B 之后', async () => {
     const orchestrator = new ConsultationReplyOrchestrator(
       {} as any,

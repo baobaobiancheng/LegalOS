@@ -8,6 +8,8 @@ import BusinessSidebarLayout from '../../components/BusinessSidebarLayout.vue'
 import ChatInputBar from '../../components/ChatInputBar.vue'
 import DownloadMenu from '../../components/DownloadMenu.vue'
 import ErrorState from '../../components/ErrorState.vue'
+import ProjectHistoryButton from '../../components/ProjectHistoryButton.vue'
+import { prependProjectHistory } from '../../utils/project-history'
 import MarkdownContent from '../../components/MarkdownContent.vue'
 import type { AttachedFile } from '../../composables/useFileUpload'
 import { useFileUpload } from '../../composables/useFileUpload'
@@ -71,6 +73,10 @@ const lastAssistantId = computed(() => {
   }
   return ''
 })
+const loadHistory = (page: ProjectDetail) => {
+  messages.value = prependProjectHistory(messages.value, page)
+  if (project.value) project.value.history = page.history
+}
 const canContinue = computed(() => Boolean(project.value && project.value.status !== '已取消' && project.value.route === 'llm'))
 const canEscalate = computed(() => Boolean(project.value && project.value.status !== '已取消' && project.value.route === 'llm'))
 
@@ -281,6 +287,12 @@ onBeforeUnmount(() => {
           aria-label="咨询对话"
         >
           <div class="timeline-list">
+            <ProjectHistoryButton
+              :project-id="id"
+              :cursors="project?.history"
+              :disabled="sending"
+              @loaded="loadHistory"
+            />
             <template
               v-for="item in messages"
               :key="item.id"

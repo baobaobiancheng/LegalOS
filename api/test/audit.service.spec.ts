@@ -12,6 +12,17 @@ function makeService(configValues: Record<string, string> = {}) {
 }
 
 describe('AuditService', () => {
+  it('配置 HMAC 后拒绝可被数据库写入者重算的普通 SHA 事件和未知算法', async () => {
+    const { service: unsigned } = makeService();
+    const { service: signed } = makeService({ AUDIT_HMAC_SECRET: 'integrity-secret' });
+    const event = await unsigned.record({
+      action: 'member.bind', resourceType: 'member', outcome: 'success', retentionClass: 'admin',
+    });
+    expect(unsigned.verifyEvent(event)).toBe(true);
+    expect(signed.verifyEvent(event)).toBe(false);
+    expect(unsigned.verifyEvent({ ...event, hashVersion: 'unknown' })).toBe(false);
+    expect(unsigned.verifyEvent({ ...event, eventHash: 'invalid' })).toBe(false);
+  });
   it('生成可复核 HMAC，修改事件后完整性校验失败', async () => {
     const { service, prisma } = makeService({
       AUDIT_HMAC_SECRET: 'test-integrity-secret',

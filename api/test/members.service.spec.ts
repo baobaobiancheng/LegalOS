@@ -256,7 +256,7 @@ describe('MembersService', () => {
       avatarUrl: 'https://img.example/u-1.png',
       isActive: true,
     });
-    prisma.user.findUnique.mockResolvedValue({ id: 'u-1', displayName: '彭宇欣' });
+    prisma.user.findUnique.mockResolvedValue({ id: 'u-1', displayName: '彭宇欣', department: '法务部', role: 'legal_bp' });
     prisma.user.findFirst.mockResolvedValue(null); // 联系人未被其他用户绑定
     prisma.user.update.mockResolvedValue({ id: 'u-1', displayName: '彭宇欣', dingtalkUserId: 'U-1' });
 
@@ -269,6 +269,7 @@ describe('MembersService', () => {
         data: expect.objectContaining({
           dingtalkUserId: 'U-1',
           dingtalkPhone: '138',
+          department: null,
           avatarUrl: 'https://img.example/u-1.png',
           role: 'business', // 手动绑定应用组织架构角色映射（review 2026-08-11）
         }),

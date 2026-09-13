@@ -183,8 +183,8 @@ describe('OutboxWorker 钉钉建群幂等', () => {
     );
     prisma.user.findUnique.mockImplementation(({ where }: any) =>
       where.id === 'u1'
-        ? { dingtalkUserId: 'U1', displayName: '业务' }
-        : { dingtalkUserId: 'B1', displayName: '彭宇欣' },
+        ? { dingtalkUserId: 'U1', displayName: '业务', isActive: true, role: 'business' }
+        : { dingtalkUserId: 'B1', displayName: '彭宇欣', isActive: true, role: 'legal_bp' },
     );
   });
 
@@ -267,8 +267,9 @@ describe('OutboxWorker 钉钉建群幂等', () => {
       dingtalkChatId: 'g1',
       dingtalkMembers: '["U1"]',
       status: '待复核',
+      legalBpId: 'bp1',
     });
-    prisma.user.findUnique.mockResolvedValue({ dingtalkUserId: 'B1', displayName: '法务BP' });
+    prisma.user.findUnique.mockResolvedValue({ dingtalkUserId: 'B1', displayName: '法务BP', isActive: true, role: 'legal_bp' });
 
     await worker.pollOnce();
 
@@ -277,6 +278,23 @@ describe('OutboxWorker 钉钉建群幂等', () => {
       where: { id: 'p1', dingtalkMembers: '["U1"]' },
       data: { dingtalkMembers: '["U1","B1"]' },
     });
+    expect(outbox.markSucceeded).toHaveBeenCalledWith('e1', 'tok');
+  });
+
+  it.each([
+    { isActive: false, role: 'legal_bp', legalBpId: 'bp1' },
+    { isActive: true, role: 'business', legalBpId: 'bp1' },
+    { isActive: true, role: 'legal_bp', legalBpId: 'bp2' },
+  ])('延迟邀请跳过停用、降权或过期指派 %#', async (state) => {
+    outbox.claimNext.mockResolvedValue([claim({
+      eventType: 'dingtalk.member.add', payload: { projectId: 'p1', userId: 'bp1' },
+    })]);
+    prisma.project.findUnique.mockResolvedValue({
+      dingtalkChatId: 'g1', dingtalkMembers: '[]', status: '待复核', legalBpId: state.legalBpId,
+    });
+    prisma.user.findUnique.mockResolvedValue({ ...state, dingtalkUserId: 'B1', displayName: '法务' });
+    await worker.pollOnce();
+    expect(dingtalk.addMember).not.toHaveBeenCalled();
     expect(outbox.markSucceeded).toHaveBeenCalledWith('e1', 'tok');
   });
 

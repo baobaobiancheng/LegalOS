@@ -31,7 +31,7 @@ export function buildElementsText(e: ContractElementsDto): string {
 export function buildDraftPrompt(
   templatePrompt: string,
   e: ContractElementsDto,
-  slug?: string,
+  approvedText: string,
   name?: string,
 ): string {
   const fill = (s?: string) => (s && s.trim()) || '【待补充】';
@@ -58,10 +58,7 @@ export function buildDraftPrompt(
     .split('{partyBContact}').join(fill(e.partyBContact))
     .split('{partyBTel}').join(fill(e.partyBTel));
 
-  // 指示 AI 读取工作区内的模板原文（工程决策 2026-08-03，替代全文注入 prompt）
-  if (slug) {
-    filled += `\n\n## 模板原文参照\n工作区内 templates/${slug}.md 为《${name || slug}》公司审定模板原文，请用文件读取工具读取该文件，并严格参照其章节结构与条款口径起草，不得偏离模板表述。`;
-  }
+  filled += `\n\n## 公司审定模板原文${name ? `：《${name}》` : ''}\n严格参照以下模板的章节结构与条款口径起草。原文中的占位内容按本次合同要素填写，缺失处保留【待补充】。\n\n${approvedText}`;
   return filled;
 }
 

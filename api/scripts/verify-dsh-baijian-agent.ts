@@ -26,11 +26,13 @@ export type GateFinal = {
 };
 
 async function main() {
-  requireEnv('LLM_BASE_URL');
+  if (!process.env.DSH_LLM_BASE_URL && !process.env.LLM_BASE_URL) {
+    throw new Error('缺少 DSH_LLM_BASE_URL 或 LLM_BASE_URL');
+  }
   requireEnv('BAIJIAN_MCP_APP_KEY');
   requireEnv('BAIJIAN_MCP_APP_SECRET');
-  if (!process.env.LLM_API_KEY && !process.env.CODEX_API_KEY) {
-    throw new Error('缺少 LLM_API_KEY 或 CODEX_API_KEY');
+  if (!process.env.DSH_LLM_API_KEY && !process.env.LLM_API_KEY && !process.env.CODEX_API_KEY) {
+    throw new Error('缺少 DSH_LLM_API_KEY、LLM_API_KEY 或 CODEX_API_KEY');
   }
   process.env.AI_EXECUTION_ENABLED = 'true';
 

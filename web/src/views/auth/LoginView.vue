@@ -503,6 +503,11 @@ onBeforeUnmount(() => animationContext?.revert())
   padding-right: 46px;
 }
 
+/* Edge 自带密码显示按钮；此输入框已提供统一的可见性切换控件。 */
+#login-password::-ms-reveal {
+  display: none;
+}
+
 .login-input::placeholder {
   color: #9CA3AF;
 }

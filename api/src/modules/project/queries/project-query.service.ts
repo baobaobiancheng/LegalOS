@@ -18,6 +18,14 @@ export interface ProjectListParams {
   size?: number;
 }
 
+export interface ProjectHistoryCursors {
+  beforeMessageId?: string;
+  beforeEventId?: string;
+}
+
+const MESSAGE_PAGE_SIZE = 200;
+const EVENT_PAGE_SIZE = 100;
+
 export const PROJECT_GROUP_KEYS = ['待处理', '合同协作', '已回传', '数字分身处理'] as const;
 export type ProjectGroupKey = (typeof PROJECT_GROUP_KEYS)[number];
 export const isProjectGroupKey = (value: string | undefined): value is ProjectGroupKey =>
@@ -177,15 +185,30 @@ export class ProjectQueryService {
   }
 
   /** 详情：含消息/事件/文件；对象级授权(P1-01);extra 脱敏 */
-  async findOne(id: string, actor: ProjectActor) {
+  async findOne(id: string, actor: ProjectActor, cursors: ProjectHistoryCursors = {}) {
+    const messageBefore = cursors.beforeMessageId
+      ? await this.prisma.projectMessage.findFirst({ where: { id: cursors.beforeMessageId, projectId: id } })
+      : null;
+    const eventBefore = cursors.beforeEventId
+      ? await this.prisma.projectEvent.findFirst({ where: { id: cursors.beforeEventId, projectId: id } })
+      : null;
+    if ((cursors.beforeMessageId && !messageBefore) || (cursors.beforeEventId && !eventBefore)) {
+      throw new BadRequestException('历史游标不存在或不属于该工单');
+    }
     const project = await this.prisma.project.findUnique({
       where: { id },
       include: {
         creator: { select: userSelect },
         owner: { select: userSelect },
         legalBp: { select: userSelect },
-        messages: { orderBy: { createdAt: 'asc' }, take: 200 },
-        events: { orderBy: { createdAt: 'asc' }, take: 100 },
+        messages: {
+          where: beforeRow(messageBefore),
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: MESSAGE_PAGE_SIZE + 1,
+        },
+        events: {
+          where: beforeRow(eventBefore),
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: EVENT_PAGE_SIZE + 1,
+        },
         files: {
           include: { uploader: { select: { id: true, displayName: true, role: true } } },
           orderBy: { createdAt: 'desc' },
@@ -195,7 +218,9 @@ export class ProjectQueryService {
     if (!project) throw new NotFoundException('工单不存在');
     this.accessPolicy.assertCan(actor, ProjectAction.Read, project);
 
-    const answerIds = project.messages.map((message) => message.id);
+    const pageMessages = project.messages.slice(0, MESSAGE_PAGE_SIZE).reverse();
+    const events = project.events.slice(0, EVENT_PAGE_SIZE).reverse();
+    const answerIds = pageMessages.map((message) => message.id);
     const researchRuns = answerIds.length
       ? await this.prisma.consultationRun.findMany({
           where: {
@@ -211,7 +236,7 @@ export class ProjectQueryService {
         .filter((run) => run.answerMessageId)
         .map((run) => [run.answerMessageId!, { capability: run.capability, trace: run.researchTrace }]),
     );
-    const messages = project.messages.map((message) => ({
+    const messages = pageMessages.map((message) => ({
       ...message,
       ...(traceByAnswerId.has(message.id) ? { research: traceByAnswerId.get(message.id) } : {}),
     }));
@@ -224,6 +249,19 @@ export class ProjectQueryService {
       crmFileManifestSha256: _crmFileManifestSha256,
       ...safeProject
     } = project;
-    return { ...safeProject, messages };
+    return {
+      ...safeProject, messages, events,
+      history: {
+        beforeMessageId: project.messages.length > MESSAGE_PAGE_SIZE ? messages[0].id : null,
+        beforeEventId: project.events.length > EVENT_PAGE_SIZE ? events[0].id : null,
+      },
+    };
   }
+}
+
+function beforeRow(row: { id: string; createdAt: Date } | null) {
+  return row ? { OR: [
+    { createdAt: { lt: row.createdAt } },
+    { createdAt: row.createdAt, id: { lt: row.id } },
+  ] } : undefined;
 }

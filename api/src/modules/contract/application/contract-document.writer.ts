@@ -18,17 +18,14 @@ export class ContractDocumentWriter {
       sourceFileId?: string | null;
       createdBy?: string | null;
     },
-    attempts = 0,
   ): Promise<any> {
-    const count = await tx.contractDocument.count({ where: { projectId: data.projectId } });
-    const version = count + 1;
-    try {
-      return await tx.contractDocument.create({ data: { ...data, version } });
-    } catch (error: any) {
-      if (error?.code === 'P2002' && attempts < 5) {
-        return this.create(tx, data, attempts + 1);
-      }
-      throw error;
-    }
+    // 父行锁序列化同项目写入；版本使用当前读，不复用 REPEATABLE READ 的旧快照。
+    await tx.$queryRaw`SELECT id FROM projects WHERE id = ${data.projectId} FOR UPDATE`;
+    const latest = await tx.$queryRaw<Array<{ version: number }>>`
+      SELECT version FROM contract_documents WHERE project_id = ${data.projectId}
+      ORDER BY version DESC LIMIT 1 FOR UPDATE
+    `;
+    const version = (latest[0]?.version ?? 0) + 1;
+    return tx.contractDocument.create({ data: { ...data, version } });
   }
 }

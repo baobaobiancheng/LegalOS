@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
-import { Injectable, Logger, OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   AiExecutionCancelledError,
@@ -23,17 +23,15 @@ import {
 } from './dsh-agent.types';
 import { BaijianNormalizedToolResult } from '../baijian/baijian.types';
 import { verifiedLawDetails } from './ai-law-research-report';
-
-/** dsh 侧类型（ESM-only，运行时按需 import；这里只声明调用方需要的最小结构方便类型检查）。 */
-interface DshContext {
-  get(key: string): unknown;
-  on(event: 'session/event', listener: (session: any, event: any) => void): () => void;
-  fiber: { dispose(): Promise<void> };
-}
+import type { Context } from '@deepseek-ai/cordis';
+import type { AgentSetup } from '@deepseek-ai/dsh-agent';
+import type { SessionEvent, TurnEndReason } from '@deepseek-ai/dsh-session';
+import type {} from '@deepseek-ai/dsh-agent-default-model';
+import { DSH_RUNTIME_VERSION, DSH_SESSION_PREFIX } from './dsh-runtime';
 
 /**
  * dsh 单轮任务的语义化事件句柄：不伪装成 ChildProcess（stdout/close），
- * 直接对应 dsh 的 session 事件模型（assistant/chunk 文本增量 + turn/end 结果）。
+ * 只发布已提交的 assistant/message；失败或放弃的生成尝试不进入展示正文。
  * 事件：
  *   'text'      (delta: string)               — 模型输出的文本增量
  *   'research_text' (delta: string)            — 检索模式的原始结构化文本，只能经证据闸门解析后展示
@@ -83,19 +81,9 @@ function cancelledHandle(): DshExecutionHandle {
 }
 
 /**
- * DshService — LegalOS 的 AI 执行引擎（Codex CLI 子进程 → dsh 库嵌入 迁移，Phase 1/2）。
- *
- * 与 CodexService 的关系：
- * - 复用 AiExecutionQueueService 做全局并发 + per-session 互斥。
- * - 不复用 CodexService 的 ChildProcess 伪装：dsh 的真实模型是 session 事件（assistant/chunk/turn/end），
- *   直接暴露语义化事件（'text'/'done'/'error'/'cancelled'），比伪造 stdout/close 更贴近底层、更易扩展
- *   （后续多轮对话、工具调用不需要再往假 stdout 里塞新语义）。
- * - dsh 是纯 ESM 包，NestJS 是 CJS：boot() 通过动态 import() 调用，且只在首次使用时启动一次（常驻），
- *   不是每次任务都重新 boot。
- *
- * 会话持久化（D1 决策）：dsh 侧用默认 JSONL（$DSH_HOME/sessions，指向 LegalOS 工作区下的独立目录，
- * 不与其他 dsh 安装混用），LegalOS 业务表（ContractGenerationRun 等）继续只存结构化结果摘要，
- * 双写、互不依赖。
+ * LegalOS 与 DSH 的类型化边界：共享有界队列，常驻 Context，每次任务独立 Agent scope。
+ * DSH 原生插件负责会话投影、工具执行、压缩和 JSONL 持久化；此层只负责业务事件映射。
+ * 日志使用版本隔离目录，业务表只引用当前版本 session ID，不触发旧数据格式迁移。
  */
 @Injectable()
 export class DshService implements OnModuleDestroy {
@@ -108,12 +96,13 @@ export class DshService implements OnModuleDestroy {
   private readonly modelContextWindow: number;
   private readonly maxOutputTokens: number;
   private readonly toolCallLimit: number;
-  private bootPromise: Promise<DshContext> | undefined;
+  private bootPromise: Promise<Context> | undefined;
 
   constructor(
     private readonly config: ConfigService,
     private readonly queue: AiExecutionQueueService,
-    private readonly baijianTools: DshBaijianToolsService,
+    @Inject(DshBaijianToolsService)
+    private readonly baijianTools: Pick<DshBaijianToolsService, 'createDefinitions'>,
   ) {
     this.dshHome = this.config.get('DSH_HOME') || join(process.cwd(), '.tmp', 'dsh-home');
     mkdirSync(this.dshHome, { recursive: true });
@@ -125,7 +114,7 @@ export class DshService implements OnModuleDestroy {
     this.modelContextWindow = positiveInteger(this.config.get('DSH_MODEL_CONTEXT_WINDOW'), 131_072);
     this.maxOutputTokens = positiveInteger(this.config.get('DSH_MODEL_MAX_OUTPUT_TOKENS'), 16_000);
     this.toolCallLimit = positiveInteger(this.config.get('DSH_AGENT_TOOL_CALL_MAX'), 5);
-    this.logger.log(`dsh 库嵌入：DSH_HOME=${this.dshHome} provider=${this.providerId} base=${this.modelBaseUrl} 模型=${this.defaultModel}`);
+    this.logger.log(`DSH ${DSH_RUNTIME_VERSION}：provider=${this.providerId} 模型=${this.defaultModel}`);
   }
 
   /** AI Kill Switch：AI_EXECUTION_ENABLED=false / 0 / off 时拦截所有 AI 调用（与 CodexService 语义一致）。 */
@@ -138,7 +127,7 @@ export class DshService implements OnModuleDestroy {
    * 首次调用时启动常驻 dsh Context；此后所有任务复用同一个 Context（多个 agent 并存于同一棵树），
    * 不是每个任务各 boot 一次。dsh 是 ESM-only，这里用动态 import() 从 CJS 调用方桥接。
    */
-  private async ensureBooted(): Promise<DshContext> {
+  private async ensureBooted(): Promise<Context> {
     if (!this.bootPromise) {
       this.bootPromise = this.bootDsh().catch((error) => {
         this.bootPromise = undefined; // 启动失败不缓存，允许下次任务重试
@@ -148,7 +137,7 @@ export class DshService implements OnModuleDestroy {
     return this.bootPromise;
   }
 
-  private async bootDsh(): Promise<DshContext> {
+  private async bootDsh(): Promise<Context> {
     process.env.DSH_HOME = this.dshHome;
     const { boot } = await import('@deepseek-ai/dsh-app-boot');
     const configPath = join(process.cwd(), 'dsh-config', 'cordis.yml');
@@ -187,7 +176,7 @@ export class DshService implements OnModuleDestroy {
     ];
 
     this.logger.log('dsh boot() 启动中...');
-    const ctx = (await boot('legalos-dsh', configPath, patches)) as unknown as DshContext;
+    const ctx = await boot('legalos-dsh', configPath, patches);
     this.logger.log('dsh 树已就绪（常驻）');
     return ctx;
   }
@@ -264,6 +253,7 @@ export class DshService implements OnModuleDestroy {
     const combinedAbort = new AbortController();
     const onQueueAbort = () => combinedAbort.abort(new Error('dsh 任务已取消'));
     params.abort.addEventListener('abort', onQueueAbort, { once: true });
+    if (params.abort.aborted) onQueueAbort();
 
     const timer = setTimeout(() => {
       this.logger.warn(`dsh 任务超时（${params.timeout}ms），请求取消`);
@@ -271,7 +261,13 @@ export class DshService implements OnModuleDestroy {
     }, params.timeout);
     timer.unref?.();
 
-    const done = this.driveAgent(prompt, params, handle, combinedAbort.signal)
+    // 句柄先交给调用方订阅；包括启动校验失败在内的终态均在下一轮事件循环发出。
+    const done = new Promise<void>((resolve) => setImmediate(resolve))
+      .then(() => this.driveAgent(prompt, params, handle, combinedAbort.signal))
+      .then((completion) => {
+        if (completion) handle.emit('done', completion);
+        else handle.emit('cancelled');
+      })
       .catch((error: unknown) => {
         handle.emit('error', error instanceof Error ? error : new Error(String(error)));
       })
@@ -288,10 +284,10 @@ export class DshService implements OnModuleDestroy {
     params: Pick<DshOptions, 'model' | 'sessionId' | 'researchCapability' | 'requireResearchTool' | 'resumeDshSessionId' | 'lawDetailLimit'>,
     handle: DshExecutionHandle,
     abort: AbortSignal,
-  ): Promise<void> {
-    if (abort.aborted) {
-      handle.emit('cancelled');
-      return;
+  ): Promise<DshExecutionResult | undefined> {
+    if (abort.aborted) return;
+    if (params.resumeDshSessionId && !params.resumeDshSessionId.startsWith(DSH_SESSION_PREFIX)) {
+      throw new Error('DSH 会话不属于当前运行时版本，请启动新任务');
     }
 
     const ctx = await this.ensureBooted();
@@ -300,9 +296,7 @@ export class DshService implements OnModuleDestroy {
     const { installModelSelection } = await import('@deepseek-ai/dsh-agent');
     const { randomUUID } = await import('crypto');
 
-    const agents = ctx.get('agents') as any;
-    const defaultModel = ctx.get('agentDefaultModel') as any;
-    const sessions = ctx.get('sessions') as any;
+    const { agents, agentDefaultModel: defaultModel, sessions } = ctx;
     if (!agents || !defaultModel || !sessions) {
       throw new Error('dsh 核心服务未就绪（agents/agentDefaultModel/sessions）');
     }
@@ -311,7 +305,7 @@ export class DshService implements OnModuleDestroy {
     const model = params.model ?? selection.model;
     // 新任务使用唯一 dsh session id；只有服务端已确认的上一轮 dshSessionId 才能 resume。
     // 业务 conversationId 仍用于队列串行化，不能直接冒充底层 dsh session id。
-    const dshSessionId = SessionId(params.resumeDshSessionId ?? `legalos-${randomUUID()}`);
+    const dshSessionId = SessionId(params.resumeDshSessionId ?? `${DSH_SESSION_PREFIX}${randomUUID()}`);
     const toolDefinitions = params.researchCapability
       ? await this.baijianTools.createDefinitions(params.researchCapability, {
           lawDetailLimit: params.lawDetailLimit,
@@ -320,16 +314,15 @@ export class DshService implements OnModuleDestroy {
 
     const agentConfig = {
       agentOptions: { provider: selection.provider, model, maxTokens: this.maxOutputTokens },
-      setup: (agentCtx: any) => {
+      setup: ((agentCtx) => {
         installModelSelection(agentCtx, { current: { ...selection, model }, assembled: undefined });
         for (const toolDefinition of toolDefinitions) agentCtx.tools.register(toolDefinition);
-      },
+      }) satisfies AgentSetup,
     };
     const agentHandle = params.resumeDshSessionId
       ? await agents.resume({ resumeSessionId: dshSessionId, ...agentConfig })
       : await agents.create({ sessionId: dshSessionId, meta: { cwd: process.cwd() }, ...agentConfig });
     const { agent } = agentHandle;
-    await agent.whenIdle();
 
     // 创建完成后才能真正 cancel：若创建期间已经被取消，立即请求；否则挂监听，
     // 超时/连接断开时把取消信号真正转达给 dsh（而不是自己在外面伪造一个 cancelled 事件）。
@@ -340,22 +333,17 @@ export class DshService implements OnModuleDestroy {
     if (abort.aborted) onAbort();
     else abort.addEventListener('abort', onAbort, { once: true });
 
-    let fullText = '';
     const toolCalls: DshToolCallEvent[] = [];
     const toolResults: DshToolResultEvent[] = [];
     const toolNamesByCallId = new Map<string, string>();
     let policyFailure: Error | undefined;
-    const off = ctx.on('session/event', (session: any, event: any) => {
+    // 展示通道没有回滚协议：按提交边界发布正文，避免重试将失败尝试拼入报告。
+    // 工具进度仍实时推送。无需复制或缓存原生 assistant-stream 的临时 token。
+    const off = ctx.on('session/event', (session, event) => {
       if (session.id !== dshSessionId) return;
-      if (event.type === 'assistant/chunk') {
-        const chunk = event.data.chunk;
-        if (chunk.type === 'text-delta' && chunk.text) {
-          fullText += chunk.text;
-          // 检索模式的文本是机器可读 JSON，不能经普通 `text` 事件直接外发。
-          // 上层会在法规检索/正文闸门通过后，仅解析 answer 字段的增量。
-          if (params.researchCapability) handle.emit('research_text', chunk.text);
-          else handle.emit('text', chunk.text);
-        }
+      if (event.type === 'assistant/message') {
+        const text = assistantText(event);
+        if (text) handle.emit(params.researchCapability ? 'research_text' : 'text', text);
         return;
       }
       if (event.type === 'tool/call') {
@@ -390,22 +378,24 @@ export class DshService implements OnModuleDestroy {
     });
 
     try {
+      await agent.whenIdle();
       // 取消可能发生在 create 之后、followup 之前：agent.cancel() 在 idle 阶段只清 inbox，
       // 若不在这里拦住，后面的 followup 会照常启动一个新 turn。已取消则直接收尾。
-      if (abort.aborted) {
-        handle.emit('cancelled');
-        return;
-      }
+      if (abort.aborted) return;
+      const previousEventCount = agent.session.snapshotEvents().length;
       agent.followup(createUserMessage({
         content: [{ type: 'text', text: prompt }],
         source: { kind: 'user' },
       }));
       await agent.whenIdle();
-      await sessions.flush(agent.session);
+      if (!await sessions.flush(agent.session)) throw new Error('DSH 会话持久化未配置');
 
-      const reason = this.readTurnEndReason(agent.session.events);
+      const turnEvents = agent.session.snapshotEvents().slice(previousEventCount);
+      const reason = this.readTurnEndReason(turnEvents);
       if (reason?.kind === 'completed') {
-        const finalText = this.readFinalAssistantText(agent.session.events) || fullText;
+        if (abort.aborted) return;
+        const finalText = this.readFinalAssistantText(turnEvents);
+        if (!finalText) throw new Error('DSH 本轮没有已提交的回答正文');
         const completion = {
           text: finalText,
           dshSessionId: String(dshSessionId),
@@ -415,19 +405,19 @@ export class DshService implements OnModuleDestroy {
         if (params.researchCapability && params.requireResearchTool) {
           validateResearchCompletion(params.researchCapability, completion);
         }
-        handle.emit('done', completion);
+        return completion;
       } else if (reason?.kind === 'aborted') {
         if (policyFailure) {
-          handle.emit('error', new DshResearchEvidenceError(policyFailure.message, {
-            text: this.readFinalAssistantText(agent.session.events) || fullText,
+          throw new DshResearchEvidenceError(policyFailure.message, {
+            text: this.readFinalAssistantText(turnEvents),
             dshSessionId: String(dshSessionId),
             toolCalls,
             toolResults,
-          }));
-        } else handle.emit('cancelled');
+          });
+        }
       } else {
         const message = describeTurnFailure(reason);
-        handle.emit('error', new Error(message));
+        throw new Error(message);
       }
     } finally {
       off();
@@ -436,7 +426,7 @@ export class DshService implements OnModuleDestroy {
     }
   }
 
-  private readTurnEndReason(events: readonly any[]): { kind: string; error?: { message?: string } } | undefined {
+  private readTurnEndReason(events: readonly SessionEvent[]): TurnEndReason | undefined {
     for (let i = events.length - 1; i >= 0; i -= 1) {
       const event = events[i];
       if (event.type === 'turn/end') return event.data.reason;
@@ -444,15 +434,11 @@ export class DshService implements OnModuleDestroy {
     return undefined;
   }
 
-  private readFinalAssistantText(events: readonly any[]): string {
+  private readFinalAssistantText(events: readonly SessionEvent[]): string {
     for (let i = events.length - 1; i >= 0; i -= 1) {
       const event = events[i];
       if (event.type !== 'assistant/message') continue;
-      return (event.data.message?.content ?? [])
-        .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
-        .map((block: any) => block.text)
-        .join('')
-        .trim();
+      return assistantText(event).trim();
     }
     return '';
   }
@@ -464,6 +450,10 @@ export class DshService implements OnModuleDestroy {
   getToolCallLimit(): number {
     return this.toolCallLimit;
   }
+}
+
+function assistantText(event: SessionEvent<'assistant/message'>): string {
+  return event.data.message.content.flatMap((block) => block.type === 'text' ? [block.text] : []).join('');
 }
 
 function parseToolArguments(value: unknown): unknown {

@@ -12,6 +12,8 @@ import AiLawReport from '../../components/AiLawReport.vue'
 import ChatInputBar from '../../components/ChatInputBar.vue'
 import BusinessSidebarLayout from '../../components/BusinessSidebarLayout.vue'
 import ErrorState from '../../components/ErrorState.vue'
+import ProjectHistoryButton from '../../components/ProjectHistoryButton.vue'
+import { prependProjectHistory } from '../../utils/project-history'
 import type { AiLawResearchReportV1, ProjectDetail } from '../../types'
 
 const { buildFullInput, buildDisplayText, formatSize } = useFileUpload()
@@ -24,6 +26,17 @@ const expectingAI = ref(false)
 const projectId = ref('')
 const projectRoute = ref('')
 const messages = ref<any[]>([])
+const history = ref<ProjectDetail['history']>()
+const loadHistory = (page: ProjectDetail) => {
+  messages.value = prependProjectHistory(messages.value, {
+    ...page,
+    messages: page.messages.map(message => ({
+      ...message,
+      ...(message.role === 'assistant' ? { status: 'completed' } : {}),
+    })),
+  })
+  history.value = page.history
+}
 const msgContainer = ref<HTMLElement | null>(null)
 // 思考过程（2026-08-11 app-server 双路流）：当前 AI 回复的推理增量,可折叠
 const aiThinking = ref('')
@@ -99,6 +112,7 @@ const startNewSession = () => {
   projectRoute.value = ''
   upgraded.value = false
   messages.value = []
+  history.value = undefined
   lastError.value = null
   forceScrollBottom()
 }
@@ -115,6 +129,7 @@ const restoreSession = async () => {
     const data = await request<ProjectDetail>(`/projects/${saved.projectId}`)
     if (gen !== sessionGen) return // 恢复期间已新建会话 → 丢弃过期响应
     projectId.value = data.id
+    history.value = data.history
     projectRoute.value = data.route
     upgraded.value = data.route === 'legalbp'
     const tl: any[] = []
@@ -600,6 +615,13 @@ onUnmounted(() => {
           @scroll="onMsgScroll"
         >
           <div class="msg-thread">
+            <ProjectHistoryButton
+              :key="projectId"
+              :project-id="projectId"
+              :cursors="history"
+              :disabled="sending || expectingAI"
+              @loaded="loadHistory"
+            />
             <template
               v-for="m in messages"
               :key="m.id ?? m._key"

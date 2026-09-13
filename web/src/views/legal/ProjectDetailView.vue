@@ -9,6 +9,8 @@ import DownloadMenu from '../../components/DownloadMenu.vue'
 import type { ContractDocStyle } from '../../utils/markdown-to-docx'
 import type { ContractFile, ContractTemplate, ProjectDetail, MessageDto, EventDto } from '../../types'
 import ErrorState from '../../components/ErrorState.vue'
+import ProjectHistoryButton from '../../components/ProjectHistoryButton.vue'
+import { prependProjectHistory } from '../../utils/project-history'
 import { crmDeliveryStatusLabel, statusLabel } from '../../domain/project-status'
 
 const route = useRoute()
@@ -62,6 +64,11 @@ const mergeTimeline = (data: ProjectDetail) => {
   for (const e of data.events) tl.push({ ...e, _event: true })
   tl.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
   messages.value = tl
+}
+
+const loadHistory = (page: ProjectDetail) => {
+  messages.value = prependProjectHistory(messages.value, page)
+  if (project.value) project.value.history = page.history
 }
 
 const scrollBottom = () => nextTick(() => {
@@ -391,6 +398,12 @@ async function handleLogout() { await auth.logout(); await router.replace('/logi
           class="msg-scroll"
         >
           <div class="msg-thread">
+            <ProjectHistoryButton
+              :project-id="id"
+              :cursors="project?.history"
+              :disabled="sending"
+              @loaded="loadHistory"
+            />
             <template
               v-for="m in messages"
               :key="m.id"

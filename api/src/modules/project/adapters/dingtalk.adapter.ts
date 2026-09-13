@@ -144,7 +144,11 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
       body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(`钉钉接口 HTTP ${res.status}: ${path}`);
+    const data: any = await res.json();
+    if (!data || typeof data.errcode !== 'number') {
+      throw new Error(`钉钉接口响应缺少 errcode: ${path}`);
+    }
     // token 失效（40014 access_token无效 / 401）→ 刷新重试一次
     if (retry401 && (data.errcode === 40014 || data.errcode === 401)) {
       this.logger.warn(`access_token 失效（${data.errcode}），强制刷新后重试`);
@@ -233,7 +237,10 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
       const batch = deptQueue.splice(0, Math.min(SYNC_CONCURRENCY, deptQueue.length));
       const subLists = await mapLimit(batch, SYNC_CONCURRENCY, async ({ id }) => {
         const res = await this.oapi<any>('/topapi/v2/department/listsub', { dept_id: id });
-        const list = (res.result || []) as Array<{ dept_id: number; name?: string }>;
+        if (!Array.isArray(res.result) || res.result.some((d: any) => !Number.isSafeInteger(d?.dept_id) || d.dept_id < 1)) {
+          throw new DingTalkSyncIncompleteError('部门列表响应无效，已放弃本次同步');
+        }
+        const list = res.result as Array<{ dept_id: number; name?: string }>;
         for (const d of list) {
           if (d?.dept_id && d.name) deptNames.set(d.dept_id, d.name);
         }
@@ -265,9 +272,14 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
           size: 100,
         });
         pageCount++;
-        const list: any[] = res.result?.list || [];
+        const result = res.result;
+        if (!result || !Array.isArray(result.list) || typeof result.has_more !== 'boolean'
+          || result.list.some((u: any) => typeof u?.userid !== 'string' || !u.userid)
+          || (result.has_more && (!Number.isSafeInteger(result.next_cursor) || result.next_cursor <= cursor))) {
+          throw new DingTalkSyncIncompleteError('部门成员分页响应无效，已放弃本次同步');
+        }
+        const list: any[] = result.list;
         for (const u of list) {
-          if (!u.userid) continue;
           if (this.isBlockedContact(u)) continue; // 排除机器人/离职/停用/测试账号
           const contact = contactsByUser.get(u.userid) ?? {
             userId: u.userid,
@@ -288,8 +300,8 @@ export class DingTalkAdapterImpl implements DingTalkAdapter {
           }
           contactsByUser.set(u.userid, contact);
         }
-        if (!res.result?.has_more) break;
-        cursor = res.result?.next_cursor ?? 0;
+        if (!result.has_more) break;
+        cursor = result.next_cursor;
         if (page === 49) truncatedPage = true; // 达 50 页上限且仍 has_more → 不完整
       }
     });

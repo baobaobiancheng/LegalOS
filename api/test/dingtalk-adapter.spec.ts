@@ -11,7 +11,9 @@ import { DingTalkAdapterImpl } from '../src/modules/project/adapters/dingtalk.ad
  */
 
 const mockFetch = (handler: (url: string, init?: any) => Promise<any>) => {
-  global.fetch = vi.fn().mockImplementation(handler) as any;
+  global.fetch = vi.fn().mockImplementation(async (...args: [string, any]) => ({
+    ok: true, status: 200, ...await handler(...args),
+  })) as any;
 };
 
 describe('DingTalkAdapterImpl', () => {
@@ -34,6 +36,24 @@ describe('DingTalkAdapterImpl', () => {
     if (OLD_TEMPLATE === undefined) delete process.env.DINGTALK_SCENE_TEMPLATE_ID;
     else process.env.DINGTALK_SCENE_TEMPLATE_ID = OLD_TEMPLATE;
     vi.restoreAllMocks();
+  });
+
+  it.each(['http', 'invalid-json', 'missing-result', 'invalid-cursor'])('部分部门失败时拒绝整个通讯录快照：%s', async (failure) => {
+    mockFetch(async (url, init) => {
+      const body = JSON.parse(init?.body || '{}');
+      if (url.includes('/department/listsub')) return { json: async () => ({ errcode: 0, result: body.dept_id === 1 ? [{ dept_id: 2 }] : [] }) };
+      if (url.includes('/user/list')) {
+        if (body.dept_id === 2) {
+          if (failure === 'http') return { ok: false, status: 502, json: async () => ({}) };
+          if (failure === 'invalid-json') return { json: async () => { throw new SyntaxError('non-json'); } };
+          if (failure === 'missing-result') return { json: async () => ({ errcode: 0 }) };
+          return { json: async () => ({ errcode: 0, result: { list: [], has_more: true, next_cursor: 0 } }) };
+        }
+        return { json: async () => ({ errcode: 0, result: { list: [{ userid: 'valid-user' }], has_more: false } }) };
+      }
+      return { json: async () => ({ errcode: 0, access_token: 'test-token', expires_in: 7200 }) };
+    });
+    await expect(new DingTalkAdapterImpl().syncContacts()).rejects.toThrow();
   });
 
   it('gettoken 成功 + 缓存命中（不重复请求）', async () => {

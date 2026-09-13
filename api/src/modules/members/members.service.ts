@@ -256,7 +256,6 @@ export class MembersService {
           outcome: 'failed',
           reasonCode: 'DINGTALK_SYNC_FAILED',
           request,
-          metadata: { errorHash: this.audit.digestCanonical(String(e?.message ?? e)) },
           retentionClass: 'admin',
         }).catch((auditError) => this.logger.error(`通讯录同步失败审计写入失败：${auditError}`));
       }
@@ -686,7 +685,7 @@ export class MembersService {
             dingtalkUserId,
             dingtalkPhone: contact.mobile,
             avatarUrl: contact.avatarUrl ?? null,
-            department: contact.department ?? undefined,
+            department: contact.department ?? null,
             role,
           },
         });

@@ -10,6 +10,7 @@ import {
   validateResearchEvidence,
 } from '../src/common/services/dsh.service';
 import { DSH_BAIJIAN_RESULT_META_KIND } from '../src/common/services/dsh-baijian-tools.service';
+import { DSH_SESSION_PREFIX } from '../src/common/services/dsh-runtime';
 
 const homes: string[] = [];
 
@@ -109,8 +110,7 @@ describe('DshService 法律检索执行契约', () => {
           } },
         },
       });
-      publish({ type: 'assistant/chunk', data: { chunk: { type: 'text-delta', text: `> [法规原文｜ID:${lawId}｜条文:第八十七条] 应当支付赔偿金。` } } });
-      session.events.push({
+      publish({
         type: 'assistant/message',
         data: { message: { content: [{ type: 'text', text: `> [法规原文｜ID:${lawId}｜条文:第八十七条] 应当支付赔偿金。` }] } },
       });
@@ -224,13 +224,58 @@ describe('DshService 法律检索执行契约', () => {
     });
     const handle = await harness.service.executeStream('继续检索', {
       researchCapability: 'similar_case',
-      resumeDshSessionId: 'legalos-existing',
+      resumeDshSessionId: `${DSH_SESSION_PREFIX}existing`,
     });
     const completion = await completionOf(handle);
 
-    expect(harness.resume).toHaveBeenCalledWith(expect.objectContaining({ resumeSessionId: 'legalos-existing' }));
+    expect(harness.resume).toHaveBeenCalledWith(expect.objectContaining({ resumeSessionId: `${DSH_SESSION_PREFIX}existing` }));
     expect(harness.create).not.toHaveBeenCalled();
-    expect(completion.dshSessionId).toBe('legalos-existing');
+    expect(completion.dshSessionId).toBe(`${DSH_SESSION_PREFIX}existing`);
+  });
+
+  it('不读取旧版本持久会话', async () => {
+    const harness = makeHarness(() => undefined);
+    const handle = await harness.service.executeStream('继续', { resumeDshSessionId: 'legalos-old' });
+    await expect(completionOf(handle)).rejects.toThrow('不属于当前运行时版本');
+    expect(harness.resume).not.toHaveBeenCalled();
+  });
+
+  it('失败的 assistant/attempt 不进入正文，重试成功只发布一次', async () => {
+    const harness = makeHarness(({ session, publish }) => {
+      publish({ type: 'assistant/attempt', data: { message: { content: [{ type: 'text', text: '废弃片段' }] } } });
+      publish({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '成功回答' }] } } });
+      session.events.push({ type: 'turn/end', data: { reason: { kind: 'completed' } } });
+    });
+    const handle = await harness.service.executeStream('测试重试');
+    const text: string[] = [];
+    handle.on('text', (delta) => text.push(delta));
+    expect((await completionOf(handle)).text).toBe('成功回答');
+    expect(text).toEqual(['成功回答']);
+  });
+
+  it('本轮缺少正文时不能拿上一轮回答冒充成功', async () => {
+    const harness = makeHarness(({ session }) => {
+      session.events.push({ type: 'turn/end', data: { reason: { kind: 'completed' } } });
+    });
+    harness.session.events.push({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '历史回答' }] } } });
+    const handle = await harness.service.executeStream('继续', { resumeDshSessionId: `${DSH_SESSION_PREFIX}existing` });
+    await expect(completionOf(handle)).rejects.toThrow('本轮没有已提交的回答正文');
+  });
+
+  it('持久化失败或释放失败时只发 error，不能先 done 后 error', async () => {
+    for (const phase of ['flush', 'dispose'] as const) {
+      const harness = makeHarness(({ session }) => {
+        session.events.push({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '回答' }] } } });
+        session.events.push({ type: 'turn/end', data: { reason: { kind: 'completed' } } });
+      });
+      harness[phase].mockRejectedValueOnce(new Error(`${phase} failed`));
+      const handle = await harness.service.executeStream('测试收尾');
+      const done = vi.fn();
+      handle.on('done', done);
+      await expect(completionOf(handle)).rejects.toThrow(`${phase} failed`);
+      expect(done).not.toHaveBeenCalled();
+      expect(harness.dispose).toHaveBeenCalledOnce();
+    }
   });
 });
 
@@ -259,6 +304,8 @@ function makeHarness(
   const resume = vi.fn();
   const dispose = vi.fn().mockResolvedValue(undefined);
   const session = { id: '', events: [] as any[] };
+  Object.assign(session, { snapshotEvents: () => session.events.slice() });
+  const flush = vi.fn().mockResolvedValue(true);
   let followed = false;
   let finished = false;
   const publish = (event: any) => {
@@ -303,7 +350,7 @@ function makeHarness(
       if (key === 'agentDefaultModel') return {
         currentSelection: () => ({ provider: 'test', model: 'test-model' }),
       };
-      if (key === 'sessions') return { flush: vi.fn().mockResolvedValue(undefined) };
+      if (key === 'sessions') return { flush };
       return undefined;
     }),
     on: vi.fn((_event: string, listener: (session: any, event: any) => void) => {
@@ -311,9 +358,10 @@ function makeHarness(
       return () => listeners.delete(listener);
     }),
   };
+  Object.assign(ctx, { agents: ctx.get('agents'), agentDefaultModel: ctx.get('agentDefaultModel'), sessions: ctx.get('sessions') });
   const service = new DshService(config as any, queue, tools as any);
   (service as any).ensureBooted = vi.fn().mockResolvedValue(ctx);
-  return { service, register, dispose, cancel, toolDefinition, create, resume, ctx, rootDispose };
+  return { service, register, dispose, cancel, toolDefinition, create, resume, ctx, rootDispose, session, flush };
 }
 
 function completionOf(handle: DshExecutionHandle): Promise<any> {

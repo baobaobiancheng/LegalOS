@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import { createHash } from 'node:crypto';
 import { ContractService } from '../src/modules/contract/contract.service';
 import { ContractDocumentWriter } from '../src/modules/contract/application/contract-document.writer';
 import { CreateProjectUseCase } from '../src/modules/project/application/create-project.use-case';
@@ -24,9 +25,11 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
 
   beforeEach(() => {
     prisma = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
       project: { findUnique: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       projectMessage: { create: vi.fn() },
       contractGenerationRun: {
+        findFirst: vi.fn().mockResolvedValue(null),
         findUnique: vi.fn(),
         create: vi.fn(),
         update: vi.fn(),
@@ -39,11 +42,12 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
       projectEvent: { create: vi.fn() },
       $transaction: vi.fn(async (callback: any) => callback(prisma)),
     };
+    prisma.project.findUniqueOrThrow = prisma.project.findUnique;
     dsh = { executeStream: vi.fn() };
     service = new ContractService(
       prisma as any,
       dsh as any,
-      { findBySlug: vi.fn().mockResolvedValue(TEMPLATE) } as any,
+      { findBySlug: vi.fn().mockResolvedValue(TEMPLATE), readApprovedText: vi.fn().mockResolvedValue('公司审定完整条款') } as any,
       new ContractDocumentWriter(),
       { sendNotification: vi.fn() } as any,
       new CreateProjectUseCase(prisma) as any,
@@ -60,6 +64,8 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
     });
     prisma.contractGenerationRun.findUnique.mockResolvedValue({
       id: 'generation-running', status: 'running', documentId: null,
+      projectId: 'project-running', templateSlug: TEMPLATE.slug,
+      elementsHash: createHash('sha256').update(JSON.stringify([['partyA', '甲方']])).digest('hex'),
     });
 
     const result = await service.generateDraft({
@@ -80,6 +86,8 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
     });
     prisma.contractGenerationRun.findUnique.mockResolvedValue({
       id: 'generation-done', status: 'succeeded', documentId: 'document-1',
+      projectId: 'project-done', templateSlug: TEMPLATE.slug,
+      elementsHash: createHash('sha256').update(JSON.stringify([['partyA', '甲方']])).digest('hex'),
     });
 
     const result = await service.generateDraft({
@@ -148,14 +156,13 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
     dsh.executeStream.mockResolvedValue(handle);
     let releaseTransaction!: () => void;
     const transactionGate = new Promise<void>((resolve) => { releaseTransaction = resolve; });
+    const result = await service.generateDraft({
+      projectId: 'project-delayed', templateSlug: TEMPLATE.slug, elements: { partyA: '甲方' },
+    }, ACTOR);
     prisma.$transaction.mockImplementation(async (callback: any) => {
       await transactionGate;
       return callback(prisma);
     });
-
-    const result = await service.generateDraft({
-      projectId: 'project-delayed', templateSlug: TEMPLATE.slug, elements: { partyA: '甲方' },
-    }, ACTOR);
     let completed = false;
     void result.completion!.then(() => { completed = true; });
     handle.emit('done', { text: '合同正文' });
@@ -184,15 +191,15 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
     prisma.contractGenerationRun.create.mockResolvedValue({ id: 'generation-failed', status: 'running' });
     const handle = makeHandle();
     dsh.executeStream.mockResolvedValue(handle);
-    prisma.$transaction.mockRejectedValueOnce(new Error('database unavailable with private detail'));
 
     const result = await service.generateDraft({
       projectId: 'project-failed', templateSlug: TEMPLATE.slug, elements: { partyA: '甲方' },
     }, ACTOR);
+    prisma.$transaction.mockRejectedValueOnce(new Error('database unavailable with private detail'));
     handle.emit('done', { text: '不应伪成功的合同' });
     await expect(result.completion).rejects.toThrow('database unavailable');
     expect(prisma.contractGenerationRun.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ id: 'generation-failed', status: 'running' }),
+        where: expect.objectContaining({ id: 'generation-failed', status: 'running' }),
       data: expect.objectContaining({ status: 'failed', errorMessage: '合同草稿写入失败' }),
     }));
   });
@@ -277,6 +284,10 @@ describe('ContractService.generateDraft 生成流幂等与状态保护', () => {
       if (where.id !== 'generation-failure-race' || where.status !== runStatus) return { count: 0 };
       runStatus = data.status;
       return { count: 1 };
+    });
+    prisma.contractGenerationRun.update.mockImplementation(async ({ data }: any) => {
+      runStatus = data.status ?? runStatus;
+      return { id: 'generation-failure-race', status: runStatus };
     });
     prisma.$transaction.mockImplementation(async (callback: any) => {
       const before = runStatus;

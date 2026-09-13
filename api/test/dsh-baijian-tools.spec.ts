@@ -29,7 +29,7 @@ describe('DshBaijianToolsService', () => {
       { keyword: '劳动合同', page: 10, rows: 10 },
       expect.any(AbortSignal),
     );
-    expect(result).toBe(normalized);
+    expect(result).toEqual(normalized);
     expect(definition.output.presentationMeta({}, result)).toEqual({
       kind: DSH_BAIJIAN_RESULT_META_KIND,
       result: normalized,

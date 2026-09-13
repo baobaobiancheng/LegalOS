@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { ToolDefinition, ToolOutputDefinition } from '@deepseek-ai/dsh-tools';
 import { CachedLegalResearchGateway } from '../baijian/cached-legal-research.gateway';
 import {
   BaijianLawContentBlock,
@@ -32,14 +33,14 @@ export class DshBaijianToolsService {
   async createDefinition(
     capability: DshResearchCapability,
     options: { lawDetailLimit?: number } = {},
-  ): Promise<any> {
+  ): Promise<ToolDefinition> {
     return (await this.createDefinitions(capability, options))[0];
   }
 
   async createDefinitions(
     capability: DshResearchCapability,
     options: { lawDetailLimit?: number } = {},
-  ): Promise<any[]> {
+  ): Promise<ToolDefinition[]> {
     const { defineTool } = await import('@deepseek-ai/dsh-tools');
     const baijian = this.baijian;
     if (capability === 'law_search') {
@@ -56,7 +57,7 @@ export class DshBaijianToolsService {
         supplierRequests += count;
         return true;
       };
-      const runRecall = async (loader: () => Promise<BaijianLawSearchResult>): Promise<any> => {
+      const runRecall = async (loader: () => Promise<BaijianLawSearchResult>) => {
         if (recallCalls >= LAW_RESEARCH_RECALL_CALL_LIMIT) {
           throw new Error(`法规召回最多允许 ${LAW_RESEARCH_RECALL_CALL_LIMIT} 次`);
         }
@@ -66,7 +67,7 @@ export class DshBaijianToolsService {
         recallCalls += 1;
         const result = await loader();
         rememberCandidates(result.records, candidates);
-        return result;
+        return toolJson(result);
       };
       return [defineTool({
         name: DSH_LAW_SEARCH_TOOL,
@@ -196,7 +197,7 @@ export class DshBaijianToolsService {
           if (!details.length) {
             throw new Error(`批量法规详情读取失败，${failedLawIds.length} 部候选法规均未成功读取正文`);
           }
-          return {
+          return toolJson({
             toolName: DSH_LAW_BATCH_DETAIL_TOOL,
             details,
             ...(failedLawIds.length ? { failedLawIds } : {}),
@@ -208,7 +209,7 @@ export class DshBaijianToolsService {
               supplierBounded: targetUnreadIds.length === 0 && skippedLawIds.length > 0
                 && attemptedDetailIds.size < detailLimit,
             }),
-          } as any;
+          });
         },
       }), defineTool({
         name: DSH_LAW_DETAIL_TOOL,
@@ -233,12 +234,12 @@ export class DshBaijianToolsService {
           }
           const cached = detailCache.get(lawId);
           if (cached) {
-            return {
+            return toolJson({
               ...cached,
               orchestration: {
                 action: 'reused', reason: 'detail_repeat', limit: detailLimit, reusedLawIds: [lawId],
               },
-            } as any;
+            });
           }
           if (singleDetailCalls >= 1) {
             throw new Error('单条法规详情本轮最多允许 1 次，请使用 get_law_details 批量核验');
@@ -251,7 +252,7 @@ export class DshBaijianToolsService {
           const detail = await baijian.getLawDetail({ lawId }, exec.signal);
           const projected = projectLawDetail(detail, { articleHint, query });
           detailCache.set(lawId, projected);
-          return projected as any;
+          return toolJson(projected);
         },
       })];
     }
@@ -266,10 +267,10 @@ export class DshBaijianToolsService {
       output: this.outputDefinition(),
       timeoutMs: 60_000,
       async execute(args, exec) {
-        return baijian.searchCases({
+        return toolJson(await baijian.searchCases({
           query: args.query,
           topK: clamp(args.topK, 1, 5, 5),
-        }, exec.signal) as Promise<any>;
+        }, exec.signal));
       },
     })];
   }
@@ -283,12 +284,17 @@ export class DshBaijianToolsService {
       }],
       // dsh 不持久 canonical value；将有界的标准化结果投影到 tool/result.meta，
       // 供服务端在会话回放与最终引用校验时使用。
-      presentationMeta: (_args: unknown, value: unknown) => ({
+      presentationMeta: (_args: unknown, value: Parameters<ToolOutputDefinition['render']>[1]) => ({
         kind: DSH_BAIJIAN_RESULT_META_KIND,
-        result: JSON.parse(JSON.stringify(value)),
+        result: value,
       }),
     };
   }
+}
+
+/** JSON is the tool boundary: omit optional undefined fields once, before DSH validates and snapshots. */
+function toolJson(value: unknown): Parameters<ToolOutputDefinition['render']>[1] {
+  return JSON.parse(JSON.stringify(value));
 }
 
 function rememberCandidates(

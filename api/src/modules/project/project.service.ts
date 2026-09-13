@@ -202,8 +202,8 @@ export class ProjectService {
   }
 
   /** 工单详情 — 委派 ProjectQueryService（P2-01） */
-  async findOne(id: string, actor: ProjectActor) {
-    return this.query.findOne(id, actor);
+  async findOne(id: string, actor: ProjectActor, cursors: { beforeMessageId?: string; beforeEventId?: string } = {}) {
+    return this.query.findOne(id, actor, cursors);
   }
 
   /** 更新工单（状态/风险/结果）— 法务 BP 仅可改已指派给自己工单的状态/风险/结果字段 */

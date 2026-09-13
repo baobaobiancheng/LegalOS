@@ -9,6 +9,36 @@ async function authenticate(page: Page) {
   await page.route('**/api/auth/me', (route) => route.fulfill({ json: user }));
 }
 
+test('历史分页失败保留最新记录，重试成功追加旧记录', async ({ page }) => {
+  await authenticate(page);
+  let fail = true;
+  const projectId = 'history-test';
+  const project = {
+    id: projectId, title: '历史分页测试', kind: 'consult', route: 'legalbp', status: '待复核', risk: 'P1',
+    creatorId: user.id, ownerId: user.id, legalBpId: user.id, creator: user, owner: user,
+    messages: [{ id: 'new', role: 'user', text: '最新问题保留', createdAt: now }], events: [],
+    history: { beforeMessageId: 'new', beforeEventId: null }, createdAt: now, updatedAt: now,
+  };
+  await page.route(`**/api/projects/${projectId}*`, (route) => {
+    const before = new URL(route.request().url()).searchParams.get('beforeMessageId');
+    if (!before) return route.fulfill({ json: project });
+    if (fail) { fail = false; return route.fulfill({ status: 503, json: { error: '临时不可用' } }); }
+    return route.fulfill({ json: {
+      ...project, messages: [{ id: 'old', role: 'user', text: '更早问题已加载', createdAt: '2026-09-01' }],
+      history: { beforeMessageId: null, beforeEventId: null },
+    } });
+  });
+  await page.goto(`/legal/projects/${projectId}`);
+  await expect(page.getByText('最新问题保留', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '加载更早记录' }).click();
+  await expect(page.getByRole('alert')).toContainText('当前记录已保留');
+  await expect(page.getByText('最新问题保留', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '加载更早记录' }).click();
+  await expect(page.getByText('更早问题已加载', { exact: true })).toBeVisible();
+  await expect(page.getByText('最新问题保留', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '加载更早记录' })).toHaveCount(0);
+});
+
 test('未认领摘要没有用户详情时，列表仍正常渲染', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));

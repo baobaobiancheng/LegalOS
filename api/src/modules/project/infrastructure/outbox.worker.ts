@@ -162,30 +162,31 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
     const [creator, bp] = await Promise.all([
       this.prisma.user.findUnique({
         where: { id: project.creatorId },
-        select: { dingtalkUserId: true, displayName: true },
+        select: { dingtalkUserId: true, displayName: true, isActive: true },
       }),
       project.legalBpId
         ? this.prisma.user.findUnique({
             where: { id: project.legalBpId },
-            select: { dingtalkUserId: true, displayName: true },
+            select: { dingtalkUserId: true, displayName: true, isActive: true, role: true },
           })
         : Promise.resolve(null),
     ]);
 
-    const memberIds = [...new Set([creator?.dingtalkUserId, bp?.dingtalkUserId].filter(Boolean) as string[])];
-
     // 无法务角色成员 → 不建群，记录事件（工程评审决策 #9：单业务成员群无触达价值）
-    if (!bp?.dingtalkUserId) {
+    if (!bp?.dingtalkUserId || !isActiveLegalMember(bp)) {
       await this.addProjectEvent(projectId, `${this.fmt()} · 未匹配到已绑定钉钉的法务 BP，请人工建群`);
       this.logger.warn(`工单 ${projectId} 无法务成员，跳过建群`);
       return;
     }
 
+    const creatorDingtalkId = creator?.isActive ? creator.dingtalkUserId : null;
+    const memberIds = [...new Set([creatorDingtalkId, bp.dingtalkUserId].filter(Boolean) as string[])];
+
     // 建群（dedupKey=legalos-${projectId} 保持：钉钉 uuid 去重，崩溃重试返回同一群）
     const group = await this.dingtalk.createGroup(
       memberIds,
       `工单#${projectId.slice(0, 6)} ${project.title}`,
-      creator?.dingtalkUserId || undefined,
+      creatorDingtalkId || bp.dingtalkUserId,
       `legalos-${projectId}`,
     );
 
@@ -223,14 +224,14 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
     try {
       const project = await this.prisma.project.findUnique({
         where: { id: projectId },
-        select: { legalBpId: true },
+        select: { legalBpId: true, status: true },
       });
-      if (!project?.legalBpId) return;
+      if (!project?.legalBpId || project.status === '已取消') return;
       const bp = await this.prisma.user.findUnique({
         where: { id: project.legalBpId },
-        select: { dingtalkUserId: true, displayName: true },
+        select: { dingtalkUserId: true, displayName: true, isActive: true, role: true },
       });
-      if (!bp?.dingtalkUserId || currentMembers.includes(bp.dingtalkUserId)) return;
+      if (!bp?.dingtalkUserId || !isActiveLegalMember(bp) || currentMembers.includes(bp.dingtalkUserId)) return;
       await this.dingtalk.addMember(chatId, bp.dingtalkUserId);
       const members = [...currentMembers, bp.dingtalkUserId];
       await this.prisma.project.update({
@@ -253,16 +254,17 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
 
     const project = await this.prisma.project.findUnique({
       where: { id: projectId },
-      select: { dingtalkChatId: true, dingtalkMembers: true, status: true },
+      select: { dingtalkChatId: true, dingtalkMembers: true, status: true, legalBpId: true },
     });
-    if (!project || project.status === '已取消') return;
+    if (!project || project.status === '已取消' || project.legalBpId !== userId) return;
     if (!project.dingtalkChatId) throw new Error('钉钉群尚未创建，等待建群任务完成');
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { dingtalkUserId: true, displayName: true },
+      select: { dingtalkUserId: true, displayName: true, isActive: true, role: true },
     });
-    if (!user?.dingtalkUserId) {
+    if (!user || !isActiveLegalMember(user)) return;
+    if (!user.dingtalkUserId) {
       await this.addProjectEvent(
         projectId,
         `${this.fmt()} · ${user?.displayName || '新法务 BP'} 未绑定钉钉，无法加入群`,
@@ -378,4 +380,8 @@ export class OutboxWorker implements OnApplicationBootstrap, OnApplicationShutdo
     const mm = String(now.getMinutes()).padStart(2, '0');
     return `${hh}:${mm}`;
   }
+}
+
+function isActiveLegalMember(user: { isActive: boolean; role: string }): boolean {
+  return user.isActive && (user.role === 'legal_bp' || user.role === 'legal_lead');
 }

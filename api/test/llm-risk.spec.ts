@@ -18,6 +18,14 @@ const mockChat = (output: string) => ({
 const noConfig = undefined;
 
 describe('LLMRiskService JSON 解析', () => {
+  it.each(['PRIVATE_CONTENT', '{"incomplete": PRIVATE_CONTENT}'])('解析失败日志不包含模型正文：%s', async (text) => {
+    const service = new LLMRiskService(mockChat(text), noConfig);
+    const warn = vi.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+    await service.assess('虚构普通问题');
+    expect(warn).toHaveBeenCalled();
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('PRIVATE_CONTENT');
+    warn.mockRestore();
+  });
   it('严格 JSON：risk + domain + reason', async () => {
     const service = new LLMRiskService(mockChat('{"risk":"P1","domain":"合规法务","reason":"数据出境"}'), noConfig);
     const r = await service.assess('数据出境问题');

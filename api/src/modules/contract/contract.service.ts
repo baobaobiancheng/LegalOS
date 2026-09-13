@@ -10,6 +10,7 @@ import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import { SseStream } from '../../common/utils/sse';
 import { createHash } from 'crypto';
+import { ContractGenerationRun, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DshService, DshExecutionHandle } from '../../common/services/dsh.service';
 import { DINGTALK_ADAPTER, DingTalkAdapter } from '../project/adapters/adapter.interfaces';
@@ -121,8 +122,7 @@ export class ContractService {
     documentId?: string | null;
     completion?: Promise<unknown>;
   }> {
-    // Project.idempotencyKey 只保护“建单”；生成流还必须有自己的唯一运行记录。
-    // 否则两个请求可能只落一个 Project，却各自启动一条 Codex 流。
+    let resolvedProjectId = dto.projectId;
     if (!dto.projectId && dto.idempotencyKey) {
       const existing = await this.createProjectUseCase.findExistingByIdempotencyKey(
         dto.idempotencyKey,
@@ -130,19 +130,7 @@ export class ContractService {
       );
       if (existing) {
         this.accessPolicy.assertCan(actor, ProjectAction.SendMessage, existing);
-        const requestKey = this.buildGenerationRequestKey(dto, existing.id).requestKey;
-        const existingRun = await this.prisma.contractGenerationRun.findUnique({
-          where: { requestKey },
-        });
-        // 竞态窗口：首个请求可能刚提交 Project、尚未创建 GenerationRun。
-        // 此时只返回处理中，不得再启动第二条流；首个请求会继续完成自己的 claim。
-        return {
-          projectId: existing.id,
-          reused: true,
-          status: existing.status,
-          generationRunId: existingRun?.id,
-          documentId: existingRun?.documentId,
-        };
+        resolvedProjectId = existing.id;
       }
     }
 
@@ -153,13 +141,18 @@ export class ContractService {
     if (!hasAnyElement(elements)) {
       throw new BadRequestException('请至少填写一个合同要素');
     }
+    const canonicalElements = JSON.stringify(
+      Object.entries(elements)
+        .filter(([, value]) => typeof value === 'string' && value.trim())
+        .sort(([a], [b]) => a.localeCompare(b)),
+    );
+    const elementsHash = createHash('sha256').update(canonicalElements).digest('hex');
 
     let projectId: string;
-    let existingProject: any | null = null;
-    let projectVersion!: AiProjectVersion;
+    let approvedText: string | undefined;
     let createdProject = false;
-    if (dto.projectId) {
-      existingProject = await this.prisma.project.findUnique({ where: { id: dto.projectId } });
+    if (resolvedProjectId) {
+      const existingProject = await this.prisma.project.findUnique({ where: { id: resolvedProjectId } });
       if (!existingProject) throw new NotFoundException('工单不存在');
       this.accessPolicy.assertCan(actor, ProjectAction.SendMessage, existingProject);
       if (existingProject.route !== 'llm') {
@@ -169,26 +162,26 @@ export class ContractService {
         throw new ConflictException('该工单已人工办结或取消，无法继续生成');
       }
       projectId = existingProject.id;
-      projectVersion = existingProject;
 
-      const candidateRequestKey = this.buildGenerationRequestKey(dto, projectId).requestKey;
+      const candidateRequestKey = this.buildGenerationRequestKey(dto, projectId, elementsHash);
       const existingGenerationRun = await this.prisma.contractGenerationRun.findUnique({
         where: { requestKey: candidateRequestKey },
       });
-      // 已有处理中/已完成项目的同一请求是幂等重试，不得追加用户消息或重新启动 Codex。
-      // 已完成项目若使用不同要素指纹，则允许生成新版本；版本由 ContractDocument 唯一约束保护。
-      if (['分析中', '待复核', '已回传'].includes(existingProject.status)) {
-        if (existingGenerationRun || existingProject.status === '分析中') {
+      if (existingGenerationRun) {
+        this.assertGenerationPayload(existingGenerationRun, projectId, dto.templateSlug, elementsHash);
+        if (['queued', 'running', 'succeeded'].includes(existingGenerationRun.status)) {
           return {
             projectId,
             reused: true,
             status: existingProject.status,
-            generationRunId: existingGenerationRun?.id,
-            documentId: existingGenerationRun?.documentId,
+            generationRunId: existingGenerationRun.id,
+            documentId: existingGenerationRun.documentId,
           };
         }
       }
     } else {
+      // 缺少审定正文时不创建孤立的“分析中”工单。
+      approvedText = await this.templateService.readApprovedText(template.slug);
       const { project, created } = await this.createProjectUseCase.execute({
         kind: 'contract',
         title: `合同草稿·${template.name}`,
@@ -202,52 +195,36 @@ export class ContractService {
         events: [formatEventTime() + ' · AI 正在生成合同草稿…'],
       });
       projectId = project.id;
-      projectVersion = project;
       createdProject = created;
-      if (!created) {
-        const requestKey = this.buildGenerationRequestKey(dto, projectId).requestKey;
-        const existingRun = await this.prisma.contractGenerationRun.findUnique({
-          where: { requestKey },
-        });
-        return {
-          projectId,
-          reused: true,
-          status: project.status,
-          generationRunId: existingRun?.id,
-          documentId: existingRun?.documentId,
-        };
-      }
     }
 
-    const { requestKey, elementsHash } = this.buildGenerationRequestKey(dto, projectId);
+    approvedText ??= await this.templateService.readApprovedText(template.slug);
+    const prompt = buildDraftPrompt(template.prompt, elements, approvedText, template.name);
+    const requestKey = this.buildGenerationRequestKey(dto, projectId, elementsHash);
     const generationRun = await this.claimGenerationRun(
       projectId,
       requestKey,
       dto.templateSlug,
       elementsHash,
+      actor,
+      createdProject ? undefined : buildElementsText(elements),
     );
     if (!generationRun.claimed) {
       return {
         projectId,
         reused: true,
-        status: generationRun.run.status === 'succeeded'
-          ? (existingProject?.status ?? '待复核')
-          : (existingProject?.status ?? '分析中'),
+        status: generationRun.projectVersion.status,
         generationRunId: generationRun.run.id,
         documentId: generationRun.run.documentId,
       };
     }
 
-    // 只有真正 claim 到 GenerationRun 的请求才能写首条续生成消息和启动 Codex。
-    if (!createdProject && dto.projectId) {
-      await this.prisma.projectMessage.create({
-        data: { projectId, role: 'user', text: buildElementsText(elements) },
-      });
-    }
-
-    const prompt = buildDraftPrompt(template.prompt, elements, template.slug, template.name);
+    const projectVersion = generationRun.projectVersion;
     // 合同草稿远长于咨询回复：timeout 放宽到 600s（实测超时根因，2026-08-03）
     const generationRunId = generationRun.run.id;
+    const runningAttempt = {
+      id: generationRunId, projectId, status: 'running' as const, startedAt: generationRun.run.startedAt,
+    };
     let handle: DshExecutionHandle;
     try {
       handle = await this.dshService.executeStream(prompt, {
@@ -256,14 +233,8 @@ export class ContractService {
         signal,
       });
     } catch (error) {
-      await this.prisma.contractGenerationRun.updateMany({
-        where: { id: generationRunId, projectId, status: 'running' },
-        data: {
-          status: 'failed',
-          completedAt: new Date(),
-          errorMessage: String((error as Error)?.message ?? error).slice(0, 200),
-        },
-      }).catch(() => undefined);
+      await this.settleGenerationAttempt(runningAttempt, projectVersion,
+        signal?.aborted ? 'cancelled' : 'failed', '合同生成未启动，请重试');
       throw error;
     }
 
@@ -275,20 +246,17 @@ export class ContractService {
     stream.on('close', async (code) => {
       // dsh 侧权威完整文本（done 事件携带），回退到增量重拼（理论一致，防御分叉）
       const finalText = (stream as any).__finalText ?? fullText;
-      // 连接断开主动取消 → 不写失败状态（刷新 ≠ 生成失败）
-      if ((stream as any).__cancelled) {
-        await this.prisma.contractGenerationRun.updateMany({
-          where: { id: generationRunId, projectId, status: 'running' },
-          data: { status: 'cancelled', completedAt: new Date(), errorMessage: '合同生成已取消' },
-        }).catch(() => undefined);
+      if (stream.__cancelled) {
+        await this.settleGenerationAttempt(runningAttempt, projectVersion, 'cancelled', '合同生成已取消');
         deferred.reject(new Error('合同生成已取消'));
         return;
       }
       if (code === 0 && finalText.trim()) {
         try {
           await this.prisma.$transaction(async (tx) => {
+            await tx.$queryRaw`SELECT id FROM projects WHERE id = ${projectId} FOR UPDATE`;
             const runUpdated = await tx.contractGenerationRun.updateMany({
-              where: { id: generationRunId, projectId, status: 'running' },
+              where: runningAttempt,
               data: {
                 status: 'succeeded',
                 completedAt: new Date(),
@@ -333,56 +301,14 @@ export class ContractService {
           deferred.resolve({ projectId, generationRunId });
         } catch (err) {
           this.logger.error(`合同草稿未提交：${safeErrorTag(err)}`);
-          await this.prisma.contractGenerationRun.updateMany({
-            where: { id: generationRunId, projectId, status: 'running' },
-            data: {
-              status: err instanceof StaleContractCompletionError ? 'cancelled' : 'failed',
-              completedAt: new Date(),
-              errorMessage: err instanceof StaleContractCompletionError
-                ? '执行上下文已变更，迟到结果未写入'
-                : '合同草稿写入失败',
-            },
-          }).catch(() => undefined);
+          await this.settleGenerationAttempt(runningAttempt, projectVersion,
+            err instanceof StaleContractCompletionError ? 'cancelled' : 'failed',
+            err instanceof StaleContractCompletionError ? err.message : '合同草稿写入失败');
           deferred.reject(err);
         }
       } else {
         this.logger.error(`合同草稿生成失败，code=${code}`);
-        try {
-          const errorMessage = (stream as any).__errorMessage
-            ? String((stream as any).__errorMessage).slice(0, 200)
-            : 'AI 合同生成失败或超时';
-          await this.prisma.$transaction(async (tx) => {
-            const runUpdated = await tx.contractGenerationRun.updateMany({
-              where: { id: generationRunId, projectId, status: 'running' },
-              data: { status: 'failed', completedAt: new Date(), errorMessage },
-            });
-            if (runUpdated.count !== 1) throw new StaleContractCompletionError();
-            const projectUpdated = await tx.project.updateMany({
-              where: aiProjectVersionWhere(projectId, projectVersion),
-              data: {
-                status: '待处理',
-                isFailed: true,
-                updatedAt: nextProjectVersion(projectVersion),
-              },
-            });
-            if (projectUpdated.count !== 1) throw new StaleContractCompletionError();
-            await tx.projectEvent.create({
-              data: { projectId, text: formatEventTime() + ' · 合同草稿生成失败，已转人工处理' },
-            });
-          });
-        } catch (err) {
-          this.logger.error(`失败状态更新失败：${safeErrorTag(err)}`);
-          await this.prisma.contractGenerationRun.updateMany({
-            where: { id: generationRunId, projectId, status: 'running' },
-            data: {
-              status: err instanceof StaleContractCompletionError ? 'cancelled' : 'failed',
-              completedAt: new Date(),
-              errorMessage: err instanceof StaleContractCompletionError
-                ? '执行上下文已变更，迟到结果未写入'
-                : '合同草稿失败状态写入失败',
-            },
-          }).catch(() => undefined);
-        }
+        await this.settleGenerationAttempt(runningAttempt, projectVersion, 'failed', 'AI 合同生成失败或超时');
         deferred.reject(new Error('AI 合同生成失败或超时'));
       }
     });
@@ -394,43 +320,99 @@ export class ContractService {
    * 生成请求键：显式 idempotencyKey 优先；已有工单无 key 时用模板+要素指纹。
    * 同一 key 只允许一条运行流；不同指纹可以安全生成新 ContractDocument 版本。
    */
-  private buildGenerationRequestKey(dto: CreateContractDto, projectId: string) {
-    const canonicalElements = JSON.stringify(
-      Object.entries(dto.elements ?? {})
-        .filter(([, value]) => typeof value === 'string' && value.trim())
-        .sort(([a], [b]) => a.localeCompare(b)),
-    );
-    const elementsHash = createHash('sha256').update(canonicalElements).digest('hex');
-    const requestKey = dto.idempotencyKey
+  private buildGenerationRequestKey(dto: CreateContractDto, projectId: string, elementsHash: string): string {
+    return dto.idempotencyKey
       ? `contract:idempotency:${dto.idempotencyKey}`
       : `contract:project:${projectId}:template:${dto.templateSlug}:elements:${elementsHash}`;
-    return { requestKey, elementsHash };
   }
 
-  /** 原子 claim：P2002 竞争者读取既有 running/succeeded 记录，不得再 spawn。 */
+  private assertGenerationPayload(
+    run: Pick<ContractGenerationRun, 'projectId' | 'templateSlug' | 'elementsHash'>,
+    projectId: string,
+    templateSlug: string,
+    elementsHash: string,
+  ): void {
+    if (run.projectId !== projectId || run.templateSlug !== templateSlug || run.elementsHash !== elementsHash) {
+      throw new ConflictException('同一生成请求键不能用于不同合同或要素');
+    }
+  }
+
+  /** 项目行锁保护不同请求键的并发启动；失败重试使用 startedAt 隔离旧执行回调。 */
   private async claimGenerationRun(
     projectId: string,
     requestKey: string,
     templateSlug: string,
     elementsHash: string,
-  ): Promise<{ run: any; claimed: boolean }> {
-    try {
-      const run = await this.prisma.contractGenerationRun.create({
-        data: {
-          projectId,
-          requestKey,
-          templateSlug,
-          elementsHash,
-          status: 'running',
-          startedAt: new Date(),
-        },
+    actor: ProjectActor,
+    userMessage?: string,
+  ): Promise<{ run: ContractGenerationRun; claimed: boolean; projectVersion: AiProjectVersion }> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM projects WHERE id = ${projectId} FOR UPDATE`;
+      const project = await tx.project.findUniqueOrThrow({ where: { id: projectId } });
+      this.accessPolicy.assertCan(actor, ProjectAction.SendMessage, project);
+      if (project.kind !== 'contract' || project.route !== 'llm' || project.status === '已取消'
+        || project.reviewStatus === 'review_completed') {
+        throw new ConflictException('工单当前状态不允许生成合同');
+      }
+      const previous = await tx.contractGenerationRun.findUnique({ where: { requestKey } });
+      if (previous) this.assertGenerationPayload(previous, projectId, templateSlug, elementsHash);
+      if (previous && ['queued', 'running', 'succeeded'].includes(previous.status)) {
+        return { run: previous, claimed: false, projectVersion: project };
+      }
+      const active = await tx.contractGenerationRun.findFirst({
+        where: { projectId, status: { in: ['queued', 'running'] } },
       });
-      return { run, claimed: true };
-    } catch (error: any) {
-      if (error?.code !== 'P2002') throw error;
-      const run = await this.prisma.contractGenerationRun.findUnique({ where: { requestKey } });
-      if (!run) throw error;
-      return { run, claimed: false };
+      if (active) return { run: active, claimed: false, projectVersion: project };
+
+      const startedAt = new Date(Math.max(Date.now(), (previous?.startedAt?.getTime() ?? 0) + 1));
+      const data = { status: 'running' as const, startedAt, completedAt: null, errorMessage: null };
+      const run = previous
+        ? await tx.contractGenerationRun.update({ where: { id: previous.id }, data })
+        : await tx.contractGenerationRun.create({ data: { projectId, requestKey, templateSlug, elementsHash, ...data } });
+      const updatedAt = nextProjectVersion(project);
+      const updated = await tx.project.updateMany({
+        where: aiProjectVersionWhere(projectId, project), data: { status: '分析中', isFailed: false, updatedAt },
+      });
+      if (updated.count !== 1) throw new ConflictException('工单状态已变化，未启动合同生成');
+      if (userMessage) {
+        await tx.projectMessage.create({ data: { projectId, role: 'user', text: userMessage } });
+      }
+      return { run, claimed: true, projectVersion: { ...project, status: '分析中' as const, updatedAt } };
+    }).catch((error: unknown) => {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException('生成请求键已被其他工单使用');
+      }
+      throw error;
+    });
+  }
+
+  /** 错误详情不入业务记录；只更新本次仍拥有的运行和项目版本。 */
+  private async settleGenerationAttempt(
+    attempt: { id: string; projectId: string; status: 'running'; startedAt: Date | null },
+    version: AiProjectVersion,
+    status: 'failed' | 'cancelled',
+    errorMessage: string,
+  ): Promise<void> {
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM projects WHERE id = ${attempt.projectId} FOR UPDATE`;
+        const updated = await tx.contractGenerationRun.updateMany({
+          where: attempt, data: { status, completedAt: new Date(), errorMessage },
+        });
+        if (updated.count !== 1) return;
+        const projectUpdated = await tx.project.updateMany({
+          where: aiProjectVersionWhere(attempt.projectId, version),
+          data: { status: '待处理', isFailed: status === 'failed', updatedAt: nextProjectVersion(version) },
+        });
+        if (!projectUpdated.count) {
+          await tx.contractGenerationRun.update({
+            where: { id: attempt.id },
+            data: { status: 'cancelled', errorMessage: '执行上下文已变更，迟到结果未写入' },
+          });
+        }
+      });
+    } catch (error) {
+      this.logger.error(`合同生成终态写入失败：${safeErrorTag(error)}`);
     }
   }
 

@@ -2,6 +2,7 @@ import { ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { describe, expect, it, vi } from 'vitest';
 import { AiLegalResearchSessionService } from '../src/modules/legal-research/ai-legal-research-session.service';
+import { DSH_SESSION_PREFIX } from '../src/common/services/dsh-runtime';
 
 function prismaHarness() {
   const prisma: any = {
@@ -273,7 +274,7 @@ describe('AiLegalResearchSessionService', () => {
         },
       },
     });
-    prisma.consultationRun.findFirst.mockResolvedValue({ dshSessionId: 'dsh-previous' });
+    prisma.consultationRun.findFirst.mockResolvedValue({ dshSessionId: `${DSH_SESSION_PREFIX}previous` });
     const service = sessionService(prisma);
 
     const prepared = await service.prepareTurn({
@@ -289,7 +290,7 @@ describe('AiLegalResearchSessionService', () => {
       conversationId: 'conversation-1',
       contextVersion: 2,
       operation: 'correct',
-      resumeDshSessionId: 'dsh-previous',
+      resumeDshSessionId: `${DSH_SESSION_PREFIX}previous`,
       turnContext: {
         operation: 'correct',
         knownFacts: ['合同于2024年签订'],
@@ -301,6 +302,9 @@ describe('AiLegalResearchSessionService', () => {
     }));
     expect(prisma.projectMessage.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ clientKey: '08d85bd8-beb9-4891-9ed7-dc899690bb80', label: 'correct' }),
+    }));
+    expect(prisma.consultationRun.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ dshSessionId: { startsWith: DSH_SESSION_PREFIX } }),
     }));
   });
 

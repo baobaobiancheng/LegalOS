@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { createHash } from 'crypto';
+import { createHash } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   BaijianCaseSearchResult,
@@ -116,7 +116,6 @@ export class LegalEvidenceRepository {
           title: value.lawName,
           metadata: toJson(metadata),
           content: toJson(value),
-          contentHash: sha256(JSON.stringify(value)),
           contentVerifiedAt: fetchedAt,
           fetchedAt,
           lastVerifiedAt: fetchedAt,
@@ -125,7 +124,7 @@ export class LegalEvidenceRepository {
           title: value.lawName,
           metadata: toJson(metadata),
           content: toJson(value),
-          contentHash: sha256(JSON.stringify(value)),
+          contentHash: null,
           contentVerifiedAt: fetchedAt,
           fetchedAt,
           lastVerifiedAt: fetchedAt,
@@ -168,7 +167,7 @@ export class LegalEvidenceRepository {
 
   private async upsertCaseRecords(tx: Prisma.TransactionClient, value: BaijianCaseSearchResult, fetchedAt: Date) {
     for (const record of value.records) {
-      const externalId = sha256(`${record.sourceName}\u0000${record.sourceId}`);
+      const externalId = createHash('sha256').update(`${record.sourceName}\u0000${record.sourceId}`).digest('hex');
       await tx.legalSourceDocument.upsert({
         where: { source_externalId: { source: record.source, externalId } },
         create: {
@@ -203,9 +202,6 @@ function toJson(value: BaijianNormalizedToolResult | object): Prisma.InputJsonVa
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
 
-function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
 
 function safeError(error: unknown): string {
   const name = error instanceof Error ? error.name : typeof error;

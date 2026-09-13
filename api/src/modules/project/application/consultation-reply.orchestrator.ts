@@ -13,6 +13,7 @@ import {
 import { AuditService } from '../../../common/audit/audit.service';
 import { createHash } from 'node:crypto';
 import { safeErrorTag } from '../../../common/utils/safe-error';
+import { DSH_SESSION_PREFIX } from '../../../common/services/dsh-runtime';
 import {
   AiProjectVersion,
   aiProjectVersionSelect,
@@ -176,7 +177,7 @@ export class ConsultationReplyOrchestrator {
               projectId,
               capability,
               status: 'succeeded',
-              dshSessionId: { not: null },
+              dshSessionId: { startsWith: DSH_SESSION_PREFIX },
               id: { not: runId },
             },
             orderBy: { completedAt: 'desc' },
@@ -389,7 +390,6 @@ export class ConsultationReplyOrchestrator {
               runId,
               capability,
               modelVersion,
-              publicMessage,
               child.__errorCode ?? 'AI_EXECUTION_FAILED',
             );
           } catch (err) {
@@ -403,6 +403,10 @@ export class ConsultationReplyOrchestrator {
             );
           }
         }
+      } catch (error) {
+        // EventEmitter 不观察 async 监听器的 Promise，终态写入失败必须在此收口。
+        rejectCompletion(error);
+        this.logger.error(`AI 完成状态/审计写入失败：${safeErrorTag(error)}`);
       } finally {
         // 串行锁必须在落库完成后才释放，并清理 Map 条目（防长期增长）
         finishTurn();
@@ -422,7 +426,7 @@ export class ConsultationReplyOrchestrator {
           false,
           projectVersion,
         );
-        await this.recordAiOutcome('ai.run.failed', 'failed', projectId, runId, capability, modelVersion, err.message);
+        await this.recordAiOutcome('ai.run.failed', 'failed', projectId, runId, capability, modelVersion);
       } catch (dbErr) {
         this.logger.error(`失败状态更新失败：${safeErrorTag(dbErr)}`);
         await this.settleRunAfterPersistenceError(
@@ -540,7 +544,6 @@ export class ConsultationReplyOrchestrator {
     runId: string | undefined,
     capability: ConsultationCapability,
     modelVersion: string,
-    reason: string,
     reasonCode = 'AI_EXECUTION_FAILED',
   ) {
     if (!runId || !this.audit) return;
@@ -557,7 +560,6 @@ export class ConsultationReplyOrchestrator {
       metadata: {
         capability,
         modelVersion,
-        errorHash: this.audit.digestCanonical(reason),
       },
       retentionClass: 'ai',
     });
@@ -590,7 +592,6 @@ export class ConsultationReplyOrchestrator {
           metadata: {
             capability,
             modelVersion,
-            errorHash: this.audit.digestCanonical(reason),
             phase: 'startup',
           },
           retentionClass: 'ai',

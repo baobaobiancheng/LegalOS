@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, PayloadTooLargeException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DocumentExtractionService } from './document-extraction.service';
+import { normalizeUploadFilename } from '../utils/upload-filename';
 
 /**
  * 咨询附件（2026-08-12 review：DOCX 正文从未交给模型）：
@@ -24,17 +25,6 @@ const MAX_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_TEXT_CHARS = 50_000; // zip bomb / 模型预算防护
 const TTL_MS = 24 * 60 * 60 * 1000;
 
-/** multer 把 Content-Disposition 的 UTF-8 字节按 Latin-1 解释，需还原；
- *  清洗控制字符与路径分隔，防路径穿越。 */
-function decodeFilename(raw: string): string {
-  const decoded = Buffer.from(raw, 'latin1').toString('utf8');
-  const cleaned = decoded
-    .replace(/[\x00-\x1f\x7f]/g, '')
-    .replace(/[\\/]+/g, '_')
-    .trim();
-  return cleaned || 'unnamed';
-}
-
 @Injectable()
 export class ConsultationAttachmentService {
   private readonly logger = new Logger(ConsultationAttachmentService.name);
@@ -47,7 +37,7 @@ export class ConsultationAttachmentService {
   /** 上传并提取：返回附件元数据（不含正文） */
   async upload(file: Express.Multer.File, userId: string): Promise<AttachmentMetadata> {
     // 中文文件名 UTF-8 还原（multer Latin-1 解释 bug）
-    const name = decodeFilename(file.originalname || 'unnamed');
+    const name = normalizeUploadFilename(file.originalname || 'unnamed');
     const lower = name.toLowerCase();
     // 懒清理：本用户过期附件在下次上传时删除
     await this.prisma.consultationAttachment

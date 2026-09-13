@@ -28,6 +28,7 @@ import { AuditService } from '../../common/audit/audit.service';
 import { AuditRequestContext } from '../../common/audit/audit.types';
 import { ContractFileProcessor } from './application/contract-file.processor';
 import { safeErrorTag } from '../../common/utils/safe-error';
+import { normalizeUploadFilename } from '../../common/utils/upload-filename';
 
 /**
  * 合同文件服务（从 ContractService 抽出，2026-08-20 上帝类拆分）。
@@ -60,6 +61,7 @@ export class ContractFileService {
     actor: ProjectActor,
   ) {
     if (!file) throw new BadRequestException('未收到文件');
+    file.originalname = normalizeUploadFilename(file.originalname);
     try {
       return await this.persistUpload(projectId, file, kind, actor);
     } finally {
@@ -110,6 +112,8 @@ export class ContractFileService {
     let record;
     try {
       record = await this.prisma.$transaction(async (tx) => {
+        // 先锁父行，再创建带外键的文件，避免并发上传在共享锁上互相等待升级。
+        await tx.$queryRaw`SELECT id FROM projects WHERE id = ${projectId} FOR UPDATE`;
         const created = await tx.contractFile.create({
           data: {
             projectId,

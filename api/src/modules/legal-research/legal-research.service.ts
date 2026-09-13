@@ -1,6 +1,6 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { Role } from '@prisma/client';
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { BaijianError } from '../../common/baijian/baijian.types';
 import { CachedLegalResearchGateway } from '../../common/baijian/cached-legal-research.gateway';
 import {
@@ -238,7 +238,6 @@ export class LegalResearchService {
     },
   ): Promise<AiSearchExecutionResponse> {
     const correlationId = randomUUID();
-    const queryHash = createHash('sha256').update(query).digest('hex');
     await this.audit.record({
       actor,
       action: 'ai.legal_research.started',
@@ -248,7 +247,6 @@ export class LegalResearchService {
       outcome: 'success',
       request,
       correlationId,
-      metadata: { queryHash },
       retentionClass: 'ai',
     });
 
@@ -285,7 +283,7 @@ export class LegalResearchService {
           verifiedSourceCount: parsed.report.metrics.verifiedSourceCount,
           citedSourceCount: parsed.report.metrics.citedSourceCount,
         },
-        metadata: { queryHash, toolCalls: result.toolCalls.length },
+        metadata: { toolCalls: result.toolCalls.length },
         retentionClass: 'ai',
       });
       return { reportId: result.dshSessionId, report: parsed.report, trace, answer: parsed.answer };
@@ -314,7 +312,7 @@ export class LegalResearchService {
             verifiedSourceCount: fallback.report.metrics.verifiedSourceCount,
             candidateCount: fallback.report.metrics.candidateCount,
           },
-          metadata: { queryHash, toolCalls: fallbackResult.toolCalls.length },
+          metadata: { toolCalls: fallbackResult.toolCalls.length },
           retentionClass: 'ai',
         });
         return {
@@ -336,7 +334,6 @@ export class LegalResearchService {
         reasonCode,
         request,
         correlationId,
-        metadata: { queryHash },
         retentionClass: 'ai',
       });
       throw new ServiceUnavailableException({

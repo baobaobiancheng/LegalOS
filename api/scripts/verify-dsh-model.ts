@@ -2,9 +2,6 @@ import 'dotenv/config';
 import { ConfigService } from '@nestjs/config';
 import { AiExecutionQueueService } from '../src/common/services/ai-execution-queue.service';
 import { DshExecutionHandle, DshService } from '../src/common/services/dsh.service';
-import { DshBaijianToolsService } from '../src/common/services/dsh-baijian-tools.service';
-import { BaijianMcpClientService } from '../src/common/baijian/baijian-mcp-client.service';
-import { BaijianResultNormalizer } from '../src/common/baijian/baijian-result.normalizer';
 
 async function main() {
   if (!process.env.DSH_LLM_API_KEY && !process.env.LLM_API_KEY && !process.env.CODEX_API_KEY) {
@@ -12,11 +9,10 @@ async function main() {
   }
   process.env.AI_EXECUTION_ENABLED = 'true';
   const config = new ConfigService(process.env);
-  const baijian = new BaijianMcpClientService(config, new BaijianResultNormalizer());
   const service = new DshService(
     config,
     new AiExecutionQueueService(config),
-    new DshBaijianToolsService(baijian),
+    { createDefinitions: async () => { throw new Error('模型闸门不应请求法律工具'); } },
   );
   try {
     const handle = await service.executeStream(

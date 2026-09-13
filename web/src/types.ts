@@ -87,6 +87,7 @@ export type ProjectDetail = Omit<ProjectListItem, 'isFailed' | 'creator' | 'owne
   files?: ContractFile[]
   messages: MessageDto[]
   events: EventDto[]
+  history?: { beforeMessageId: string | null; beforeEventId: string | null }
 }
 
 export type UserBrief = {

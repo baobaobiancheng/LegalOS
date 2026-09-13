@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { RiskLevel } from '@prisma/client';
 import { OUTBOX_EVENT_DINGTALK_GROUP_CREATE, dingtalkGroupOutboxDedupKey } from './create-project.use-case';
@@ -31,8 +31,6 @@ export const ESCALATE_DEDUP_PREFIX = 'project';
 
 @Injectable()
 export class EscalateProjectToLegalUseCase {
-  private readonly logger = new Logger(EscalateProjectToLegalUseCase.name);
-
   constructor(private readonly prisma: PrismaService) {}
 
   /**
@@ -41,9 +39,12 @@ export class EscalateProjectToLegalUseCase {
   async execute(cmd: EscalateToLegalCommand): Promise<{ upgraded: boolean; project: any }> {
     const existing = await this.prisma.project.findUnique({
       where: { id: cmd.projectId },
-      select: { route: true, status: true, legalBpId: true, ownerId: true },
+      select: { route: true, status: true, reviewStatus: true, legalBpId: true, ownerId: true },
     });
-    if (!existing) throw new Error(`工单不存在：${cmd.projectId}`);
+    if (!existing) throw new NotFoundException('工单不存在');
+    if (existing.status === '已取消' || existing.reviewStatus === 'review_completed') {
+      throw new ConflictException('工单已取消或人工办结，不能提交审核');
+    }
     if (existing.route === 'legalbp') {
       return { upgraded: false, project: existing };
     }
@@ -58,7 +59,7 @@ export class EscalateProjectToLegalUseCase {
       }
       if (cmd.ownerId) await requireActiveLegalAssignee(tx, cmd.ownerId);
 
-      // 条件更新：仅 route=llm 的工单可升级（并发防护，重复请求 count=0 → 幂等返回）
+      // 状态条件与更新原子执行，避免并发取消被后到的升级请求覆盖。
       const data: Record<string, unknown> = { route: 'legalbp' };
       if (cmd.status) data.status = cmd.status;
       if (cmd.risk) data.risk = cmd.risk;
@@ -67,15 +68,19 @@ export class EscalateProjectToLegalUseCase {
       if (cmd.ownerId !== undefined) data.ownerId = cmd.ownerId;
       else if (matchedBpId) data.ownerId = matchedBpId;
       const updated = await tx.project.updateMany({
-        where: { id: cmd.projectId, route: 'llm' },
+        where: {
+          id: cmd.projectId, route: 'llm', status: { not: '已取消' },
+          OR: [{ reviewStatus: null }, { reviewStatus: { not: 'review_completed' } }],
+        },
         data: data as any,
       });
       if (updated.count === 0) {
-        // 已被并发升级 → 读取当前状态幂等返回
-        return {
-          upgraded: false,
-          project: await tx.project.findUnique({ where: { id: cmd.projectId } }),
-        };
+        const project = await tx.project.findUnique({ where: { id: cmd.projectId } });
+        if (!project) throw new NotFoundException('工单不存在');
+        if (project.status === '已取消' || project.reviewStatus === 'review_completed') {
+          throw new ConflictException('工单已取消或人工办结，不能提交审核');
+        }
+        return { upgraded: false, project };
       }
       for (const text of cmd.eventTexts ?? []) {
         await tx.projectEvent.create({ data: { projectId: cmd.projectId, text } });
@@ -100,7 +105,7 @@ export class EscalateProjectToLegalUseCase {
         upgraded: true,
         project: await tx.project.findUnique({ where: { id: cmd.projectId } }),
       };
-    });
+    }, { isolationLevel: 'ReadCommitted' }); // count=0 后重读必须看见刚提交的取消/办结状态。
 
     return result;
   }

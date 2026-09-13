@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { sendConsultSSE } from '../../common/utils/sse';
+import { withResponseAbort } from '../../common/utils/response-abort';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ProjectService } from './project.service';
@@ -106,9 +107,16 @@ export class ProjectController {
     @Param('id') id: string,
     @CurrentUser('id') userId: string,
     @CurrentUser('role') role: Role,
+    @Query('beforeMessageId') beforeMessageId?: string,
+    @Query('beforeEventId') beforeEventId?: string,
   ) {
+    for (const cursor of [beforeMessageId, beforeEventId]) {
+      if (cursor !== undefined && (typeof cursor !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(cursor))) {
+        throw new BadRequestException('历史游标格式无效');
+      }
+    }
     const actor: ProjectActor = { id: userId, role };
-    return this.projectService.findOne(id, actor);
+    return this.projectService.findOne(id, actor, { beforeMessageId, beforeEventId });
   }
 
   /** 更新工单 */
@@ -149,16 +157,18 @@ export class ProjectController {
     @Res() res: Response,
   ) {
     const actor: ProjectActor = { id: userId, role };
-    const abort = new AbortController();
-    const result = await this.projectService.createMessage(id, dto, actor, abort.signal);
+    return withResponseAbort(res, async (abort) => {
+      const result = await this.projectService.createMessage(id, dto, actor, abort.signal);
+      if (abort.signal.aborted || res.destroyed) return;
 
-    if (result.stream) {
-      // P2 llm 路由 → SSE 流式推送（有身份协议：runId/seq；completion 门控 message_end 晚于落库）
-      sendConsultSSE(res, result.stream, { projectId: id }, () => abort.abort(), result.completion);
-    } else {
-      // P1/P0 非流式 → 普通 JSON 响应
-      res.json(result.message);
-    }
+      if (result.stream) {
+        // P2 llm 路由 → SSE 流式推送（有身份协议：runId/seq；completion 门控 message_end 晚于落库）
+        sendConsultSSE(res, result.stream, { projectId: id }, () => abort.abort(), result.completion);
+      } else {
+        // P1/P0 非流式 → 普通 JSON 响应
+        res.json(result.message);
+      }
+    });
   }
 
   /** 用户申请升级人工处理（review 2026-08-12 P0：独立命令接口，不启动模型/不写用户消息） */
