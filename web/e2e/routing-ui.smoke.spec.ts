@@ -8,6 +8,8 @@ async function authenticate(page: Page, role = 'admin') {
 }
 
 test('职责目录支持搜索、详情切换和应用确认，不请求旧专业标签', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 1366, height: 768 });
   await authenticate(page);
   const requested: string[] = [];
   let applyCount = 0;
@@ -18,10 +20,11 @@ test('职责目录支持搜索、详情切换和应用确认，不请求旧专�
     if (path.endsWith('/failures')) return route.fulfill({ json: { noGroup: 0 } });
     if (path.endsWith('/last-sync')) return route.fulfill({ json: null });
     if (path.endsWith('/apply')) { applyCount++; return route.fulfill({ json: { applied: 1, blocked: 10 } }); }
-    if (path.endsWith('/bp-responsibilities')) return route.fulfill({ json: LEGAL_RESPONSIBILITIES.map(person => ({
+    if (path.endsWith('/bp-responsibilities')) return route.fulfill({ json: LEGAL_RESPONSIBILITIES.map((person, personIndex) => ({
       ...person, scopes: person.scopes.map((scope, i) => ({ ...scope,
-        state: applyCount && i === 0 ? 'active' : 'blocked',
-        issue: applyCount && i === 0 ? null : '请同步钉钉通讯录并核对部门 ID/名称',
+        state: applyCount && personIndex === 0 && i === 0 ? 'active' : 'blocked',
+        issueCode: applyCount && personIndex === 0 && i === 0 ? null : 'DEPARTMENT_NOT_SYNCED',
+        issue: applyCount && personIndex === 0 && i === 0 ? null : '职责范围已记录。系统尚无该部门的有效组织记录，请同步钉钉通讯录，无需重复填写职责。',
       })),
     })) });
     return route.fulfill({ status: 404, json: { error: 'Unexpected request' } });
@@ -30,9 +33,24 @@ test('职责目录支持搜索、详情切换和应用确认，不请求旧专�
   await page.getByRole('button', { name: '分配与路由', exact: true }).click();
   const detail = page.getByRole('article', { name: '法务职责详情' });
   await expect(detail.getByRole('heading', { name: '彭宇欣', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: /李潇潇.*启用/ }).click();
+  // Check viewport visibility, not just DOM visibility: the old hero pushed four names below the fold.
+  const people = page.getByRole('navigation', { name: '选择法务职责' });
+  for (const viewport of [{ width: 1366, height: 768 }, { width: 1280, height: 720 }, { width: 1024, height: 768 }, { width: 390, height: 844 }, { width: 320, height: 740 }]) {
+    await page.setViewportSize(viewport);
+    for (const person of LEGAL_RESPONSIBILITIES) {
+      await expect(people.getByRole('button', { name: new RegExp(`^${person.name}`) })).toBeInViewport({ ratio: 1 });
+    }
+    expect(await people.locator('.people-list').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await expect.poll(() => page.locator('.members-page').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  }
+  await page.screenshot({ path: 'test-results/routing-small-mobile.png', fullPage: true });
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await people.getByRole('button', { name: /^李潇潇/ }).click();
   await expect(detail.getByText('BaaS BG', { exact: true })).toBeVisible();
   await expect(detail.getByText('生态合作部', { exact: true }).last()).toBeVisible();
+  await expect(detail.getByText('待同步组织', { exact: true })).toHaveCount(2);
+  await expect(page.getByText('待完善', { exact: true })).toHaveCount(0);
+  await page.screenshot({ path: 'test-results/routing-desktop.png', fullPage: true });
   await page.getByRole('searchbox', { name: '搜索法务职责' }).fill('不存在的人员');
   await expect(page.getByText('未找到匹配的职责')).toBeVisible();
   await page.getByRole('searchbox', { name: '搜索法务职责' }).fill('华西南');
@@ -48,13 +66,13 @@ test('职责目录支持搜索、详情切换和应用确认，不请求旧专�
   expect(applyCount).toBe(1);
   expect(requested.some(path => path.includes('bp-domains'))).toBe(false);
   await expect(page.getByText('法务专业领域标签')).toHaveCount(0);
-  await page.getByRole('button', { name: /彭宇欣.*启用/ }).click();
+  await people.getByRole('button', { name: /^彭宇欣/ }).click();
   await expect(detail.getByRole('heading', { name: '彭宇欣', exact: true })).toBeVisible();
-  await page.screenshot({ path: 'test-results/routing-desktop.png', fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(detail.getByRole('heading', { name: '彭宇欣', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: 'test-results/routing-mobile.png', fullPage: true });
+  await expect.poll(() => page.locator('.members-page').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
 });
 
 test('咨询默认自动识别，键盘仍可手动指定 AI 搜法', async ({ page }) => {

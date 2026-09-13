@@ -102,4 +102,28 @@ describe('职责清单与管理入口', () => {
     db.user.findMany.mockResolvedValue([]);
     expect((await service.preview())[2].scopes.every(scope => scope.state === 'blocked')).toBe(true);
   });
+  it('已给定职责与系统关联分开：区分组织未同步、部门不符和账号未就绪', async () => {
+    const person = LEGAL_RESPONSIBILITIES[2];
+    const db: any = {
+      user: { findMany: vi.fn().mockResolvedValue([{ id: 'li', casUsername: person.casUsername, displayName: person.name, role: 'legal_bp', isActive: true, dingtalkUserId: 'dt-li' }]) },
+      dingTalkDepartment: { findMany: vi.fn().mockResolvedValue([]) },
+      legalAssignmentRule: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+    const service = new LegalResponsibilityService(db, {} as any);
+    const missingOrg = (await service.preview())[2];
+    expect(missingOrg.description).toBe(person.description);
+    expect(missingOrg.scopes[0]).toMatchObject({ ...person.scopes[0], state: 'blocked', issueCode: 'DEPARTMENT_NOT_SYNCED' });
+    expect(missingOrg.scopes[0].issue).toContain('无需重复填写职责');
+
+    db.dingTalkDepartment.findMany.mockResolvedValue([{ ...person.scopes[0], name: '改名后的部门' }, person.scopes[1]]);
+    expect((await service.preview())[2].scopes.map(scope => scope.issueCode)).toEqual(['DEPARTMENT_MISMATCH', null]);
+    db.user.findMany.mockResolvedValue([]);
+    expect((await service.preview())[2].scopes.every(scope => scope.issueCode === 'ACCOUNT_NOT_READY')).toBe(true);
+
+    db.user.findMany.mockResolvedValue([{ id: 'li', casUsername: person.casUsername, displayName: person.name, role: 'legal_bp', isActive: true, dingtalkUserId: 'dt-li' }]);
+    db.dingTalkDepartment.findMany.mockResolvedValue(person.scopes);
+    db.legalAssignmentRule.findMany.mockResolvedValue([{ id: `${person.key}:${person.scopes[0].id}`, userId: 'li', departmentId: person.scopes[0].id, isActive: true }]);
+    expect((await service.preview())[2].scopes.map(scope => ({ state: scope.state, issueCode: scope.issueCode })))
+      .toEqual([{ state: 'active', issueCode: null }, { state: 'ready', issueCode: null }]);
+  });
 });

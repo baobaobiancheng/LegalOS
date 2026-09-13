@@ -397,6 +397,7 @@ onBeforeUnmount(() => animationContext?.revert())
     <main
       ref="pageRoot"
       class="members-page"
+      :class="{ 'members-page--routing': activeTab === 'bp' }"
     >
       <p class="members-breadcrumb">
         管理工作台 <span>/</span> 成员管理
@@ -414,6 +415,7 @@ onBeforeUnmount(() => animationContext?.revert())
           <button
             class="sync-button"
             type="button"
+            :aria-label="syncing ? '正在同步钉钉通讯录' : '同步钉钉通讯录'"
             :disabled="syncing"
             @click="doSync"
           >
@@ -803,4 +805,17 @@ onBeforeUnmount(() => animationContext?.revert())
 @media(max-width:1100px){.members-page{padding-right:26px;padding-left:26px}.last-sync{display:none}.member-search{width:260px}.sync-summary-card{grid-template-columns:repeat(2,1fr)}.sync-summary-card>div:first-child{grid-column:1/-1}.sync-summary-card>div:nth-child(2)::before{display:none}}
 @media(max-width:760px){.admin-sidebar{width:78px}.admin-brand{min-height:96px;padding:22px 16px}.admin-logo{width:46px}.admin-brand-copy,.admin-nav-label,.admin-nav button:not(.active),.admin-nav button.active{font-size:0}.admin-nav button{justify-content:center;padding:0}.admin-nav svg{width:21px;height:21px}.admin-user{justify-content:center;margin:0 12px;padding-right:0;padding-left:0}.admin-user-copy,.admin-logout{display:none}.members-page{margin-left:78px;padding:22px 18px 30px}.members-heading h1{font-size:32px}.members-heading p{display:none}.sync-button{width:44px;padding:0;justify-content:center;font-size:0}.members-stats{grid-template-columns:repeat(2,1fr)}.member-stat:nth-child(3)::before{display:none}.member-tabs{gap:16px;overflow-x:auto}.member-tabs button{white-space:nowrap}.member-toolbar{align-items:stretch;flex-direction:column;padding:14px 0}.member-search{width:100%}.last-sync{display:block}.member-pagination{align-items:flex-start;flex-direction:column;gap:10px}.sync-summary-card{grid-template-columns:1fr}.sync-summary-card>div:first-child{grid-column:auto}.sync-summary-card>div+div::before{display:none}}
 @media(max-width:760px){.heading-actions{gap:7px}.provision-button{height:44px;padding:0 10px;font-size:11px}.provision-actions{align-items:stretch;flex-wrap:wrap}.provision-actions>span{width:100%;margin:0}.provision-actions button{flex:1}}
+/* The routing directory is the primary workspace, not a second hero below member statistics. */
+.members-page--routing { padding-top: 20px; padding-bottom: 20px; }
+.members-page--routing .members-breadcrumb { display: none; }
+.members-page--routing .members-heading { min-height: 44px; align-items: center; }
+.members-page--routing .members-heading h1 { margin-bottom: 4px; font-size: 26px; letter-spacing: -.025em; }
+.members-page--routing .member-tabs { height: 44px; margin-top: 12px; gap: 28px; }
+.members-page--routing .member-tabs button { height: 44px; }
+@media (max-width: 760px) {
+  .members-page--routing { padding: 16px 12px; }
+  .members-page--routing .members-heading { gap: 12px; flex-wrap: wrap; }
+  .members-page--routing .members-heading h1 { font-size: 24px; }
+  .members-page--routing .member-tabs { gap: 14px; }
+}
 </style>

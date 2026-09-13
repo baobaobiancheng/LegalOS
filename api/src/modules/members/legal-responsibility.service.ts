@@ -5,6 +5,12 @@ import { AuditService } from '../../common/audit/audit.service';
 import { AuditActor, AuditRequestContext } from '../../common/audit/audit.types';
 import { LEGAL_RESPONSIBILITIES } from './legal-responsibility.catalog';
 
+const SCOPE_ISSUES = {
+  ACCOUNT_NOT_READY: '职责范围已记录。请在系统用户中核验该法务的 CAS 账号、姓名、启用状态、普通法务角色及钉钉绑定。',
+  DEPARTMENT_NOT_SYNCED: '职责范围已记录。系统尚无该部门的有效组织记录，请同步钉钉通讯录，无需重复填写职责。',
+  DEPARTMENT_MISMATCH: '职责范围已记录。已同步部门的名称与配置不一致，请核对组织变更，不会按相似名称自动扩大范围。',
+} as const;
+
 @Injectable()
 export class LegalResponsibilityService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
@@ -30,10 +36,12 @@ export class LegalResponsibilityService {
       return { ...person, scopes: person.scopes.map(scope => {
         const id = `${person.key}:${scope.id}`;
         const department = departments.find(department => department.id === scope.id);
-        const issue = !userReady ? '需唯一、启用、绑定钉钉的 CAS 普通法务账号，且姓名一致'
-          : department?.name !== scope.name ? '请同步钉钉通讯录并核对部门 ID/名称' : null;
+        const issueCode = !userReady ? 'ACCOUNT_NOT_READY'
+          : !department ? 'DEPARTMENT_NOT_SYNCED'
+            : department.name !== scope.name ? 'DEPARTMENT_MISMATCH' : null;
+        const issue = issueCode ? SCOPE_ISSUES[issueCode] : null;
         const active = rules.some(rule => rule.id === id && rule.isActive && rule.userId === user?.id && rule.departmentId === scope.id);
-        return { ...scope, ruleId: id, userId: user?.id ?? null, issue, state: issue ? 'blocked' : active ? 'active' : 'ready' };
+        return { ...scope, ruleId: id, userId: user?.id ?? null, issueCode, issue, state: issue ? 'blocked' : active ? 'active' : 'ready' };
       }) };
     });
   }
