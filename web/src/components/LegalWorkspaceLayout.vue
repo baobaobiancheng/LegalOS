@@ -7,14 +7,19 @@ import UserAvatar from './UserAvatar.vue'
 import { Role, ROLE_LABEL } from '../types'
 
 const props = defineProps<{
-  activeKey: 'projects' | 'research' | 'skills'
+  activeKey: 'dashboard' | 'members' | 'projects' | 'research' | 'skills'
 }>()
 
 const router = useRouter()
 const auth = useAuthStore()
 const roleLabel = computed(() => auth.user ? ROLE_LABEL[auth.user.role] : '未登录')
 
-const navItems = [
+const isAdmin = computed(() => auth.user?.role === Role.ADMIN)
+const managementItems = [
+  { key: 'dashboard', label: '数据看板', path: '/admin/dashboard', icon: '<path d="M4 4v16h16M8 16v-5m5 5V7m5 9v-7"/>' },
+  { key: 'members', label: '成员与职责', path: '/admin/members', icon: '<circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6m2 5a5 5 0 0 1 3 4v2"/>' },
+]
+const legalItems = [
   {
     key: 'projects' as const,
     label: '工单管理',
@@ -35,6 +40,10 @@ const navItems = [
   },
 ]
 
+const navGroups = computed(() => isAdmin.value
+  ? [{ label: '管理工作台', items: [managementItems[0]!, legalItems[0]!, managementItems[1]!] }, { label: '法务工具', items: legalItems.slice(1) }]
+  : [{ label: '法务工作台', items: legalItems }])
+
 async function handleLogout() {
   await auth.logout()
   await router.replace('/login')
@@ -46,8 +55,8 @@ async function handleLogout() {
     <aside class="legal-sidebar">
       <button
         class="workspace-brand"
-        aria-label="返回工单管理"
-        @click="router.push('/legal/projects')"
+        :aria-label="isAdmin ? '返回数据看板' : '返回工单管理'"
+        @click="router.push(isAdmin ? '/admin/dashboard' : '/legal/projects')"
       >
         <span class="workspace-logo">
           <img
@@ -63,11 +72,14 @@ async function handleLogout() {
 
       <div class="workspace-navigation">
         <nav
+          v-for="group in navGroups"
+          :key="group.label"
           class="workspace-nav"
-          aria-label="法务工作台导航"
+          :aria-label="`${group.label}导航`"
         >
+          <span class="workspace-nav-caption">{{ group.label }}</span>
           <button
-            v-for="item in navItems"
+            v-for="item in group.items"
             :key="item.key"
             :class="['workspace-nav-item', { active: props.activeKey === item.key }]"
             :aria-current="props.activeKey === item.key ? 'page' : undefined"
@@ -88,79 +100,6 @@ async function handleLogout() {
             <span>{{ item.label }}</span>
           </button>
         </nav>
-
-        <nav
-          v-if="auth.user?.role === Role.ADMIN"
-          class="workspace-admin-nav"
-          aria-label="系统管理导航"
-        >
-          <span class="workspace-nav-caption">系统管理</span>
-          <RouterLink
-            class="workspace-nav-item"
-            to="/admin/dashboard"
-            aria-label="数据看板"
-            title="数据看板"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.7"
-              aria-hidden="true"
-            ><path d="M4 4v16h16M8 16v-5m5 5V7m5 9v-7" /></svg>
-            <span>数据看板</span>
-          </RouterLink>
-          <RouterLink
-            class="workspace-nav-item"
-            to="/admin/members"
-            aria-label="成员与职责匹配"
-            title="成员与职责匹配"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.7"
-              aria-hidden="true"
-            ><circle
-              cx="9"
-              cy="7"
-              r="3"
-            /><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6m2 5a5 5 0 0 1 3 4v2" /></svg>
-            <span>成员与职责匹配</span>
-          </RouterLink>
-        </nav>
-
-        <div class="workspace-secondary-nav">
-          <button disabled>
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.7"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            ><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" /></svg>
-            <span>知识库</span>
-          </button>
-          <button disabled>
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.7"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            ><circle
-              cx="12"
-              cy="8"
-              r="4"
-            /><path d="M4 21c0-4 4-6 8-6s8 2 8 6" /></svg>
-            <span>数字分身</span>
-          </button>
-        </div>
       </div>
 
       <div class="workspace-user">
@@ -208,7 +147,7 @@ async function handleLogout() {
   --workspace-secondary: #374151;
   --workspace-tertiary: #6B7280;
   --workspace-border: #E5E7EB;
-  min-height: 100vh;
+  min-height: 100dvh;
   background: var(--workspace-canvas);
   color: var(--workspace-text);
   font-family: Outfit, Geist, "Noto Sans SC", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif;
@@ -281,12 +220,11 @@ async function handleLogout() {
   gap: 2px;
 }
 
-.workspace-nav-item,
-.workspace-secondary-nav button {
+.workspace-nav-item {
   position: relative;
   display: flex;
   width: 100%;
-  min-height: 68px;
+  min-height: 56px;
   padding: 0 30px 0 38px;
   align-items: center;
   gap: 16px;
@@ -299,8 +237,7 @@ async function handleLogout() {
   text-align: left;
 }
 
-.workspace-nav-item svg,
-.workspace-secondary-nav svg {
+.workspace-nav-item svg {
   width: 21px;
   height: 21px;
   flex: 0 0 auto;
@@ -314,9 +251,8 @@ async function handleLogout() {
   content: "";
 }
 
-.workspace-admin-nav { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--workspace-border); }
+.workspace-nav + .workspace-nav { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--workspace-border); }
 .workspace-nav-caption { display: block; padding: 0 38px 8px; color: var(--workspace-tertiary); font-size: 11px; letter-spacing: .08em; }
-.workspace-admin-nav .workspace-nav-item { min-height: 52px; font-size: 14px; text-decoration: none; }
 .workspace-brand, .workspace-user { flex-shrink: 0; }
 .workspace-navigation { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow-y: auto; }
 .workspace-navigation > * { flex-shrink: 0; }
@@ -335,22 +271,6 @@ async function handleLogout() {
 
 .workspace-nav-item.active::before {
   background: var(--workspace-blue);
-}
-
-.workspace-secondary-nav {
-  display: grid;
-  margin: auto 24px 0;
-  padding: 22px 0 18px;
-  gap: 0;
-  border-top: 1px solid var(--workspace-border);
-}
-
-.workspace-secondary-nav button {
-  min-height: 58px;
-  padding: 0 12px;
-  color: #61708A;
-  cursor: default;
-  opacity: 1;
 }
 
 .workspace-user {
@@ -437,12 +357,9 @@ async function handleLogout() {
   .workspace-brand-copy,
   .workspace-nav-caption,
   .workspace-nav-item span,
-  .workspace-secondary-nav span,
   .workspace-user-copy,
   .workspace-logout { display: none; }
-  .workspace-nav-item,
-  .workspace-secondary-nav button { justify-content: center; padding: 0; }
-  .workspace-secondary-nav { margin-right: 12px; margin-left: 12px; }
+  .workspace-nav-item { justify-content: center; padding: 0; }
   .workspace-user { justify-content: center; margin: 0 12px; padding-right: 0; padding-left: 0; }
   .legal-workspace-main { margin-left: 78px; }
 }
