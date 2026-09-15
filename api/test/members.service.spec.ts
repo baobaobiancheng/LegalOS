@@ -5,7 +5,6 @@ import { MembersService } from '../src/modules/members/members.service';
  * 管理端成员管理单测（/review 2026-08-05 补齐）：
  * - syncContacts：快照落库 + 姓名自动绑定 + 重名跳过
  * - bind/unbind：快照存在性校验
- * - setBpDomain：白名单校验 + 非法务角色拒绝
  * - failures：route=legalbp 且无群（含合同类，口径修正）
  */
 
@@ -17,8 +16,6 @@ describe('MembersService', () => {
   beforeEach(() => {
     prisma = {
       dingTalkContact: {
-        upsert: vi.fn().mockResolvedValue({ id: 'c' }),
-        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         findUnique: vi.fn(),
         findMany: vi.fn(),
       },
@@ -42,8 +39,8 @@ describe('MembersService', () => {
         findFirst: vi.fn(),
         create: vi.fn(),
       },
-      bpDomainMap: { findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn(), deleteMany: vi.fn() },
       project: { count: vi.fn() },
+      $executeRaw: vi.fn().mockResolvedValue(1),
       $queryRawUnsafe: vi.fn().mockResolvedValue([{ id: 'batch-1' }]),
       $transaction: vi.fn(async (arg: any) => {
         if (typeof arg === 'function') return arg(prisma);
@@ -86,8 +83,13 @@ describe('MembersService', () => {
 
     // 批量 staging（一次 createMany，不逐条）
     expect(prisma.dingTalkContactStaging.createMany).toHaveBeenCalledTimes(1);
-    // 软失效：updateMany 置 isActive=false（P1-07 不再硬删除）
-    expect(prisma.dingTalkContact.updateMany).toHaveBeenCalled();
+    // 单测覆盖生产批量 SQL 路径：合并、软失效、激活均绑定当前批次。
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(3);
+    const queries = prisma.$executeRaw.mock.calls;
+    expect(queries[0][0].join('?')).toContain('INSERT INTO dingtalk_contacts');
+    expect(queries[1][0].join('?')).toContain('NOT EXISTS');
+    expect(queries[1].slice(1)).toEqual(['batch-1', 'batch-1']);
+    expect(queries[2][0].join('?')).toContain('SET is_active = TRUE');
     // 彭宇欣唯一匹配 → 自动绑定
     expect(prisma.user.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -131,7 +133,7 @@ describe('MembersService', () => {
       batchId: 'batch-a',
       error: '同步结果已被更新批次取代',
     });
-    expect(prisma.dingTalkContact.upsert).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
     expect(prisma.dingTalkSyncBatch.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 'batch-a' },
       data: expect.objectContaining({ status: 'failed' }),
@@ -453,26 +455,6 @@ describe('MembersService', () => {
       }),
       metadata: { dingtalkIdentityHash: 'ding-hash' },
     }), prisma);
-  });
-
-  it('setBpDomain：非白名单领域拒绝', async () => {
-    await expect(service.setBpDomain('u-1', '税务咨询', true)).rejects.toThrow('不在白名单');
-    expect(prisma.bpDomainMap.upsert).not.toHaveBeenCalled();
-  });
-
-  it('setBpDomain：非法务角色拒绝', async () => {
-    prisma.user.findUnique.mockResolvedValue({ id: 'u-biz', role: 'business' });
-    await expect(service.setBpDomain('u-biz', '合规法务', true)).rejects.toThrow('仅法务 BP');
-  });
-
-  it('setBpDomain：法务 BP 勾选/取消映射', async () => {
-    prisma.user.findUnique.mockResolvedValue({ id: 'u-bp', role: 'legal_bp' });
-    await service.setBpDomain('u-bp', '合规法务', true);
-    expect(prisma.bpDomainMap.upsert).toHaveBeenCalled();
-    await service.setBpDomain('u-bp', '合规法务', false);
-    expect(prisma.bpDomainMap.deleteMany).toHaveBeenCalledWith({
-      where: { userId: 'u-bp', domain: '合规法务' },
-    });
   });
 
   it('syncContacts：联系人移出通讯录(软失效) → 回收部门 + 重算角色（review P1）', async () => {

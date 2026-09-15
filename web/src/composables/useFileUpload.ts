@@ -28,6 +28,12 @@ export interface AttachmentMetadata {
   warning: string | null
 }
 
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
 export function useFileUpload() {
   const files = ref<AttachedFile[]>([])
   const fileInput = ref<HTMLInputElement | null>(null)
@@ -36,12 +42,6 @@ export function useFileUpload() {
 
   const removeFile = (fid: string) => {
     files.value = files.value.filter(f => f.id !== fid)
-  }
-
-  const formatSize = (bytes: number): string => {
-    if (bytes < 1024) return bytes + ' B'
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
   }
 
   /** 就绪可发送的附件 id */
@@ -90,15 +90,10 @@ export function useFileUpload() {
     target.value = ''
   }
 
-  /** 用户消息只显示提问文字；附件正文由后端注入（不再拼 Base64/文件名进提示词）。
-   *  保留 files 形参以兼容既有调用点（ConsultView/RecordDetailView）。 */
-  const buildFullInput = (text: string, _attached?: AttachedFile[]): string => text
-  const buildDisplayText = (text: string, _attached?: AttachedFile[]): string => text
-
   const clearFiles = () => { files.value = [] }
 
   return {
     files, fileInput, triggerFilePick, removeFile, formatSize,
-    readyIds, hasPending, handleFiles, buildFullInput, buildDisplayText, clearFiles,
+    readyIds, hasPending, handleFiles, clearFiles,
   }
 }

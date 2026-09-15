@@ -4,7 +4,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { gsap } from 'gsap'
 import { request, RequestError } from '../../api/client'
 import { requestStreamOrJson, type ConsultStreamEvent } from '../../api/sse'
-import { useFileUpload } from '../../composables/useFileUpload'
+import { formatSize } from '../../composables/useFileUpload'
 import type { AttachedFile } from '../../composables/useFileUpload'
 import { useSmoothStream } from '../../composables/useSmoothStream'
 import MarkdownContent from '../../components/MarkdownContent.vue'
@@ -17,7 +17,6 @@ import ProjectHistoryButton from '../../components/ProjectHistoryButton.vue'
 import { prependProjectHistory } from '../../utils/project-history'
 import type { AiLawResearchReportV1, ProjectDetail } from '../../types'
 
-const { buildFullInput, buildDisplayText, formatSize } = useFileUpload()
 const pageRoot = ref<HTMLElement | null>(null)
 
 const sending = ref(false)
@@ -246,8 +245,6 @@ const handleSend = async (text: string, files: AttachedFile[], capability = sele
   const gen = sessionGen // 新建会话后丢弃过期响应
   lastSubmission.value = { text, files, capability }
   runningCapability.value = capability
-  const fullInput = buildFullInput(text, files)
-  const displayText = buildDisplayText(text, files)
   // 首条消息：建单已落库,后续 /messages 只启动首轮回答(firstReply=true,不重复写消息/评估)
   const firstReply = !projectId.value
   // 客户端幂等键：同一次发送若被重复提交，后端按 key 去重，只启动一次 AI
@@ -260,7 +257,7 @@ const handleSend = async (text: string, files: AttachedFile[], capability = sele
 
   sending.value = true
   lastError.value = null
-  messages.value.push({ role: 'user', text: displayText, _files: files, _key: genIdempotencyKey() })
+  messages.value.push({ role: 'user', text, _files: files, _key: genIdempotencyKey() })
   forceScrollBottom()
 
   if (!projectId.value) {
@@ -275,7 +272,7 @@ const handleSend = async (text: string, files: AttachedFile[], capability = sele
         body: {
           kind: 'consult',
           title: text.slice(0, 50) || '文件咨询',
-          input: fullInput,
+          input: text,
           // P2d：建单也带幂等键——建单成功但响应丢失时重试不会创建第二个工单
           idempotencyKey,
           // 附件 id（正文由后端注入；2026-08-12）
@@ -326,7 +323,7 @@ const handleSend = async (text: string, files: AttachedFile[], capability = sele
         timeoutMs: 45_000,
         timeoutCode: 'SSE_HEADER_TIMEOUT',
         signal: abortCtrl.signal,
-        body: { text: fullInput, firstReply, idempotencyKey, attachmentIds, capability },
+        body: { text, firstReply, idempotencyKey, attachmentIds, capability },
       }, (d) => {
         // onEvent 只收 SSE 事件；非流式 JSON 响应不会走到这里
         if (!('type' in d)) return

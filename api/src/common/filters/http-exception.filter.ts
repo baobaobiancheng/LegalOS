@@ -158,7 +158,6 @@ function classifySensitiveAction(method: string, rawPath: string): string | null
   if (method === 'POST' && /\/admin\/members\/provision$/.test(path)) return 'member.provision';
   if (method === 'POST' && /\/admin\/members\/unbind$/.test(path)) return 'member.unbind';
   if (method === 'POST' && /\/admin\/members\/sync$/.test(path)) return 'member.directory.sync';
-  if (method === 'PUT' && /\/admin\/members\/bp-domains$/.test(path)) return 'member.bp_scope.change';
   if (method === 'PATCH' && /\/projects\/[^/]+$/.test(path)) return 'project.update';
   if (method === 'POST' && /\/projects\/[^/]+\/(transfer|cancel|reply|escalate)$/.test(path)) {
     return `project.${path.split('/').pop()}`;

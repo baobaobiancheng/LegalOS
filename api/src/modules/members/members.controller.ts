@@ -1,16 +1,16 @@
-import { Controller, Get, Post, Put, Query, Body, Req } from '@nestjs/common';
+import { Controller, Get, Post, Query, Body, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '@prisma/client';
 import { MembersService } from './members.service';
-import { BindContactDto, ProvisionMemberDto, SetBpDomainDto } from './dto/members.dto';
+import { BindContactDto, ProvisionMemberDto } from './dto/members.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { auditRequestContext } from '../../common/audit/audit-request';
 import { LegalResponsibilityService } from './legal-responsibility.service';
 
 /**
  * 管理端成员管理（2026-08-05 钉钉拉群模块）：
- * 同步钉钉通讯录 / 手动绑定 / BP 领域映射 / 拉群失败计数。
+ * 同步钉钉通讯录 / 手动绑定 / 业务职责分配 / 拉群失败计数。
  * 仅 admin 可见（与空壳 Dashboard 共存）。
  */
 @Controller('admin/members')
@@ -105,29 +105,6 @@ export class MembersController {
   ) {
     return this.membersService.unbind(
       userId,
-      { id: actorId, role: actorRole },
-      auditRequestContext(request),
-    );
-  }
-
-  /** BP 领域映射列表（法务角色 + 现有映射） */
-  @Get('bp-domains')
-  async listBpDomains() {
-    return this.membersService.listBpDomains();
-  }
-
-  /** 设置 BP 领域映射 */
-  @Put('bp-domains')
-  async setBpDomain(
-    @Body() dto: SetBpDomainDto,
-    @CurrentUser('id') actorId: string,
-    @CurrentUser('role') actorRole: Role,
-    @Req() request: Request,
-  ) {
-    return this.membersService.setBpDomain(
-      dto.userId,
-      dto.domain,
-      dto.enabled,
       { id: actorId, role: actorRole },
       auditRequestContext(request),
     );

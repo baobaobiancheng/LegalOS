@@ -18,9 +18,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit --experimentalDecorators --module commonjs --target es2022 --esModuleInterop --skipLibCheck scripts/verify-dsh-model.ts scripts/verify-dsh-baijian-agent.ts",
     "test:unit": "vitest run --exclude \"test/**/*.integration.spec.ts\"",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "codex:baijian-preflight": "ts-node scripts/preflight-codex-baijian.ts",
     "baijian:verify": "ts-node scripts/verify-baijian-mcp.ts",
-    "codex:baijian-gate": "ts-node scripts/verify-codex-baijian-agent.ts",
     "dsh:runtime-gate": "node scripts/verify-dsh-runtime.cjs",
     "dsh:model-gate": "ts-node scripts/verify-dsh-model.ts",
     "dsh:baijian-gate": "ts-node scripts/verify-dsh-baijian-agent.ts"

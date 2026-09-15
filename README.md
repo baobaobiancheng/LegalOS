@@ -49,6 +49,13 @@ LegalOS/
 - 离线运行时验收：在 `api` 目录执行 `npm run build && npm run dsh:runtime-gate`，覆盖真实 CJS 启动、只读工具调用、结果元数据和 JSONL 冷恢复；使用本机 HTTP 测试模型，不需要凭证或数据库。
 - 真实模型验收：配置现有 `DSH_LLM_*` 或 `LLM_*` 后执行 `npm run dsh:model-gate`；百鉴链路另执行 `npm run dsh:baijian-gate`。
 
+### 代码精简发布（2026-09-15）
+
+- 移除未被业务调用的 Codex CLI 执行器及专属验证脚本；保留 DSH、共享执行队列和现有模型配置读取方式。
+- 移除 `/admin/members/bp-domains` 专业领域标签接口；人工分配使用业务职责及钉钉组织范围。历史数据库表和迁移保持不变。
+- AI 搜法保留实时检索进度；报告通过 `report_completed.report` 一次返回，且必须先完成证据核验及会话落库。不再发送 `report_start/summary/section/source/limitations` 分段事件。断流仍通过会话查询恢复。
+- 发布时必须配套更新 API 和 Web；此次精简不新增数据库迁移，也不要求更改模型或 CRM 配置。
+
 ### 2. 创建数据库
 
 ```sql

@@ -60,13 +60,9 @@ export type AiLegalResearchStreamEvent =
   }
   | { type: 'research_metrics'; candidateCount?: number; verifiedSourceCount?: number; toolName?: string }
   | { type: 'answer_delta'; delta: string }
-  | { type: 'report_start'; report: Omit<AiLawResearchReportV1, 'summary' | 'sections' | 'sources' | 'limitations'> }
-  | { type: 'report_summary'; summary: string }
-  | { type: 'report_section'; section: AiLawResearchReportV1['sections'][number] }
-  | { type: 'report_source'; source: AiLawResearchReportV1['sources'][number] }
-  | { type: 'report_limitations'; limitations: string[] }
   | {
     type: 'report_completed';
+    report: AiLawResearchReportV1;
     runId: string;
     conversationId: string;
     turnId: string;
@@ -382,7 +378,6 @@ function emitReport(
   },
   emit: (event: AiLegalResearchStreamEvent) => void,
 ) {
-  const { summary, sections, sources, limitations, ...reportMeta } = result.report;
   emit({
     type: 'research_stage',
     stage: 'understand',
@@ -415,11 +410,6 @@ function emitReport(
       ? '正在基于已取得的工具结果输出降级报告。'
       : '法规检索与详情读取条件已满足，正在整理总结、具体分析和法规原文。',
   });
-  emit({ type: 'report_start', report: reportMeta });
-  emit({ type: 'report_summary', summary });
-  for (const section of sections) emit({ type: 'report_section', section });
-  for (const source of sources) emit({ type: 'report_source', source });
-  emit({ type: 'report_limitations', limitations });
   emit({
     type: 'research_stage',
     stage: 'answer',
@@ -429,6 +419,7 @@ function emitReport(
   });
   emit({
     type: 'report_completed',
+    report: result.report,
     runId: prepared.runId,
     conversationId: prepared.conversationId,
     turnId: prepared.runId,

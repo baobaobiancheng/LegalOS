@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { request, RequestError } from '../api/client'
 import { requestStreamOrJson, type AiLegalResearchStreamEvent } from '../api/sse'
-import { advanceAiLawReportDraft } from '../domain/legal-research'
 import type {
   AiLawResearchReportV1,
   AiLegalResearchConversation,
@@ -32,7 +31,6 @@ const followupOperation = ref<FollowupOperation>('auto')
 const loading = ref(false)
 const restoring = ref(false)
 const report = ref<AiLawResearchReportV1 | null>(null)
-const incomingReport = ref<AiLawResearchReportV1 | null>(null)
 const answerPreview = ref('')
 const reportId = ref('')
 const degradedWarning = ref<{ code: string; message: string } | undefined>()
@@ -115,7 +113,6 @@ async function runSearch(nextQuery?: string, operation: FollowupOperation = 'aut
   loading.value = true
   error.value = null
   streamFailure = null
-  incomingReport.value = null
   answerPreview.value = ''
   stages.value = freshStages()
   candidateCount.value = 0
@@ -146,7 +143,6 @@ async function runSearch(nextQuery?: string, operation: FollowupOperation = 'aut
     }, handleStreamEvent)
     if (streamFailure) throw streamFailure
   } catch (cause) {
-    incomingReport.value = null
     answerPreview.value = ''
     if (abort.signal.aborted) return
     const failure = cause instanceof RequestError
@@ -191,30 +187,8 @@ function handleStreamEvent(event: AiLegalResearchStreamEvent) {
     answerPreview.value += event.delta
     return
   }
-  if (event.type === 'report_start') {
-    incomingReport.value = advanceAiLawReportDraft(incomingReport.value, event).draft
-    return
-  }
-  if (event.type === 'report_summary') {
-    incomingReport.value = advanceAiLawReportDraft(incomingReport.value, event).draft
-    return
-  }
-  if (event.type === 'report_section') {
-    incomingReport.value = advanceAiLawReportDraft(incomingReport.value, event).draft
-    return
-  }
-  if (event.type === 'report_source') {
-    incomingReport.value = advanceAiLawReportDraft(incomingReport.value, event).draft
-    return
-  }
-  if (event.type === 'report_limitations') {
-    incomingReport.value = advanceAiLawReportDraft(incomingReport.value, event).draft
-    return
-  }
   if (event.type === 'report_completed') {
-    const transition = advanceAiLawReportDraft(incomingReport.value, { type: 'report_completed' })
-    incomingReport.value = transition.draft
-    if (!transition.completed || transition.invalidCompletion) {
+    if (!event.report) {
       streamFailure = new RequestError({
         error: '搜法报告流不完整，正在同步最新状态',
         code: 'BAD_SSE_EVENT',
@@ -222,7 +196,7 @@ function handleStreamEvent(event: AiLegalResearchStreamEvent) {
       })
       return
     }
-    report.value = transition.completed
+    report.value = event.report
     answerPreview.value = ''
     reportId.value = event.reportId
     contextVersion.value = event.contextVersion
@@ -247,7 +221,6 @@ function handleStreamEvent(event: AiLegalResearchStreamEvent) {
     return
   }
   if (event.type === 'error') {
-    incomingReport.value = null
     answerPreview.value = ''
     streamFailure = new RequestError({
       error: event.message,
@@ -297,7 +270,6 @@ function startNewConversation() {
   displayedTurnId.value = null
   turns.value = []
   report.value = null
-  incomingReport.value = null
   answerPreview.value = ''
   reportId.value = ''
   submittedQuery.value = ''
@@ -595,7 +567,7 @@ onBeforeUnmount(() => {
     <template v-if="!report && !conversationBusy && !restoring">
       <div class="ai-search-intro">
         <h2>用自然语言检索并读取法律依据</h2>
-        <p>AI 将展示实时检索过程，读取命中法规的权威详情正文后再流式生成结构化报告。</p>
+        <p>AI 将展示实时检索过程，读取命中法规的权威详情正文，核验并保存后展示完整报告。</p>
       </div>
       <form
         class="ai-search-form"

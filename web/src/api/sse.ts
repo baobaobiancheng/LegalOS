@@ -28,12 +28,7 @@ export type AiLegalResearchStreamEvent =
   | { type: 'research_stage'; seq: number; stage: 'understand' | 'recall' | 'verify' | 'answer'; status: 'running' | 'completed' | 'empty' | 'degraded'; title: string; detail: string }
   | { type: 'research_metrics'; seq: number; candidateCount?: number; verifiedSourceCount?: number; toolName?: string }
   | { type: 'answer_delta'; seq: number; delta: string }
-  | { type: 'report_start'; seq: number; report: Omit<import('../types').AiLawResearchReportV1, 'summary' | 'sections' | 'sources' | 'limitations'> }
-  | { type: 'report_summary'; seq: number; summary: string }
-  | { type: 'report_section'; seq: number; section: import('../types').AiLawResearchSectionV1 }
-  | { type: 'report_source'; seq: number; source: import('../types').AiLawResearchSourceV1 }
-  | { type: 'report_limitations'; seq: number; limitations: string[] }
-  | { type: 'report_completed'; seq: number; runId: string; conversationId: string; turnId: string; contextVersion: number; reportId: string; degraded?: boolean; warning?: { code: string; message: string } }
+  | { type: 'report_completed'; report: import('../types').AiLawResearchReportV1; seq: number; runId: string; conversationId: string; turnId: string; contextVersion: number; reportId: string; degraded?: boolean; warning?: { code: string; message: string } }
   | { type: 'error'; seq: number; runId: string; code: string; message: string; retryable?: boolean }
 
 const reportSseError = (error: RequestError): RequestError => {

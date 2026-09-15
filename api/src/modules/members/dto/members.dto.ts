@@ -1,5 +1,4 @@
-import { IsString, IsNotEmpty, IsBoolean, Matches, MaxLength } from 'class-validator';
-import { SKILL_GROUPS } from '../../../common/constants/skill.constants';
+import { IsString, IsNotEmpty, Matches, MaxLength } from 'class-validator';
 
 /** 手动绑定：系统用户 ↔ 钉钉通讯录成员 */
 export class BindContactDto {
@@ -25,26 +24,4 @@ export class ProvisionMemberDto {
   @IsNotEmpty()
   @MaxLength(128)
   dingtalkUserId!: string;
-}
-
-/** BP 领域映射设置：为法务 BP 勾选/取消某个领域 */
-export class SetBpDomainDto {
-  @IsString()
-  @IsNotEmpty()
-  userId!: string;
-
-  @IsString()
-  @IsNotEmpty()
-  domain!: string;
-
-  @IsBoolean()
-  enabled!: boolean;
-}
-
-/** 领域白名单 = SKILL_GROUPS 单一来源（/review 2026-08-05 统一，防多份拷贝漂移） */
-export const BP_DOMAINS = SKILL_GROUPS;
-
-/** DTO 领域白名单校验辅助 */
-export function isBpDomain(d: string): boolean {
-  return (BP_DOMAINS as readonly string[]).includes(d);
 }

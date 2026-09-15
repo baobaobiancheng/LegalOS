@@ -78,19 +78,3 @@ export interface DshOptions {
   /** 法规详情读取预算：单轮最多 3 部。 */
   lawDetailLimit?: number;
 }
-
-export function toolNameForCapability(capability: DshResearchCapability): DshResearchToolName {
-  return capability === 'law_search' ? DSH_LAW_SEARCH_TOOL : DSH_CASE_SEARCH_TOOL;
-}
-
-export function toolNamesForCapability(capability: DshResearchCapability): DshResearchToolName[] {
-  return capability === 'law_search'
-    ? [
-        DSH_LAW_SEARCH_TOOL,
-        DSH_LAW_ADVANCED_SEARCH_TOOL,
-        DSH_LAW_SEMANTIC_SEARCH_TOOL,
-        DSH_LAW_DETAIL_TOOL,
-        DSH_LAW_BATCH_DETAIL_TOOL,
-      ]
-    : [DSH_CASE_SEARCH_TOOL];
-}

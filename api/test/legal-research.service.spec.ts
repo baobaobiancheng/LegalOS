@@ -210,6 +210,11 @@ describe('LegalResearchService', () => {
       new AbortController().signal,
       (event) => {
         timeline.push(event.type);
+        if (event.type === 'report_completed') {
+          expect(event.report).toEqual(sessions.completeTurn.mock.calls[0][1].report);
+          expect(event.report.summary).not.toBe('');
+          expect(event.report.sources).toHaveLength(1);
+        }
         if (event.type === 'research_metrics' && typeof event.candidateCount === 'number') {
           candidateMetrics.push(event.candidateCount);
         }
@@ -223,9 +228,9 @@ describe('LegalResearchService', () => {
     );
 
     expect(timeline).toContain('research_metrics');
-    expect(timeline).toContain('report_summary');
+    expect(timeline).not.toContain('report_summary');
     expect(timeline.indexOf('research_stage')).toBeLessThan(timeline.indexOf('persisted'));
-    expect(timeline.indexOf('persisted')).toBeLessThan(timeline.indexOf('report_start'));
+    expect(timeline.indexOf('persisted')).toBeLessThan(timeline.indexOf('report_completed'));
     expect(candidateMetrics).toEqual([1, 2]);
     expect(verifiedMetrics).toEqual([1]);
     expect(answerDeltas).toEqual([]);

@@ -13,7 +13,6 @@ import ProjectHistoryButton from '../../components/ProjectHistoryButton.vue'
 import { prependProjectHistory } from '../../utils/project-history'
 import MarkdownContent from '../../components/MarkdownContent.vue'
 import type { AttachedFile } from '../../composables/useFileUpload'
-import { useFileUpload } from '../../composables/useFileUpload'
 import { useSmoothStream } from '../../composables/useSmoothStream'
 import { crmDeliveryStatusLabel, statusClass, statusLabel } from '../../domain/project-status'
 import type { ContractTemplate, EventDto, MessageDto, ProjectDetail, ProjectKind } from '../../types'
@@ -26,7 +25,6 @@ const selectedCapability = ref<ConsultationCapabilityChoice>('auto')
 
 const route = useRoute()
 const router = useRouter()
-const { buildFullInput, buildDisplayText } = useFileUpload()
 const pageRoot = ref<HTMLElement | null>(null)
 const project = ref<ProjectDetail | null>(null)
 const messages = ref<TimelineItem[]>([])
@@ -144,11 +142,9 @@ const refreshMessages = async () => {
 }
 const handleSend = async (text: string, files: AttachedFile[], capability = selectedCapability.value) => {
   if ((!text && !files.length) || sending.value || !canContinue.value) return
-  const fullInput = buildFullInput(text, files)
-  const displayText = buildDisplayText(text, files)
   sending.value = true
   actionError.value = null
-  messages.value.push({ id: `tmp-${Date.now()}`, role: 'user', text: displayText, createdAt: new Date().toISOString() })
+  messages.value.push({ id: `tmp-${Date.now()}`, role: 'user', text, createdAt: new Date().toISOString() })
   let aiMessage: MessageDto | undefined
   const streamRenderer = useSmoothStream()
   streamRenderer.setListener((value) => {
@@ -159,7 +155,7 @@ const handleSend = async (text: string, files: AttachedFile[], capability = sele
   try {
     const attachmentIds = files.filter(file => file.status === 'ready' || file.status === 'warning').map(file => file.id)
     const data = await requestStreamOrJson<ConsultStreamEvent | { route?: string }>(`/projects/${id}/messages`, {
-      method: 'POST', timeoutMs: 45_000, timeoutCode: 'SSE_HEADER_TIMEOUT', body: { text: fullInput, attachmentIds, capability },
+      method: 'POST', timeoutMs: 45_000, timeoutCode: 'SSE_HEADER_TIMEOUT', body: { text, attachmentIds, capability },
     }, (event) => {
       if (!('type' in event)) return
       if (event.type === 'message_start') {

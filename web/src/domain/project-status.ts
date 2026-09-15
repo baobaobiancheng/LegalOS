@@ -38,11 +38,6 @@ export function statusAllowsAction(status: ProjectStatus, action: ProjectStatusA
   return (PROJECT_STATUS_META[status].actions as readonly ProjectStatusAction[]).includes(action)
 }
 
-/** 穷尽 switch 辅助：处理完所有分支后返回,避免静默吞掉新状态 */
-export function assertNever(value: never): never {
-  throw new Error(`未处理的状态分支: ${String(value)}`)
-}
-
 /** 状态 → 稳定 CSS class(避免业务中文值直接参与动态 class) */
 export function statusClass(status: ProjectStatus): string {
   return `status-${PROJECT_STATUS_META[status].tone}`

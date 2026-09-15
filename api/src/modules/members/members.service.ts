@@ -17,7 +17,6 @@ import {
   DingTalkAdapter,
   ContactInfo,
 } from '../project/adapters/adapter.interfaces';
-import { isBpDomain, BP_DOMAINS } from './dto/members.dto';
 import { AuditService } from '../../common/audit/audit.service';
 import { AuditActor, AuditRequestContext } from '../../common/audit/audit.types';
 
@@ -132,7 +131,7 @@ export class MembersService {
           departmentIds: Array.isArray(c.departmentIds) ? c.departmentIds.filter((id): id is string => typeof id === 'string') : [],
         }));
 
-        await this.mergeContacts(tx, batch.id, stagedContacts);
+        await this.mergeContacts(tx, batch.id);
         if (result.departments) {
           await tx.dingTalkDepartment.updateMany({ data: { isActive: false } });
           if (result.departments.length) await tx.$executeRaw(Prisma.sql`
@@ -145,42 +144,25 @@ export class MembersService {
         }
 
         // 空快照也是完整快照：NOT EXISTS 会让上一批联系人全部软失效，绝不硬删除。
-        if (typeof tx.$executeRaw === 'function') {
-          await tx.$executeRaw`
-            UPDATE dingtalk_contacts
-            SET is_active = FALSE, last_seen_batch_id = ${batch.id}
-            WHERE is_active = TRUE
-              AND NOT EXISTS (
-                SELECT 1 FROM dingtalk_contact_staging s
-                WHERE s.batch_id = ${batch.id}
-                  AND s.user_id = dingtalk_contacts.user_id
-              )
-          `;
-          await tx.$executeRaw`
-            UPDATE dingtalk_contacts c
-            SET is_active = TRUE, last_seen_batch_id = ${batch.id}, last_seen_at = NOW(), synced_at = NOW()
-            WHERE EXISTS (
+        await tx.$executeRaw`
+          UPDATE dingtalk_contacts
+          SET is_active = FALSE, last_seen_batch_id = ${batch.id}
+          WHERE is_active = TRUE
+            AND NOT EXISTS (
               SELECT 1 FROM dingtalk_contact_staging s
               WHERE s.batch_id = ${batch.id}
-                AND s.user_id = c.user_id
+                AND s.user_id = dingtalk_contacts.user_id
             )
-          `;
-        } else {
-          // 仅供没有 $executeRaw 的轻量单测 mock 使用；生产 Prisma 一定走上面的批量 SQL。
-          const freshIds = stagedContacts.map((c) => c.userId);
-          await tx.dingTalkContact.updateMany({
-            where: freshIds.length
-              ? { isActive: true, userId: { notIn: freshIds } }
-              : { isActive: true },
-            data: { isActive: false, lastSeenBatchId: batch.id },
-          });
-          if (freshIds.length) {
-            await tx.dingTalkContact.updateMany({
-              where: { userId: { in: freshIds } },
-              data: { isActive: true, lastSeenBatchId: batch.id, lastSeenAt: new Date() },
-            });
-          }
-        }
+        `;
+        await tx.$executeRaw`
+          UPDATE dingtalk_contacts c
+          SET is_active = TRUE, last_seen_batch_id = ${batch.id}, last_seen_at = NOW(), synced_at = NOW()
+          WHERE EXISTS (
+            SELECT 1 FROM dingtalk_contact_staging s
+            WHERE s.batch_id = ${batch.id}
+              AND s.user_id = c.user_id
+          )
+        `;
 
         const binding = await this.autoBind(tx, stagedContacts, actor, request, batch.id);
         // review 2026-08-11 P1：已绑定员工调岗后,每次同步重算部门+角色,防旧部门权限残留
@@ -277,41 +259,24 @@ export class MembersService {
   }
 
   /** merge：生产使用单条批量 upsert，避免每联系人一次 round-trip。 */
-  private async mergeContacts(tx: any, batchId: string, contacts: ContactInfo[]): Promise<void> {
-    if (typeof tx.$executeRaw === 'function') {
-      await tx.$executeRaw`
-        INSERT INTO dingtalk_contacts
-          (id, user_id, name, mobile, avatar_url, department, department_ids, is_active, last_seen_batch_id, last_seen_at, synced_at)
-        SELECT UUID(), user_id, name, mobile, avatar_url, department, department_ids, TRUE, batch_id, NOW(), NOW()
-        FROM dingtalk_contact_staging
-        WHERE batch_id = ${batchId}
-        ON DUPLICATE KEY UPDATE
-          name = VALUES(name),
-          mobile = VALUES(mobile),
-          avatar_url = VALUES(avatar_url),
-          department = VALUES(department),
-          department_ids = VALUES(department_ids),
-          is_active = TRUE,
-          last_seen_batch_id = VALUES(last_seen_batch_id),
-          last_seen_at = NOW(),
-          synced_at = NOW()
-      `;
-      return;
-    }
-
-    // 没有 raw 能力时仅用于单测 mock；仍由外层交互式事务保证原子性。
-    for (let i = 0; i < contacts.length; i += SYNC_BATCH_SIZE) {
-      const chunk = contacts.slice(i, i + SYNC_BATCH_SIZE);
-      await Promise.all(
-        chunk.map((c) =>
-          tx.dingTalkContact.upsert({
-            where: { userId: c.userId },
-            update: { name: c.name, mobile: c.mobile ?? null, avatarUrl: c.avatarUrl ?? null, department: c.department ?? null, departmentIds: c.departmentIds ?? [], isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
-            create: { userId: c.userId, name: c.name, mobile: c.mobile ?? null, avatarUrl: c.avatarUrl ?? null, department: c.department ?? null, departmentIds: c.departmentIds ?? [], isActive: true, lastSeenBatchId: batchId, lastSeenAt: new Date() },
-          }),
-        ),
-      );
-    }
+  private async mergeContacts(tx: Prisma.TransactionClient, batchId: string): Promise<void> {
+    await tx.$executeRaw`
+      INSERT INTO dingtalk_contacts
+        (id, user_id, name, mobile, avatar_url, department, department_ids, is_active, last_seen_batch_id, last_seen_at, synced_at)
+      SELECT UUID(), user_id, name, mobile, avatar_url, department, department_ids, TRUE, batch_id, NOW(), NOW()
+      FROM dingtalk_contact_staging
+      WHERE batch_id = ${batchId}
+      ON DUPLICATE KEY UPDATE
+        name = VALUES(name),
+        mobile = VALUES(mobile),
+        avatar_url = VALUES(avatar_url),
+        department = VALUES(department),
+        department_ids = VALUES(department_ids),
+        is_active = TRUE,
+        last_seen_batch_id = VALUES(last_seen_batch_id),
+        last_seen_at = NOW(),
+        synced_at = NOW()
+    `;
   }
 
   /**
@@ -762,78 +727,6 @@ export class MembersService {
             department: { from: user.department ?? null, to: null },
             role: { from: user.role, to: updated.role },
           },
-          retentionClass: 'admin',
-        }, tx);
-      }
-    });
-    return { ok: true };
-  }
-
-  /** 系统用户 + 现有 BP 领域映射（法务角色，前端编辑用） */
-  async listBpDomains() {
-    const users = await this.prisma.user.findMany({
-      where: { role: { in: ['legal_bp', 'legal_lead'] } },
-      select: {
-        id: true,
-        displayName: true,
-        avatarUrl: true,
-        dingtalkUserId: true,
-        bpDomainMaps: { select: { domain: true } },
-      },
-      orderBy: { displayName: 'asc' },
-    });
-    return {
-      users: users.map((u) => ({
-        id: u.id,
-        displayName: u.displayName,
-        avatarUrl: u.avatarUrl,
-        bound: !!u.dingtalkUserId,
-        domains: u.bpDomainMaps.map((m) => m.domain),
-      })),
-      domains: [...BP_DOMAINS], // SKILL_GROUPS 单一来源（/review 2026-08-05）
-    };
-  }
-
-  /** 设置 BP 领域映射（勾选/取消） */
-  async setBpDomain(
-    userId: string,
-    domain: string,
-    enabled: boolean,
-    actor?: AuditActor,
-    request?: AuditRequestContext,
-  ) {
-    if (!isBpDomain(domain)) throw new BadRequestException(`领域不在白名单：${domain}`);
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user || (user.role !== 'legal_bp' && user.role !== 'legal_lead')) {
-      throw new BadRequestException('仅法务 BP/负责人可配置领域');
-    }
-    const existing = await this.prisma.bpDomainMap.findUnique({
-      where: { userId_domain: { userId, domain } },
-      select: { id: true },
-    });
-    const wasEnabled = Boolean(existing);
-    await this.prisma.$transaction(async (tx) => {
-      if (enabled) {
-        await tx.bpDomainMap.upsert({
-          where: { userId_domain: { userId, domain } },
-          update: {},
-          create: { userId, domain },
-        });
-      } else {
-        await tx.bpDomainMap.deleteMany({ where: { userId, domain } });
-      }
-      if (this.audit) {
-        await this.audit.record({
-          actor,
-          action: 'member.bp_scope.change',
-          resourceType: 'member',
-          resourceId: userId,
-          source: 'web',
-          outcome: 'success',
-          request,
-          before: { domain, enabled: wasEnabled },
-          after: { domain, enabled },
-          changes: { domain, enabled: { from: wasEnabled, to: enabled } },
           retentionClass: 'admin',
         }, tx);
       }

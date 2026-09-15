@@ -67,13 +67,12 @@ describe('P2-03 SSE client', () => {
   it('AI 搜法 report_completed → EOF：识别为完整报告流', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(streamResponse([
       'data: {"type":"research_stage","seq":1,"stage":"recall","status":"running","title":"定位与检索","detail":"检索中"}\n\n',
-      'data: {"type":"report_summary","seq":2,"summary":"总结"}\n\n',
-      'data: {"type":"report_completed","seq":3,"runId":"r1","conversationId":"c1","turnId":"r1","contextVersion":1,"reportId":"d1"}\n\n',
+      'data: {"type":"report_completed","seq":3,"runId":"r1","conversationId":"c1","turnId":"r1","contextVersion":1,"reportId":"d1","report":{"summary":"总结","sections":[],"sources":[],"limitations":[]}}\n\n',
     ])))
     const events: Record<string, unknown>[] = []
 
     await streamSse('/legal-research/ai/stream', { method: 'POST' }, event => events.push(event))
-    expect(events.at(-1)).toMatchObject({ type: 'report_completed', reportId: 'd1' })
+    expect(events.at(-1)).toMatchObject({ type: 'report_completed', reportId: 'd1', report: { summary: '总结' } })
   })
 
   it('有正文但无 message_end 就 EOF：仍报回答不完整（半截断）', async () => {
