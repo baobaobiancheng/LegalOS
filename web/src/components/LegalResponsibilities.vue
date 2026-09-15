@@ -115,7 +115,7 @@ onMounted(() => catalog.load())
         aria-label="选择法务职责"
       >
         <header class="people-heading">
-          <h2>法务人员 <span>{{ people.length }}</span></h2><span>业务职责目录</span>
+          <h2>已录入职责 <span>{{ people.length }} 人</span></h2><span>非全员名册</span>
         </header>
         <label class="people-search">
           <svg
@@ -329,9 +329,9 @@ onMounted(() => catalog.load())
 .policy-detail { padding: 4px 16px 16px; color: var(--routing-muted); font-size: 13px; }
 .policy-detail p + p { margin-top: 8px; }
 .policy-detail strong { margin-right: 12px; color: var(--routing-ink); font-weight: 600; }
-.responsibility-directory { display: grid; grid-template-columns: minmax(248px, 29%) minmax(0, 1fr); align-items: start; gap: 16px; }
-/* Keep people reachable in the page flow; no fixed-height list or horizontal-only carousel. */
-.people-panel { min-width: 0; position: sticky; top: 0; border: 1px solid var(--routing-line); border-radius: 10px; background: #fff; }
+.responsibility-directory { display: grid; grid-template-columns: minmax(248px, 29%) minmax(0, 1fr); align-items: stretch; gap: 16px; }
+/* The shared grid row aligns panel edges without fixing either panel's height. */
+.people-panel { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--routing-line); border-radius: 10px; background: #fff; }
 .people-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 14px 16px 10px; }
 .people-heading h2 { font-size: 15px; font-weight: 600; white-space: nowrap; }
 .people-heading h2 span { margin-left: 6px; color: var(--routing-muted); font-size: 13px; font-variant-numeric: tabular-nums; font-weight: 400; }
@@ -351,7 +351,7 @@ onMounted(() => catalog.load())
 .person-copy small { display: block; font-size: 11px; line-height: 1.7; color: var(--routing-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .person-chevron { width: 16px; height: 16px; flex-shrink: 0; color: #8291a6; }
 .selected .person-chevron { color: var(--routing-accent); }
-.directory-summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--routing-line); font-size: 11px; color: var(--routing-muted); }
+.directory-summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; margin-top: auto; padding: 10px 12px; border-top: 1px solid var(--routing-line); font-size: 11px; color: var(--routing-muted); }
 .directory-summary b { font-weight: 600; color: var(--routing-ink); font-variant-numeric: tabular-nums; }
 .directory-summary i, .scope-state i { display: inline-block; height: 5px; width: 5px; border-radius: 50%; background: currentColor; margin-right: 5px; }
 .directory-summary .active { color: #34775f; }
@@ -416,7 +416,6 @@ onMounted(() => catalog.load())
 }
 @media (max-width: 900px) {
   .responsibility-directory { grid-template-columns: minmax(0, 1fr); }
-  .people-panel { position: static; }
   .people-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .people-search { max-width: 400px; }
   .directory-summary { justify-content: flex-start; gap: 18px; }

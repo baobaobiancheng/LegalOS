@@ -25,6 +25,8 @@ describe('职责目录渲染', () => {
       ],
     }])
     const html = await render()
+    expect(html).toMatch(/已录入职责 <span[^>]*>1 人<\/span>/)
+    expect(html).toContain('非全员名册')
     for (const text of ['完整职责说明', '已启用', '待应用', '待同步组织', '待关联账号', '待核验部门', '请同步通讯录', '待核实子部门', '不会改变工单可见权限', '无需重复填写职责']) expect(html).toContain(text)
     expect(html).not.toContain('待完善')
     expect(html).not.toContain('法务专业领域标签')

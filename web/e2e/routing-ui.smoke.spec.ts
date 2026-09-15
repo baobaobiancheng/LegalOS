@@ -35,6 +35,14 @@ test('职责目录支持搜索、详情切换和应用确认，不请求旧专�
   await expect(detail.getByRole('heading', { name: '彭宇欣', exact: true })).toBeVisible();
   // Check viewport visibility, not just DOM visibility: the old hero pushed four names below the fold.
   const people = page.getByRole('navigation', { name: '选择法务职责' });
+  const expectAlignedPanels = async () => {
+    await expect.poll(() => page.locator('.responsibility-directory').evaluate(directory => {
+      const left = directory.querySelector('.people-panel')!.getBoundingClientRect();
+      const right = directory.querySelector('.detail-panel')!.getBoundingClientRect();
+      const summary = directory.querySelector('.directory-summary')!.getBoundingClientRect();
+      return Math.max(Math.abs(left.top - right.top), Math.abs(left.bottom - right.bottom), Math.abs(left.bottom - summary.bottom - 1));
+    })).toBeLessThanOrEqual(1);
+  };
   for (const viewport of [{ width: 1366, height: 768 }, { width: 1280, height: 720 }, { width: 1024, height: 768 }, { width: 390, height: 844 }, { width: 320, height: 740 }]) {
     await page.setViewportSize(viewport);
     for (const person of LEGAL_RESPONSIBILITIES) {
@@ -42,9 +50,23 @@ test('职责目录支持搜索、详情切换和应用确认，不请求旧专�
     }
     expect(await people.locator('.people-list').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     await expect.poll(() => page.locator('.members-page').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    if (viewport.width > 900) await expectAlignedPanels();
   }
   await page.screenshot({ path: 'test-results/routing-small-mobile.png', fullPage: true });
   await page.setViewportSize({ width: 1366, height: 768 });
+  await expect(people.getByRole('heading', { name: '已录入职责 6 人', exact: true })).toBeVisible();
+  await expect(people.getByText('非全员名册', { exact: true })).toBeVisible();
+  // Keep both panel edges aligned as detail height changes, including expanded help.
+  for (const name of ['王玉', '孙文弘']) {
+    await people.getByRole('button', { name: new RegExp(`^${name}`) }).click();
+    await expect(detail.getByRole('heading', { name, exact: true })).toBeVisible();
+    await expectAlignedPanels();
+  }
+  await people.getByRole('button', { name: /^王玉/ }).click();
+  await detail.locator('.mapping-help summary').click();
+  await expectAlignedPanels();
+  await page.screenshot({ path: 'test-results/routing-aligned-desktop.png', fullPage: true });
+  await detail.locator('.mapping-help summary').click();
   await people.getByRole('button', { name: /^李潇潇/ }).click();
   await expect(detail.getByText('BaaS BG', { exact: true })).toBeVisible();
   await expect(detail.getByText('生态合作部', { exact: true }).last()).toBeVisible();
