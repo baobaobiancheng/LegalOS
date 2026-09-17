@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "LegalOS AI 与企业集成组件细分",
+    "locale": "zh-CN",
+    "output": "LegalOS-AI与企业集成组件细分.html",
+    "quality_profile": "showcase",
+    "viewBox": [1160, 580],
+    "views": [
+      { "id": "capability-routing", "label": "咨询能力分流", "focus": ["consultationEntry", "executionRouter", "aiQueue", "generalLlm", "dshService"], "note": "ConsultationExecutionRouter 区分通用咨询、法规检索和类案检索，共用队列、取消与流式回复语义。" },
+      { "id": "verified-research", "label": "可核验法律检索", "focus": ["dshService", "researchGateway", "evidenceGate", "baijianMcp", "researchStore"], "note": "DSH 使用受控百鉴工具，缓存召回与正文，并在展示前完成候选 ID、引文与正文一致性校验。" },
+      { "id": "enterprise-delivery", "label": "企业系统集成", "focus": ["enterpriseSystems", "enterpriseIntegration", "researchStore"], "note": "CAS 提供身份，CRM A1 负责入站建单，钉钉和 CRM 出站由 Outbox 可靠交付。" }
+    ]
+  },
+  "components": [
+    { "id": "consultationEntry", "type": "backend", "label": "咨询回复编排入口", "sublabel": "上下文构建 · 回复编排", "tag": "Project Consultation", "pos": [20, 220], "size": [145, 76] },
+    { "id": "executionRouter", "type": "messagebus", "label": "能力识别与执行路由", "sublabel": "通用 · 法规 · 类案", "tag": "ConsultationExecutionRouter", "pos": [200, 220], "size": [150, 76] },
+    { "id": "aiQueue", "type": "messagebus", "label": "AI 执行队列", "sublabel": "全局并发 · session 互斥 · 取消", "tag": "AiExecutionQueueService", "pos": [390, 220], "size": [150, 76] },
+    { "id": "dshService", "type": "backend", "label": "DshService 执行引擎", "sublabel": "启动 · 循环 · 流式 · 会话", "tag": "常驻嵌入", "pos": [580, 220], "size": [160, 76] },
+    { "id": "researchGateway", "type": "backend", "label": "法律检索网关", "sublabel": "工具适配 · 缓存 · 请求合并", "tag": "CachedLegalResearchGateway", "pos": [780, 220], "size": [170, 76] },
+    { "id": "baijianMcp", "type": "external", "label": "百鉴 MCP 供应商", "sublabel": "法规召回 · 权威正文 · 类案", "tag": "MCP over HTTPS", "pos": [980, 220], "size": [150, 76] },
+    { "id": "generalLlm", "type": "external", "label": "通用咨询模型网关", "sublabel": "OpenAI-compatible API", "tag": "直连路径", "pos": [200, 40], "size": [150, 74] },
+    { "id": "dshModel", "type": "external", "label": "DSH 模型提供方", "sublabel": "规划 · 工具选择 · 报告生成", "tag": "DSH_LLM_*", "pos": [580, 40], "size": [160, 74] },
+    { "id": "evidenceGate", "type": "security", "label": "证据与报告闸门", "sublabel": "candidate ID · 正文 · 引文 · 降级", "tag": "validateResearchEvidence", "pos": [780, 40], "size": [170, 74] },
+    { "id": "researchStore", "type": "database", "label": "检索证据存储", "sublabel": "快照 · 正文 · 用量 · Trace", "tag": "MySQL / DSH_HOME", "pos": [780, 410], "size": [170, 76] },
+    { "id": "enterpriseSystems", "type": "external", "label": "CAS · 钉钉 · CRM", "sublabel": "身份 · 建单 · 交付", "tag": "企业系统", "pos": [20, 410], "size": [145, 76] },
+    { "id": "enterpriseIntegration", "type": "messagebus", "label": "企业集成协调层", "sublabel": "CRM A1 · 适配器 · Outbox", "tag": "入站 / 出站", "pos": [200, 410], "size": [150, 76] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "LegalOS AI 执行边界", "wraps": ["consultationEntry", "executionRouter", "aiQueue", "dshService", "researchGateway", "generalLlm", "dshModel", "evidenceGate", "researchStore"], "pad": 18 },
+    { "kind": "security-group", "label": "权威数据供应商边界", "wraps": ["researchGateway", "baijianMcp", "evidenceGate"], "pad": 14 }
+  ],
+  "connections": [
+    { "id": "entry-route-capability", "from": "consultationEntry", "to": "executionRouter", "variant": "emphasis" },
+    { "id": "router-enqueue", "from": "executionRouter", "to": "aiQueue" },
+    { "id": "router-general-llm", "from": "executionRouter", "to": "generalLlm", "label": "通用咨询" },
+    { "id": "queue-run-dsh", "from": "aiQueue", "to": "dshService", "variant": "emphasis" },
+    { "id": "dsh-plan-with-model", "from": "dshModel", "to": "dshService", "label": "规划 / 生成", "labelAt": [660, 128] },
+    { "id": "dsh-use-research", "from": "dshService", "to": "researchGateway", "variant": "emphasis" },
+    { "id": "evidence-guard-result", "from": "evidenceGate", "to": "researchGateway", "label": "校验候选与正文", "labelAt": [865, 128], "variant": "security" },
+    { "id": "gateway-call-baijian", "from": "researchGateway", "to": "baijianMcp", "label": "MCP tools/call", "labelAt": [965, 310], "variant": "security" },
+    { "id": "gateway-persist-evidence", "from": "researchGateway", "to": "researchStore", "label": "缓存 / 用量 / Trace", "labelAt": [865, 310], "variant": "dashed" },
+    { "id": "enterprise-connect", "from": "enterpriseIntegration", "to": "enterpriseSystems", "label": "受控入站 / 可靠出站", "labelAt": [183, 500], "variant": "dashed" },
+    { "id": "integration-write-state", "from": "enterpriseIntegration", "to": "researchStore", "label": "项目 / Outbox 状态", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "AI 路由原则", "items": ["通用咨询直连公司 LLM 网关", "法规与类案检索进入 DSH Agent Loop 及受控百鉴工具"] },
+    { "dot": "rose", "title": "证据与集成边界", "items": ["未通过权威正文和引文一致性校验的报告不得直接展示", "CAS、CRM 与钉钉通过独立入站或 Outbox 边界集成"] }
+  ]
+}

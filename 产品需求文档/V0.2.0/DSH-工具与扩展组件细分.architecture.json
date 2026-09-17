@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DSH 工具与扩展组件细分",
+    "locale": "zh-CN",
+    "output": "DSH-工具与扩展组件细分.html",
+    "quality_profile": "showcase",
+    "viewBox": [1160, 580],
+    "views": [
+      { "id": "model-request", "label": "模型请求链", "focus": ["agentLoop", "promptSchema", "requestHooks", "llmAdapter", "modelProvider"], "note": "Agent Loop 组装消息与工具 Schema，通过 agent/request 和 llm/stream 瀑布事件进入模型适配层。" },
+      { "id": "tool-pipeline", "label": "工具执行管线", "focus": ["modelProvider", "toolScheduler", "toolRuntime", "approvalGate", "executionPolicy", "toolResult"], "note": "模型生成 tool_calls 后，调度器按 executionMode 分类，工具管线依次执行 pre、execute 和 post。" },
+      { "id": "provider-seams", "label": "能力提供方", "focus": ["toolRuntime", "fsShellProvider", "extensionProvider", "executionPolicy"], "note": "FS/Shell/Subprocess 与 MCP/ACP/Skill/Subagent 通过 Service Definition、Provider、Consumer seam 替换本地或远程执行世界。" }
+    ]
+  },
+  "components": [
+    { "id": "agentLoop", "type": "backend", "label": "Agent Loop", "sublabel": "step · request · tool cycle", "tag": "轮次驱动", "pos": [20, 220], "size": [145, 76] },
+    { "id": "promptSchema", "type": "backend", "label": "Prompt 与 Tool Schema", "sublabel": "消息 · 指令 · 模式", "tag": "system-prompt/assemble", "pos": [200, 220], "size": [150, 76] },
+    { "id": "llmAdapter", "type": "cloud", "label": "LLM Adapter", "sublabel": "provider/model · stream · retry", "tag": "ctx.llm", "pos": [390, 220], "size": [150, 76] },
+    { "id": "modelProvider", "type": "external", "label": "模型提供方", "sublabel": "DeepSeek / OpenAI-compatible", "tag": "streaming completion", "pos": [580, 220], "size": [160, 76] },
+    { "id": "toolScheduler", "type": "messagebus", "label": "Tool Call 调度器", "sublabel": "模式 · 屏障 · 滚动池", "tag": "有界并发", "pos": [780, 220], "size": [170, 76] },
+    { "id": "toolRuntime", "type": "messagebus", "label": "Tool Runtime", "sublabel": "前置 · 执行 · 后置", "tag": "ctx.tools", "pos": [980, 220], "size": [150, 76] },
+    { "id": "requestHooks", "type": "security", "label": "Request Hooks", "sublabel": "agent/pre-step · agent/request", "tag": "waterfall 拦截", "pos": [390, 40], "size": [150, 74] },
+    { "id": "approvalGate", "type": "security", "label": "用户审批闸门", "sublabel": "ask · decide · unavailable", "tag": "fail-closed", "pos": [780, 40], "size": [170, 74] },
+    { "id": "executionPolicy", "type": "security", "label": "执行策略与沙箱", "sublabel": "范围 · 超时 · 沙箱 · 守卫", "tag": "执行前包装", "pos": [980, 40], "size": [150, 74] },
+    { "id": "toolResult", "type": "database", "label": "Tool Result 与会话事件", "sublabel": "ordered post · session/event", "tag": "回到下一 Step", "pos": [580, 410], "size": [160, 76] },
+    { "id": "fsShellProvider", "type": "backend", "label": "FS / Shell 执行世界", "sublabel": "fs · subprocess · terminal · LSP", "tag": "local / E2B / remote", "pos": [780, 410], "size": [170, 76] },
+    { "id": "extensionProvider", "type": "external", "label": "扩展与外部能力", "sublabel": "MCP · ACP · Skill · Subagent", "tag": "可插拔 Provider", "pos": [980, 410], "size": [150, 76] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "模型请求与流式适配", "wraps": ["agentLoop", "promptSchema", "requestHooks", "llmAdapter", "modelProvider"], "pad": 18 },
+    { "kind": "security-group", "label": "工具执行与能力提供方边界", "wraps": ["toolScheduler", "toolRuntime", "approvalGate", "executionPolicy", "toolResult", "fsShellProvider", "extensionProvider"], "pad": 18 }
+  ],
+  "connections": [
+    { "id": "agent-build-prompt", "from": "agentLoop", "to": "promptSchema", "variant": "emphasis" },
+    { "id": "prompt-call-adapter", "from": "promptSchema", "to": "llmAdapter" },
+    { "id": "hooks-wrap-request", "from": "requestHooks", "to": "llmAdapter", "label": "next() / rewrite", "labelAt": [465, 128], "variant": "security" },
+    { "id": "adapter-stream-model", "from": "llmAdapter", "to": "modelProvider", "variant": "security" },
+    { "id": "model-yield-tool-calls", "from": "modelProvider", "to": "toolScheduler", "variant": "emphasis" },
+    { "id": "scheduler-enter-runtime", "from": "toolScheduler", "to": "toolRuntime", "variant": "emphasis" },
+    { "id": "approval-control-scheduler", "from": "approvalGate", "to": "toolScheduler", "label": "allow / deny", "labelAt": [865, 128], "variant": "security" },
+    { "id": "policy-wrap-runtime", "from": "executionPolicy", "to": "toolRuntime", "label": "策略 / 沙箱", "labelAt": [1055, 128], "variant": "security" },
+    { "id": "runtime-write-result", "from": "toolRuntime", "to": "toolResult", "fromSide": "bottom", "toSide": "top", "via": [[1055, 340], [660, 340]], "label": "ordered post", "variant": "dashed" },
+    { "id": "runtime-use-fs", "from": "toolRuntime", "to": "fsShellProvider", "label": "执行世界", "labelAt": [865, 370] },
+    { "id": "runtime-use-extensions", "from": "toolRuntime", "to": "extensionProvider", "label": "register / call", "labelAt": [1105, 310] }
+  ],
+  "cards": [
+    { "dot": "orange", "title": "模型与工具闭环", "items": ["每个 Step 先请求模型，再将 tool_calls 交给有界调度器", "Tool Result 按模型顺序追加事件，决定是否进入下一 Step"] },
+    { "dot": "rose", "title": "安全与替换点", "items": ["审批、作用域、超时和沙箱不依赖具体工具提供方", "本地 FS/Shell、远程执行世界、MCP/ACP 和 Skill 均通过 seam 注册"] }
+  ]
+}

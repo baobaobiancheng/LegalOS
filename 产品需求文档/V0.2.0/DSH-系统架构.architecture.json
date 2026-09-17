@@ -1,0 +1,273 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DeepSeek Harness（DSH）系统架构",
+    "locale": "zh-CN",
+    "output": "DSH-系统架构.html",
+    "quality_profile": "showcase",
+    "viewBox": [1160, 580],
+    "views": [
+      {
+        "id": "runtime-spine",
+        "label": "DSH 运行主链",
+        "focus": ["entryPoints", "appBoot", "cordisKernel", "agentLoop", "toolRegistry", "capabilityProviders"],
+        "note": "入口选择 Profile，app-boot 组装 Cordis 插件树，Agent Loop 在模型与工具之间驱动多步轮次。"
+      },
+      {
+        "id": "turn-semantics",
+        "label": "Turn / Step 语义",
+        "focus": ["promptAssembly", "agentLoop", "llmAdapter", "sessionLog"],
+        "note": "每个 Step 包含一次模型请求及工具调用；持久 SessionEvent 支撑回放、派生历史与续跑。"
+      },
+      {
+        "id": "tool-security",
+        "label": "工具与安全边界",
+        "focus": ["agentLoop", "toolRegistry", "executionGuard", "capabilityProviders"],
+        "note": "工具调用经过 pre / execute / post 流水线，审批、超时、沙箱和作用域策略在执行前后生效。"
+      },
+      {
+        "id": "legalos-extension",
+        "label": "LegalOS 嵌入集成",
+        "focus": ["entryPoints", "appBoot", "toolRegistry", "capabilityProviders", "sessionLog"],
+        "note": "LegalOS 通过 app-boot 常驻嵌入 DSH，注入百鉴法律工具，并将 DSH Session 与业务 researchTrace 关联。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "entryPoints",
+      "type": "frontend",
+      "label": "运行入口与宿主",
+      "sublabel": "Web · CLI · SDK · LegalOS",
+      "tag": "web / headless / embedded",
+      "pos": [20, 220],
+      "size": [145, 76]
+    },
+    {
+      "id": "profileConfig",
+      "type": "cloud",
+      "label": "Profile 与配置层",
+      "sublabel": "bundle · patch overlay",
+      "tag": "分层覆盖",
+      "pos": [200, 40],
+      "size": [150, 74]
+    },
+    {
+      "id": "appBoot",
+      "type": "backend",
+      "label": "App Boot 组装器",
+      "sublabel": "profile · bundle · patch",
+      "tag": "@deepseek-ai/dsh-app-boot",
+      "pos": [200, 220],
+      "size": [150, 76]
+    },
+    {
+      "id": "cordisKernel",
+      "type": "messagebus",
+      "label": "Cordis 插件内核",
+      "sublabel": "Context · Event · Fiber",
+      "tag": "可组合、可卸载插件树",
+      "pos": [390, 220],
+      "size": [150, 76]
+    },
+    {
+      "id": "promptAssembly",
+      "type": "backend",
+      "label": "Prompt 与上下文组装",
+      "sublabel": "system prompt · tool schema",
+      "tag": "ctx.systemPrompt",
+      "pos": [580, 40],
+      "size": [160, 74]
+    },
+    {
+      "id": "agentLoop",
+      "type": "backend",
+      "label": "Agent / Agent Loop",
+      "sublabel": "Inbox · Turn · Step · Streaming",
+      "tag": "ctx.agents · ctx.agentLoop",
+      "pos": [580, 220],
+      "size": [160, 76]
+    },
+    {
+      "id": "toolRegistry",
+      "type": "messagebus",
+      "label": "工具注册表与执行流水线",
+      "sublabel": "schema · pre · execute · post",
+      "tag": "ctx.tools",
+      "pos": [780, 220],
+      "size": [170, 76]
+    },
+    {
+      "id": "capabilityProviders",
+      "type": "external",
+      "label": "能力提供方",
+      "sublabel": "FS/Shell · MCP/ACP · Skill",
+      "tag": "本地 / 远程执行世界",
+      "pos": [980, 220],
+      "size": [150, 76]
+    },
+    {
+      "id": "sessionLog",
+      "type": "database",
+      "label": "SessionEvent 事件日志",
+      "sublabel": "append-only · replay/fork",
+      "tag": "JSONL / session-persistence",
+      "pos": [390, 410],
+      "size": [160, 76]
+    },
+    {
+      "id": "llmAdapter",
+      "type": "cloud",
+      "label": "LLM 适配与流式层",
+      "sublabel": "ctx.llm · provider/model · retry",
+      "tag": "llm-pi-ai / llm-deepseek",
+      "pos": [580, 410],
+      "size": [160, 76]
+    },
+    {
+      "id": "modelProvider",
+      "type": "external",
+      "label": "模型提供方",
+      "sublabel": "OpenAI-compatible / DeepSeek API",
+      "tag": "streaming completion",
+      "pos": [780, 410],
+      "size": [170, 76]
+    },
+    {
+      "id": "executionGuard",
+      "type": "security",
+      "label": "执行策略与隔离",
+      "sublabel": "approval · timeout · sandbox",
+      "tag": "fail-closed 边界",
+      "pos": [980, 410],
+      "size": [150, 76]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "DSH 运行时：一棵由 Profile 组装的 Cordis 插件树",
+      "wraps": ["profileConfig", "appBoot", "cordisKernel", "promptAssembly", "agentLoop", "toolRegistry", "sessionLog", "llmAdapter", "executionGuard"],
+      "pad": 22
+    },
+    {
+      "kind": "security-group",
+      "label": "工具执行与外部能力边界",
+      "wraps": ["toolRegistry", "capabilityProviders", "executionGuard"],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "id": "host-start-runtime",
+      "from": "entryPoints",
+      "to": "appBoot",
+      "label": "启动 / 嵌入",
+      "variant": "emphasis",
+      "labelAt": [183, 310]
+    },
+    {
+      "id": "profile-compose-boot",
+      "from": "profileConfig",
+      "to": "appBoot",
+      "label": "bundle + patch",
+      "variant": "dashed",
+      "labelAt": [275, 128]
+    },
+    {
+      "id": "boot-mount-tree",
+      "from": "appBoot",
+      "to": "cordisKernel",
+      "label": "按序 mount",
+      "labelAt": [370, 310]
+    },
+    {
+      "id": "kernel-provide-agent",
+      "from": "cordisKernel",
+      "to": "agentLoop",
+      "label": "Service + Event",
+      "variant": "emphasis",
+      "labelAt": [510, 310]
+    },
+    {
+      "id": "prompt-enter-step",
+      "from": "promptAssembly",
+      "to": "agentLoop",
+      "label": "提示词片段 + tool schema",
+      "labelAt": [660, 128]
+    },
+    {
+      "id": "agent-call-tools",
+      "from": "agentLoop",
+      "to": "toolRegistry",
+      "label": "tool/call → tool/result",
+      "variant": "emphasis",
+      "labelAt": [760, 310]
+    },
+    {
+      "id": "tools-use-provider",
+      "from": "toolRegistry",
+      "to": "capabilityProviders",
+      "label": "作用域化执行",
+      "labelAt": [1020, 310]
+    },
+    {
+      "id": "agent-persist-events",
+      "from": "agentLoop",
+      "to": "sessionLog",
+      "label": "追加 SessionEvent",
+      "variant": "dashed"
+    },
+    {
+      "id": "agent-request-model",
+      "from": "agentLoop",
+      "to": "llmAdapter",
+      "label": "agent/request · llm/stream",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [660, 360]
+    },
+    {
+      "id": "adapter-stream-provider",
+      "from": "llmAdapter",
+      "to": "modelProvider",
+      "label": "HTTPS 流式生成",
+      "variant": "security",
+      "labelAt": [760, 500]
+    },
+    {
+      "id": "guard-tool-pipeline",
+      "from": "toolRegistry",
+      "to": "executionGuard",
+      "label": "审批 / 超时 / 沙箱",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "组装范式",
+      "items": [
+        "一切皆插件；模型、工具、会话和 Agent Loop 均可替换",
+        "Profile → bundle → 用户/home/CLI patch 按序叠加"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "运行时语义",
+      "items": [
+        "Turn 由零个或多个 Step 组成，Step 是一次模型请求加工具调用",
+        "session/event 是持久事实，agent/* 是运行中控制面"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "安全与业务扩展",
+      "items": [
+        "工具管线支持审批、策略、超时、沙箱与远程执行提供方",
+        "LegalOS 通过嵌入式 boot 和自定义 DSH Tool 接入百鉴法律数据"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code 命令手册</title>
+<style>
+  :root {
+    --bg: #f5f5f7; --card: #ffffff; --text: #1d1d1f; --sub: #6e6e73;
+    --blue: #0071e3; --border: rgba(0,0,0,.08); --spring: cubic-bezier(.34,1.56,.64,1);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); padding: 40px 24px 80px; }
+  .wrap { max-width: 980px; margin: 0 auto; }
+
+  header { text-align: center; margin-bottom: 36px; animation: rise .5s var(--spring) both; }
+  h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }
+  .sub { color: var(--sub); font-size: 14px; margin-top: 8px; }
+  .count { display: inline-block; margin-top: 12px; font-size: 12px; color: var(--blue); background: rgba(0,113,227,.08); padding: 3px 12px; border-radius: 999px; font-weight: 600; }
+
+  .search-box { max-width: 480px; margin: 0 auto 32px; animation: rise .5s var(--spring) .1s both; }
+  .search-box input {
+    width: 100%; padding: 12px 18px; border-radius: 14px; border: 1.5px solid var(--border);
+    background: var(--card); font-size: 14px; outline: none; transition: border-color .2s, box-shadow .2s;
+  }
+  .search-box input:focus { border-color: var(--blue); box-shadow: 0 0 0 4px rgba(0,113,227,.1); }
+
+  .group { margin-bottom: 28px; animation: rise .5s var(--spring) both; }
+  .group-title {
+    font-size: 13px; font-weight: 650; color: var(--sub); letter-spacing: .05em;
+    text-transform: uppercase; margin: 0 4px 12px; display: flex; align-items: center; gap: 8px;
+  }
+  .group-title::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+  .cmd {
+    background: var(--card); border-radius: 14px; padding: 14px 16px;
+    border: 1px solid var(--border); transition: transform .2s var(--spring), box-shadow .2s;
+  }
+  .cmd:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,.06); }
+  .cmd-name { font-size: 13px; font-weight: 650; color: var(--blue); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+  .cmd-desc { font-size: 12px; color: var(--sub); line-height: 1.5; margin-top: 5px; }
+
+  .badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 999px; margin-left: 6px; vertical-align: 2px; }
+  .b-core { background: rgba(0,113,227,.1); color: var(--blue); }
+  .b-taste { background: rgba(175,82,222,.1); color: #8b3cc0; }
+
+  .empty { text-align: center; color: var(--sub); font-size: 13px; padding: 40px 0; display: none; }
+  footer { text-align: center; color: var(--sub); font-size: 11px; margin-top: 40px; }
+
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>⌘ Claude Code 命令手册</h1>
+    <p class="sub">所有可用的 slash 命令与功能速查 · 本机 ~/.claude/skills 实时生成</p>
+    <span class="count" id="total"></span>
+  </header>
+
+  <div class="search-box">
+    <input id="search" type="text" placeholder="搜索命令或功能… 如：review / 设计 / pdf">
+  </div>
+
+  <div id="groups"></div>
+  <p class="empty" id="empty">没有匹配的命令</p>
+  <footer>生成于 2026-08-05 · 输入 <code>/命令名</code> 调用 · gstack 全家桶 + taste-skill 系列 + 自定义</footer>
+</div>
+
+<script>
+const GROUPS = [
+  { title: "规划 · 评审 · 发布（gstack 核心循环）", items: [
+    ["office-hours", "YC 式设计思考：六连问诊断 + 备选方案 + 设计文档。新想法/产品决策先走这个", "core"],
+    ["spec", "把模糊意图转成精确可执行规格（五阶段）", "core"],
+    ["plan-eng-review", "工程评审：架构 / 数据流 / 边界 / 测试覆盖 / 性能，交互式锁定实现方案", "core"],
+    ["plan-ceo-review", "CEO 视角计划评审：挑战范围与战略，找 10 星产品版本", "core"],
+    ["plan-design-review", "设计师视角计划评审（交互式，同 CEO/Eng 评审流程）", "core"],
+    ["plan-devex-review", "开发体验计划评审", "core"],
+    ["plan-tune", "问题灵敏度自调优：让 gstack 记住你的偏好（never-ask / always-ask）", "core"],
+    ["autoplan", "全自动评审流水线：CEO → 设计 → 工程 → DX 评审依次跑，自动决策", "core"],
+    ["review", "合并前 PR 审查：SQL/并发/LLM 信任边界/注入/枚举完整性 + 专家并行评审", "core"],
+    ["ship", "发布工作流：测试 → 评审 → 版本号 → CHANGELOG → 提交推送 → 建 PR", "core"],
+    ["qa", "系统性 QA 测试 Web 应用并修复发现的 bug", "core"],
+    ["qa-only", "只报告 QA 结果，不修 bug", "core"],
+    ["investigate", "系统化 debug：根因调查，不瞎试", "core"],
+    ["context-save", "保存当前工作上下文（决策/进度/尝试过的方案）", "core"],
+    ["context-restore", "恢复 /context-save 保存的上下文", "core"],
+    ["retro", "每周工程回顾", "core"],
+    ["health", "代码质量仪表盘", "core"],
+    ["canary", "部署后金丝雀监控", "core"],
+    ["land-and-deploy", "落地 + 部署工作流", "core"],
+    ["landing-report", "部署队列只读看板", "core"],
+    ["setup-deploy", "配置 /land-and-deploy 的部署设置", "core"],
+    ["freeze", "把本会话的文件编辑限制到指定目录", "core"],
+    ["unfreeze", "解除 /freeze 的目录限制", "core"],
+    ["guard", "全安全模式：破坏性命令警告 + 目录级编辑限制", "core"],
+    ["careful", "破坏性命令的安全护栏", "core"],
+    ["cso", "首席安全官模式", "core"],
+    ["codex", "OpenAI Codex CLI 包装（三种模式）", "core"],
+    ["gstack", "gstack skill 套件路由", "core"],
+    ["gstack-upgrade", "升级 gstack 到最新版", "core"],
+    ["learn", "项目管理学习记录（跨会话沉淀）", "core"],
+    ["open-gstack-browser", "启动 AI 控制的 Chromium 浏览器", "core"],
+    ["pair-agent", "把远程 AI agent 与你的浏览器配对", "core"],
+    ["browse", "无头浏览器（QA 测试 / 站点试用）", "core"],
+    ["setup-browser-cookies", "从真实浏览器导入 cookies 到头会话", "core"],
+    ["scrape", "抓取网页数据", "core"],
+    ["skillify", "把最近一次成功的 /scrape 流程固化为浏览器 skill", "core"],
+    ["benchmark", "性能回归检测（browse daemon）", "core"],
+    ["benchmark-models", "gstack skill 跨模型基准测试", "core"],
+    ["doc-coauthoring", "结构化文档协作（规格/提案/决策记录）", "core"],
+    ["document-generate", "为功能/模块生成缺失文档", "core"],
+    ["document-release", "发布后文档更新", "core"],
+    ["diagram", "英文描述 → 图表三件套（源码 + 可编辑 excalidraw）", "core"],
+    ["make-pdf", "Markdown → 出版级 PDF", "core"],
+    ["sync-gbrain", "同步 gbrain 知识库索引", "core"],
+    ["setup-gbrain", "安装配置 gbrain（本地知识库 + MCP）", "core"],
+  ]},
+  { title: "设计 · 前端（taste-skill 系列 + 设计全家桶）", items: [
+    ["taste-skill", "反 AI 味前端：读简报 → 推断设计方向 → 直接产出高质量界面（v2 默认版）", "taste"],
+    ["taste-skill-v1", "taste-skill 原始 v1 版（行为保真保留）", "taste"],
+    ["frontend-design", "高质量前端界面设计（你的自定义配置版）", "taste"],
+    ["gpt-taste", "Elite UX/UI + GSAP 动效：Python 真随机布局、AIDA 页面结构、宽版编辑风", "taste"],
+    ["soft-skill", "高端代理级设计：精确字体/间距/阴影/卡片/动画规范", "taste"],
+    ["minimalist-skill", "极简编辑风 UI：暖单色、字体对比、扁平网格、柔和粉彩", "taste"],
+    ["brutalist-skill", "工业粗野风 UI：瑞士印刷 + 军事终端美学、刚性网格", "taste"],
+    ["theme-factory", "主题化工具包：10 套预设主题应用到幻灯片/文档/HTML", "taste"],
+    ["stitch-skill", "Google Stitch 语义设计系统：生成 DESIGN.md 强制高端标准", "taste"],
+    ["design-consultation", "设计咨询：理解产品 → 调研 → 完整设计系统提案", "core"],
+    ["design-review", "设计师眼 QA：视觉不一致/间距/层级/AI 味/卡顿 → 修复", "core"],
+    ["design-shotgun", "多方案设计对比：生成多个变体 → 对比板 → 收集反馈迭代", "core"],
+    ["design-html", "设计定稿：生产级 Pretext HTML/CSS 生成", "core"],
+    ["design-system", "设计令牌架构：三层令牌 + 组件规格", "core"],
+    ["high-end-visual-design", "高端代理级视觉设计（同 soft-skill）", "taste"],
+    ["ui-ux-pro-max", "UI/UX 设计智能库：84 风格 / 192 配色 / 74 字体组合 / 98 产品类型", "taste"],
+    ["ui-styling", "shadcn/ui + Tailwind 精美无障碍界面", "core"],
+    ["redesign-existing-projects", "现有网站/应用升级：审计 AI 味 → 应用高端标准", "taste"],
+    ["image-to-code", "图片 → 代码（先自生成设计图再分析实现）", "taste"],
+    ["imagegen-frontend-web", "生成高级转化导向的网站设计参考图", "taste"],
+    ["imagegen-frontend-mobile", "生成移动端 App 原生质感屏幕概念图", "taste"],
+    ["canvas-design", "用设计哲学创作 PNG/PDF 视觉艺术作品", "core"],
+    ["banner-design", "社媒/广告/网站 Hero 横幅设计（多艺术方向）", "core"],
+    ["brand", "品牌：声音/视觉识别/信息框架/资产管理", "core"],
+    ["brandkit", "高端品牌套件图像生成（Logo 系统/身份手册）", "core"],
+    ["brand-guidelines", "应用 Anthropic 官方品牌色与字体", "core"],
+    ["web-artifacts-builder", "claude.ai HTML artifacts 构建套件（React/Tailwind/shadcn）", "core"],
+    ["algorithmic-art", "p5.js 算法艺术：种子随机 + 交互参数探索", "core"],
+    ["webapp-testing", "Playwright 本地 Web 应用测试工具包", "core"],
+  ]},
+  { title: "文档 · Office · 文件工具", items: [
+    ["pdf", "PDF 一切：读取/提取文本表格/合并/转换", "core"],
+    ["docx", "Word 文档一切：创建/读取/编辑 .docx", "core"],
+    ["pptx", "PPT 一切：创建幻灯片/演示稿 .pptx", "core"],
+    ["xlsx", "Excel 一切：打开/读取/编辑电子表格", "core"],
+    ["slides", "战略演示：Chart.js + 设计令牌 + 响应式 HTML 演示稿", "core"],
+    ["slack-gif-creator", "Slack 优化 GIF 动图制作（约束/验证/动画概念）", "core"],
+    ["internal-comms", "公司内部沟通文档模板集（按公司格式）", "core"],
+    ["make-pdf", "Markdown → 出版级 PDF", "core"],
+    ["template", "skill 模板（占位）", "core"],
+  ]},
+  { title: "iOS 开发", items: [
+    ["ios-qa", "真机 iOS QA（SwiftUI）", "core"],
+    ["ios-design-review", "真机视觉设计审查", "core"],
+    ["ios-fix", "自主 iOS bug 修复", "core"],
+    ["ios-clean", "移除 DebugBridge SPM 包与 #if DEBUG 接线", "core"],
+    ["ios-sync", "重新生成 iOS debug bridge（对齐上游模板）", "core"],
+  ]},
+  { title: "开发辅助 · 其他", items: [
+    ["claude-api", "Claude API / Anthropic SDK 开发指南", "core"],
+    ["mcp-builder", "构建高质量 MCP Server 指南", "core"],
+    ["skill-creator", "创建/修改/评测 skill", "core"],
+    ["full-output-enforcement", "强制完整输出：禁止占位符/优雅处理 token 截断", "core"],
+    ["setup-browser-cookies", "导入浏览器 cookies", "core"],
+    ["retro", "每周工程回顾", "core"],
+  ]},
+];
+
+const CMD_COUNT = GROUPS.reduce((n, g) => n + g.items.length, 0);
+document.getElementById("total").textContent = CMD_COUNT + " 个命令";
+
+function escapeHtml(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+function render(filter) {
+  const root = document.getElementById("groups");
+  root.innerHTML = "";
+  let shown = 0;
+  for (const g of GROUPS) {
+    const items = g.items.filter(([name, desc]) =>
+      !filter || name.includes(filter) || desc.includes(filter)
+    );
+    if (!items.length) continue;
+    shown += items.length;
+    const sec = document.createElement("section");
+    sec.className = "group";
+    sec.innerHTML = `
+      <div class="group-title">${escapeHtml(g.title)}</div>
+      <div class="grid">
+        ${items.map(([name, desc, badge]) => `
+          <div class="cmd">
+            <div><span class="cmd-name">/${escapeHtml(name)}</span>
+            ${badge ? `<span class="badge ${badge === 'taste' ? 'b-taste' : 'b-core'}">${badge === 'taste' ? 'taste' : 'gstack'}</span>` : ''}</div>
+            <div class="cmd-desc">${escapeHtml(desc)}</div>
+          </div>`).join("")}
+      </div>`;
+    root.appendChild(sec);
+  }
+  document.getElementById("empty").style.display = shown ? "none" : "block";
+}
+
+document.getElementById("search").addEventListener("input", (e) => render(e.target.value.trim().toLowerCase()));
+render("");
+</script>
+</body>
+</html>

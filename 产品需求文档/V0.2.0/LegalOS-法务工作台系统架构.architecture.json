@@ -1,0 +1,254 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "LegalOS 法务工作台系统架构",
+    "locale": "zh-CN",
+    "output": "LegalOS-法务工作台系统架构.html",
+    "quality_profile": "showcase",
+    "viewBox": [1390, 820],
+    "views": [
+      {
+        "id": "workspace-mainline",
+        "label": "工作台主链",
+        "focus": ["legalUsers", "legalWeb", "apiGateway", "businessCore", "persistence"],
+        "note": "业务、法务与管理员通过同一 Web 工作台进入受认证的模块化单体，业务状态统一持久化。"
+      },
+      {
+        "id": "ai-capability-routing",
+        "label": "AI 能力分流",
+        "focus": ["businessCore", "aiRouter", "llmGateway", "legalResearch"],
+        "note": "通用咨询直连公司模型网关；法规与类案问题进入带工具约束的 DSH 法律检索执行层。"
+      },
+      {
+        "id": "verified-evidence",
+        "label": "权威证据链",
+        "focus": ["legalResearch", "baijianPlatform", "persistence"],
+        "note": "检索快照、法规正文、用量与 researchTrace 共同支撑引用核验和安全降级报告。"
+      },
+      {
+        "id": "enterprise-integrations",
+        "label": "企业系统集成",
+        "focus": ["enterpriseSystems", "apiGateway", "businessCore"],
+        "note": "CAS 负责身份，钉钉和 CRM 副作用通过受控入口或 Outbox 交付。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "legalUsers",
+      "type": "external",
+      "label": "LegalOS 用户",
+      "sublabel": "业务 · 法务 · 管理",
+      "pos": [30, 280],
+      "size": [150, 78]
+    },
+    {
+      "id": "legalWeb",
+      "type": "frontend",
+      "label": "Vue 3 工作台",
+      "sublabel": "Pinia · Vue Router · SSE",
+      "tag": "三端工作台",
+      "pos": [225, 275],
+      "size": [175, 88]
+    },
+    {
+      "id": "apiGateway",
+      "type": "security",
+      "label": "NestJS API 入口",
+      "sublabel": "限流 · JWT · RBAC · requestId",
+      "tag": "/api",
+      "pos": [450, 270],
+      "size": [205, 98]
+    },
+    {
+      "id": "businessCore",
+      "type": "backend",
+      "label": "法务业务核心",
+      "sublabel": "工单 · 合同 · 技能 · 成员 · 审计",
+      "tag": "模块化单体",
+      "pos": [710, 265],
+      "size": [240, 108]
+    },
+    {
+      "id": "persistence",
+      "type": "database",
+      "label": "数据与文件持久化",
+      "sublabel": "MySQL · 合同文件 · DSH_HOME",
+      "tag": "Prisma · AuditEvent · Outbox",
+      "pos": [1130, 270],
+      "size": [230, 98]
+    },
+    {
+      "id": "enterpriseSystems",
+      "type": "external",
+      "label": "企业系统",
+      "sublabel": "CAS · 钉钉 · CRM",
+      "tag": "CRM A1 默认关闭",
+      "pos": [525, 55],
+      "size": [250, 90]
+    },
+    {
+      "id": "aiRouter",
+      "type": "messagebus",
+      "label": "AI 执行编排",
+      "sublabel": "能力识别 · 队列 · 取消 · 流式返回",
+      "tag": "ConsultationExecutionRouter",
+      "pos": [710, 475],
+      "size": [240, 104]
+    },
+    {
+      "id": "legalResearch",
+      "type": "backend",
+      "label": "DSH 法律检索执行层",
+      "sublabel": "Agent Loop · 缓存 · 正文核验 · 报告闸门",
+      "tag": "最多 5 次供应商调用",
+      "pos": [1010, 475],
+      "size": [250, 104]
+    },
+    {
+      "id": "baijianPlatform",
+      "type": "external",
+      "label": "百鉴法律数据中台",
+      "sublabel": "法规 · 类案 · 权威详情",
+      "tag": "MCP over HTTPS",
+      "pos": [1085, 685],
+      "size": [200, 84]
+    },
+    {
+      "id": "llmGateway",
+      "type": "external",
+      "label": "公司 LLM 网关",
+      "sublabel": "OpenAI-compatible API",
+      "tag": "GLM-5-2",
+      "pos": [770, 685],
+      "size": [200, 84]
+    }
+  ],
+  "connections": [
+    {
+      "id": "users-open-workspace",
+      "from": "legalUsers",
+      "to": "legalWeb",
+      "label": "浏览器交互",
+      "variant": "emphasis",
+      "labelAt": [203, 377]
+    },
+    {
+      "id": "web-call-api",
+      "from": "legalWeb",
+      "to": "apiGateway",
+      "label": "HTTPS /api · SSE",
+      "variant": "emphasis",
+      "labelAt": [425, 382]
+    },
+    {
+      "id": "api-dispatch-domain",
+      "from": "apiGateway",
+      "to": "businessCore",
+      "label": "认证授权后分发",
+      "variant": "security",
+      "labelAt": [683, 387]
+    },
+    {
+      "id": "enterprise-ingress",
+      "from": "enterpriseSystems",
+      "to": "apiGateway",
+      "label": "CAS 登录 · CRM A1 推送",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDx": -16
+    },
+    {
+      "id": "domain-enterprise-outbox",
+      "from": "businessCore",
+      "to": "enterpriseSystems",
+      "label": "Outbox：钉钉 · CRM 回传",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "domain-write-state",
+      "from": "businessCore",
+      "to": "persistence",
+      "label": "Prisma 事务 · 文件读写"
+    },
+    {
+      "id": "domain-route-ai",
+      "from": "businessCore",
+      "to": "aiRouter",
+      "label": "咨询能力分流",
+      "variant": "emphasis",
+      "labelAt": [830, 387]
+    },
+    {
+      "id": "general-consultation",
+      "from": "aiRouter",
+      "to": "llmGateway",
+      "label": "通用咨询直连",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "research-consultation",
+      "from": "aiRouter",
+      "to": "legalResearch",
+      "label": "法规 / 类案检索",
+      "variant": "emphasis",
+      "labelAt": [930, 593]
+    },
+    {
+      "id": "agent-model-loop",
+      "from": "legalResearch",
+      "to": "llmGateway",
+      "label": "模型规划与工具循环"
+    },
+    {
+      "id": "research-call-baijian",
+      "from": "legalResearch",
+      "to": "baijianPlatform",
+      "label": "MCP tools/call",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [1180, 630]
+    },
+    {
+      "id": "research-persist-evidence",
+      "from": "legalResearch",
+      "to": "persistence",
+      "label": "快照 · 正文 · researchTrace",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "工作台边界",
+      "items": [
+        "业务、法务和管理员复用同一 Vue 工作台与 NestJS 模块化单体",
+        "全局限流、JWT、RBAC、requestId 与 AuditEvent 形成统一治理入口"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "法律证据链",
+      "items": [
+        "通用咨询与法律检索在唯一执行路由处分流",
+        "法规报告必须通过候选范围、权威正文和直接引文一致性校验"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "集成现状",
+      "items": [
+        "CRM A1 入站服务已实现但当前默认关闭",
+        "钉钉由 Outbox 可靠投递；真实 CRM 回传 Adapter 仍待接入"
+      ]
+    }
+  ]
+}

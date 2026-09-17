@@ -1,0 +1,15 @@
+# 凭证与本地缓存不得入库
+key.md
+.env
+.env.*
+!.env.example
+.DS_Store
+__pycache__/
+*.pyc
+
+# 以下历史 CAS 原始参考含凭证示例，待凭证负责人脱敏后补交
+V0.1.0/cas/cas系统-架构/03-RBAC权限管理知识点.docx
+V0.1.0/cas/cas系统-架构/07-拦截器与安全机制.docx
+V0.1.0/cas/cas系统-开放文档/2、通过项目code查询项目下面的角色.docx
+V0.1.0/cas/cas系统-开放文档/3、通过项目code查询项目下面的用户.docx
+V0.1.0/cas/cas系统-开放文档/12、跨系统 Token 接口调用---后端对接文档（全域 API 通行证）.docx

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DSH 运行时与会话组件细分",
+    "locale": "zh-CN",
+    "output": "DSH-运行时与会话组件细分.html",
+    "quality_profile": "showcase",
+    "viewBox": [1160, 580],
+    "views": [
+      { "id": "profile-boot", "label": "Profile 组装", "focus": ["runtimeSurface", "profileResolver", "bundleLayers", "bootComposer", "pluginLoader"], "note": "宿主选择 Profile，app-boot 按 bundle、profile patch、home patch 和 CLI overlay 顺序生成并挂载配置树。" },
+      { "id": "cordis-lifecycle", "label": "Cordis 生命周期", "focus": ["bootComposer", "cordisContext", "fiberLifecycle", "agentRegistry"], "note": "Context 承载 Service 与 Event，Fiber 负责可逆副作用和卸载，各模块作为并列插件提供能力。" },
+      { "id": "turn-session", "label": "Turn / Step 与会话", "focus": ["agentRegistry", "inboxControl", "agentLoop", "systemPrompt", "sessionEvents"], "note": "Inbox 唤醒 Agent Loop，每个 Step 组装 Prompt 并请求模型，Turn、Message、Chunk 和 Tool 事件追加到 SessionEvent。" }
+    ]
+  },
+  "components": [
+    { "id": "runtimeSurface", "type": "frontend", "label": "运行表面", "sublabel": "Web · CLI · 无头 · SDK · 嵌入", "tag": "驱动 Agent API", "pos": [20, 220], "size": [145, 76] },
+    { "id": "profileResolver", "type": "cloud", "label": "Profile 解析器", "sublabel": "$DSH_HOME/profiles · manifest", "tag": "bundle 顺序", "pos": [200, 220], "size": [150, 76] },
+    { "id": "bootComposer", "type": "backend", "label": "App Boot 配置组装", "sublabel": "compose · patch · boot", "tag": "dsh-app-boot", "pos": [390, 220], "size": [150, 76] },
+    { "id": "cordisContext", "type": "messagebus", "label": "Cordis Context", "sublabel": "Service Registry · Typed Events", "tag": "共享上下文", "pos": [580, 220], "size": [160, 76] },
+    { "id": "agentRegistry", "type": "backend", "label": "Agent Registry", "sublabel": "Agent 创建 · 活跃状态 · agent/*", "tag": "ctx.agents", "pos": [780, 220], "size": [170, 76] },
+    { "id": "agentLoop", "type": "backend", "label": "Agent Loop 驱动器", "sublabel": "认领 · 前置 · 请求 · 停止", "tag": "ctx.agentLoop", "pos": [980, 220], "size": [150, 76] },
+    { "id": "bundleLayers", "type": "cloud", "label": "Bundle 与 Patch 层", "sublabel": "基础 · Web/无头 · 用户覆盖", "tag": "整体 config 替换", "pos": [200, 40], "size": [150, 74] },
+    { "id": "pluginLoader", "type": "backend", "label": "插件 Loader 与 Mount", "sublabel": "resolve · isolate · hot reload", "tag": "Cordis Loader", "pos": [390, 40], "size": [150, 74] },
+    { "id": "systemPrompt", "type": "backend", "label": "System Prompt 组装", "sublabel": "指令 · 上下文 · 工具模式", "tag": "ctx.systemPrompt", "pos": [980, 40], "size": [150, 74] },
+    { "id": "fiberLifecycle", "type": "messagebus", "label": "Fiber 生命周期", "sublabel": "effect · dispose · 可逆副作用", "tag": "可逆卸载", "pos": [580, 410], "size": [160, 76] },
+    { "id": "inboxControl", "type": "messagebus", "label": "Inbox 与运行控制", "sublabel": "追问 · 注入 · 引导 · 取消", "tag": "agent/* 实时域", "pos": [780, 410], "size": [170, 76] },
+    { "id": "sessionEvents", "type": "database", "label": "SessionEvent 存储", "sublabel": "追加 · 回放 · 分叉 · 派生", "tag": "JSONL / persistence", "pos": [980, 410], "size": [150, 76] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Profile 与启动组装", "wraps": ["profileResolver", "bundleLayers", "bootComposer", "pluginLoader"], "pad": 18 },
+    { "kind": "region", "label": "Cordis / Agent 运行时", "wraps": ["cordisContext", "fiberLifecycle", "agentRegistry", "inboxControl", "agentLoop", "systemPrompt", "sessionEvents"], "pad": 18 }
+  ],
+  "connections": [
+    { "id": "surface-select-profile", "from": "runtimeSurface", "to": "profileResolver", "variant": "emphasis" },
+    { "id": "layers-feed-profile", "from": "bundleLayers", "to": "profileResolver", "label": "按序叠加", "labelAt": [275, 128], "variant": "dashed" },
+    { "id": "profile-compose-boot", "from": "profileResolver", "to": "bootComposer" },
+    { "id": "loader-mount-boot", "from": "pluginLoader", "to": "bootComposer", "label": "resolve / mount", "labelAt": [465, 128] },
+    { "id": "boot-create-context", "from": "bootComposer", "to": "cordisContext", "variant": "emphasis" },
+    { "id": "context-manage-fiber", "from": "cordisContext", "to": "fiberLifecycle", "label": "effect / dispose", "labelAt": [660, 310], "variant": "dashed" },
+    { "id": "context-provide-agents", "from": "cordisContext", "to": "agentRegistry" },
+    { "id": "registry-drive-loop", "from": "agentRegistry", "to": "agentLoop", "variant": "emphasis" },
+    { "id": "inbox-wake-loop", "from": "inboxControl", "to": "agentLoop", "label": "claim / steering" },
+    { "id": "prompt-enter-loop", "from": "systemPrompt", "to": "agentLoop", "label": "assemble", "labelAt": [1055, 128] },
+    { "id": "loop-append-session", "from": "agentLoop", "to": "sessionEvents", "label": "session/event", "labelAt": [1055, 310], "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "amber", "title": "启动与组装", "items": ["Profile 是具名组装，Bundle 是可被后续 patch 整体替换的配置层", "运行中的 DSH 是一棵可挂载、隔离和卸载的 Cordis 插件树"] },
+    { "dot": "violet", "title": "会话事实与控制面", "items": ["session/event 记录可持久、可回放事实", "agent/* 负责 Inbox、状态、拦截、续跑和取消等实时控制"] }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "LegalOS 应用与业务组件细分",
+    "locale": "zh-CN",
+    "output": "LegalOS-应用与业务组件细分.html",
+    "quality_profile": "showcase",
+    "viewBox": [1160, 580],
+    "views": [
+      { "id": "frontend-path", "label": "前端工作台", "focus": ["roleEntry", "vueShell", "apiClient", "stateAccess"], "note": "Vue Shell 承载路由与页面，Pinia 管理登录和权限状态，API Client 统一处理 /api 与 SSE。" },
+      { "id": "api-domain", "label": "API 与业务核心", "focus": ["apiClient", "apiEntry", "projectContract", "governance", "consultation"], "note": "全局 Guard 完成限流、认证和授权，再进入项目、合同、咨询及治理模块。" },
+      { "id": "reliable-state", "label": "事务与可靠交付", "focus": ["projectContract", "prismaStore", "fileStorage", "outboxWorker"], "note": "业务状态通过 Prisma 写入 MySQL，合同文件独立持久化，外部副作用交由 Outbox Worker。" }
+    ]
+  },
+  "components": [
+    { "id": "roleEntry", "type": "external", "label": "角色入口", "sublabel": "业务 · 法务 BP/Lead · 管理员", "tag": "CAS 身份", "pos": [20, 220], "size": [145, 76] },
+    { "id": "vueShell", "type": "frontend", "label": "Vue Shell 与路由", "sublabel": "Vue Router · 布局 · 页面", "tag": "Vue 3", "pos": [200, 220], "size": [150, 76] },
+    { "id": "apiClient", "type": "frontend", "label": "API Client 与实时通道", "sublabel": "HTTPS /api · SSE · 附件", "tag": "Web 请求边界", "pos": [390, 220], "size": [150, 76] },
+    { "id": "apiEntry", "type": "security", "label": "NestJS API 入口", "sublabel": "限流 · JWT · RBAC · requestId", "tag": "Guard → Controller/DTO", "pos": [580, 220], "size": [160, 76] },
+    { "id": "projectContract", "type": "backend", "label": "项目与合同核心", "sublabel": "Project · Contract · AccessPolicy", "tag": "Use Case / Service", "pos": [780, 220], "size": [170, 76] },
+    { "id": "prismaStore", "type": "database", "label": "Prisma 与 MySQL", "sublabel": "Project · Run · AuditEvent", "tag": "事务数据", "pos": [980, 220], "size": [150, 76] },
+    { "id": "stateAccess", "type": "security", "label": "状态与前端权限", "sublabel": "Pinia · 鉴权 · 角色 · 守卫", "tag": "前端可见性", "pos": [200, 40], "size": [150, 74] },
+    { "id": "crmA1", "type": "security", "label": "CRM A1 公开入站", "sublabel": "HMAC · nonce · multipart · 幂等", "tag": "默认关闭", "pos": [580, 40], "size": [160, 74] },
+    { "id": "governance", "type": "backend", "label": "治理与配置模块", "sublabel": "Skill · Members · Dashboard · Audit", "tag": "横切能力", "pos": [780, 40], "size": [170, 74] },
+    { "id": "consultation", "type": "backend", "label": "咨询与附件服务", "sublabel": "Chat · Context · Reply · Attachment", "tag": "AI 执行上游", "pos": [780, 410], "size": [170, 76] },
+    { "id": "outboxWorker", "type": "messagebus", "label": "Outbox 交付工作器", "sublabel": "待发 · 重试 · 已达 · 终止", "tag": "钉钉 / CRM 副作用", "pos": [580, 410], "size": [160, 76] },
+    { "id": "fileStorage", "type": "database", "label": "合同文件存储", "sublabel": "原件 · 附件 · 修订/定稿", "tag": "CONTRACT_STORAGE_DIR", "pos": [980, 410], "size": [150, 76] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Vue 3 法务工作台", "wraps": ["vueShell", "apiClient", "stateAccess"], "pad": 18 },
+    { "kind": "region", "label": "NestJS 模块化单体", "wraps": ["apiEntry", "crmA1", "projectContract", "governance", "consultation", "outboxWorker"], "pad": 18 },
+    { "kind": "security-group", "label": "持久化边界", "wraps": ["prismaStore", "fileStorage"], "pad": 14 }
+  ],
+  "connections": [
+    { "id": "roles-open-shell", "from": "roleEntry", "to": "vueShell", "variant": "emphasis" },
+    { "id": "state-controls-shell", "from": "stateAccess", "to": "vueShell", "label": "登录 / 路由权限", "variant": "security", "labelAt": [275, 128] },
+    { "id": "shell-use-client", "from": "vueShell", "to": "apiClient" },
+    { "id": "client-enter-api", "from": "apiClient", "to": "apiEntry", "variant": "emphasis" },
+    { "id": "crm-enter-api", "from": "crmA1", "to": "apiEntry", "label": "Public HMAC", "variant": "security", "labelAt": [660, 128] },
+    { "id": "api-dispatch-domain", "from": "apiEntry", "to": "projectContract", "variant": "emphasis" },
+    { "id": "governance-support-domain", "from": "governance", "to": "projectContract", "label": "配置 / 审计", "labelAt": [865, 128] },
+    { "id": "domain-write-db", "from": "projectContract", "to": "prismaStore" },
+    { "id": "domain-run-consultation", "from": "projectContract", "to": "consultation", "label": "咨询 / 附件", "labelAt": [865, 310] },
+    { "id": "domain-enqueue-outbox", "from": "projectContract", "to": "outboxWorker", "label": "事务内写入", "variant": "dashed" },
+    { "id": "db-index-files", "from": "prismaStore", "to": "fileStorage", "label": "文件元数据", "variant": "dashed", "labelAt": [1055, 310] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "一级节点映射", "items": ["LegalOS 用户、Vue 工作台和 API 入口已展开为角色、状态、客户端与 Guard", "法务业务核心已展开为项目/合同、咨询、治理与 Outbox"] },
+    { "dot": "violet", "title": "数据边界", "items": ["MySQL 保存事务状态、消息、AI Run 与 AuditEvent", "合同文件由 CONTRACT_STORAGE_DIR 独立持久化"] }
+  ]
+}

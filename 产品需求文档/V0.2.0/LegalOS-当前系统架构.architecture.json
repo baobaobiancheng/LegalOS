@@ -1,0 +1,281 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "LegalOS 当前系统架构",
+    "locale": "zh-CN",
+    "output": "LegalOS-当前系统架构.html",
+    "quality_profile": "showcase",
+    "viewBox": [1390, 780],
+    "views": [
+      {
+        "id": "request-path",
+        "label": "业务请求主链",
+        "focus": ["actors", "web", "api", "domain", "mysql"],
+        "note": "从三类用户进入工单、合同、技能、成员和审计模块，最终在 MySQL 中事务化落库。"
+      },
+      {
+        "id": "ai-routing",
+        "label": "AI 执行分流",
+        "focus": ["domain", "aiOrchestrator", "llmGateway", "dshAgent"],
+        "note": "普通咨询直连公司 LLM 网关；法规与类案任务进入嵌入式 DSH 工具循环。"
+      },
+      {
+        "id": "evidence-path",
+        "label": "法律证据链",
+        "focus": ["dshAgent", "researchCore", "baijian", "mysql"],
+        "note": "受控工具白名单、缓存、正文核验和 researchTrace 共同约束法律引用。"
+      },
+      {
+        "id": "audit-state",
+        "label": "审计与运行状态",
+        "focus": ["api", "domain", "mysql", "localStorage", "enterprise"],
+        "note": "AuditEvent 是权威业务审计；DSH Session/Trace 只是 AI 执行证据；Outbox 负责可靠钙钙投递。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "actors",
+      "type": "external",
+      "label": "LegalOS 用户",
+      "sublabel": "业务 · 法务 · 管理",
+      "pos": [20, 250],
+      "size": [140, 78]
+    },
+    {
+      "id": "web",
+      "type": "frontend",
+      "label": "Vue 3 Web",
+      "sublabel": "Pinia · Vue Router",
+      "tag": "已实现",
+      "pos": [200, 250],
+      "size": [170, 78]
+    },
+    {
+      "id": "api",
+      "type": "security",
+      "label": "NestJS API 入口",
+      "sublabel": "JWT · RBAC · 限流 · requestId",
+      "tag": "/api",
+      "pos": [420, 246],
+      "size": [200, 86]
+    },
+    {
+      "id": "domain",
+      "type": "backend",
+      "label": "业务模块",
+      "sublabel": "工单 · 合同 · 检索 · 管理",
+      "tag": "模块化单体",
+      "pos": [680, 242],
+      "size": [230, 94]
+    },
+    {
+      "id": "aiOrchestrator",
+      "type": "messagebus",
+      "label": "AI 执行编排",
+      "sublabel": "咨询分流 · 并发队列 · 取消",
+      "tag": "能力分流",
+      "pos": [970, 246],
+      "size": [210, 86]
+    },
+    {
+      "id": "dshAgent",
+      "type": "backend",
+      "label": "嵌入式 DSH Agent",
+      "sublabel": "Session · Tool Loop",
+      "tag": "检索咨询",
+      "pos": [970, 440],
+      "size": [205, 94]
+    },
+    {
+      "id": "researchCore",
+      "type": "backend",
+      "label": "共享法律检索核心",
+      "sublabel": "白名单 · 缓存 · 归一化 · 证据门控",
+      "tag": "权威正文核验",
+      "pos": [680, 620],
+      "size": [205, 94]
+    },
+    {
+      "id": "enterprise",
+      "type": "external",
+      "label": "企业基础服务",
+      "sublabel": "CAS 统一身份 · 钙钙通讯录/群聊",
+      "tag": "真实适配器",
+      "pos": [420, 30],
+      "size": [200, 82]
+    },
+    {
+      "id": "llmGateway",
+      "type": "external",
+      "label": "公司 LLM 网关",
+      "sublabel": "OpenAI-compatible API",
+      "tag": "LLM_* / DSH_LLM_*",
+      "pos": [1210, 250],
+      "size": [170, 82]
+    },
+    {
+      "id": "baijian",
+      "type": "external",
+      "label": "百鉴法律数据中台",
+      "sublabel": "法规 · 类案 · 详情",
+      "tag": "MCP over HTTPS",
+      "pos": [20, 620],
+      "size": [170, 82]
+    },
+    {
+      "id": "mysql",
+      "type": "database",
+      "label": "MySQL 8 + Prisma",
+      "sublabel": "业务数据 · AuditEvent · 检索缓存 · Outbox",
+      "tag": "权威业务状态",
+      "pos": [680, 440],
+      "size": [235, 88]
+    },
+    {
+      "id": "localStorage",
+      "type": "database",
+      "label": "本地持久目录",
+      "sublabel": "合同/附件 · DSH_HOME",
+      "tag": "部署需备份",
+      "pos": [970, 620],
+      "size": [205, 88]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "浏览器端",
+      "wraps": ["web"],
+      "pad": 22
+    },
+    {
+      "kind": "security-group",
+      "label": "LegalOS 受管服务端 · 凭据与持久化边界",
+      "wraps": ["api", "domain", "aiOrchestrator", "dshAgent", "researchCore", "mysql", "localStorage"],
+      "pad": 18
+    }
+  ],
+  "connections": [
+    {
+      "id": "actors-web",
+      "from": "actors",
+      "to": "web",
+      "variant": "emphasis"
+    },
+    {
+      "id": "web-api",
+      "from": "web",
+      "to": "api",
+      "label": "HTTPS /api · SSE",
+      "variant": "emphasis",
+      "labelAt": [395, 360]
+    },
+    {
+      "id": "api-domain",
+      "from": "api",
+      "to": "domain",
+      "label": "校验后命令/查询",
+      "variant": "security",
+      "labelAt": [620, 364]
+    },
+    {
+      "id": "api-enterprise",
+      "from": "api",
+      "to": "enterprise",
+      "label": "CAS ticket 校验",
+      "variant": "security",
+      "labelAt": [460, 165]
+    },
+    {
+      "id": "domain-enterprise",
+      "from": "domain",
+      "to": "enterprise",
+      "label": "Outbox Worker · 钙钙 REST",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [700, 165]
+    },
+    {
+      "id": "domain-ai",
+      "from": "domain",
+      "to": "aiOrchestrator",
+      "label": "AI Run · 流式返回",
+      "labelAt": [940, 364]
+    },
+    {
+      "id": "ai-llm",
+      "from": "aiOrchestrator",
+      "to": "llmGateway",
+      "label": "general 直连",
+      "labelAt": [1195, 226]
+    },
+    {
+      "id": "ai-dsh",
+      "from": "aiOrchestrator",
+      "to": "dshAgent",
+      "label": "law_search / similar_case",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [1075, 390]
+    },
+    {
+      "id": "dsh-llm",
+      "from": "dshAgent",
+      "to": "llmGateway",
+      "label": "模型调用",
+      "fromSide": "right",
+      "toSide": "bottom"
+    },
+    {
+      "id": "dsh-research",
+      "from": "dshAgent",
+      "to": "researchCore",
+      "label": "受控工具调用",
+      "variant": "security",
+      "fromSide": "left",
+      "toSide": "right",
+      "via": [[930, 487], [930, 667]],
+      "labelAt": [905, 575]
+    },
+    {
+      "id": "research-baijian",
+      "from": "researchCore",
+      "to": "baijian",
+      "label": "MCP tools/call",
+      "variant": "security",
+      "labelAt": [430, 596]
+    },
+    {
+      "id": "domain-mysql",
+      "from": "domain",
+      "to": "mysql",
+      "label": "Prisma 事务",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [820, 395]
+    },
+    {
+      "id": "research-mysql",
+      "from": "researchCore",
+      "to": "mysql",
+      "label": "快照 · 正文 · 用量",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [850, 575]
+    },
+    {
+      "id": "dsh-files",
+      "from": "dshAgent",
+      "to": "localStorage",
+      "label": "Session · Checkpoint",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [1100, 575]
+    }
+  ]
+}
