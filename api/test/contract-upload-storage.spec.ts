@@ -142,6 +142,28 @@ describe('ContractFileService.uploadFile staging 与文件签名', () => {
     expect(readExists(join(root, 'project-1', 'rollback.txt'))).toBe(false);
   });
 
+  it('文件解析期间工单转派，原法务不得继续写入文件或正文', async () => {
+    const staging = join(root, '.staging');
+    const path = join(staging, 'reassigned.txt');
+    mkdirForTest(staging);
+    writeFileSync(path, '合同原文');
+    prisma.project.findUnique.mockResolvedValueOnce({
+      id: 'project-1', creatorId: 'business-1', ownerId: 'bp-1', legalBpId: 'bp-1',
+    }).mockResolvedValue({
+      id: 'project-1', creatorId: 'business-1', ownerId: 'bp-2', legalBpId: 'bp-2',
+    });
+
+    await expect(service.uploadFile(
+      'project-1', file(path, 'reassigned.txt', '.txt'), 'final',
+      { id: 'bp-1', role: 'legal_bp' },
+    )).rejects.toMatchObject({ status: 403 });
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+    expect(prisma.contractFile.create).not.toHaveBeenCalled();
+    expect(prisma.contractDocument.create).not.toHaveBeenCalled();
+    expect(readExists(path)).toBe(false);
+    expect(readExists(join(root, 'project-1', 'reassigned.txt'))).toBe(false);
+  });
+
   it('PDF 文字会抽取并写入 ContractDocument', async () => {
     const staging = join(root, '.staging');
     const path = join(staging, 'contract.pdf');

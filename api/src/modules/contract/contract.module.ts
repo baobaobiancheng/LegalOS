@@ -11,6 +11,7 @@ import { CreateProjectUseCase } from '../project/application/create-project.use-
 import { EscalateProjectToLegalUseCase } from '../project/application/escalate-project-to-legal.use-case';
 import { ContractDocumentWriter } from './application/contract-document.writer';
 import { ContractFileProcessor } from './application/contract-file.processor';
+import { ProjectFileAccessGuard } from './project-file-access.guard';
 
 @Module({
   imports: [PrismaModule],
@@ -18,6 +19,7 @@ import { ContractFileProcessor } from './application/contract-file.processor';
   providers: [
     ContractService,
     ContractFileService,
+    ProjectFileAccessGuard,
     ContractDocumentWriter,
     ContractFileProcessor,
     ContractTemplateService,

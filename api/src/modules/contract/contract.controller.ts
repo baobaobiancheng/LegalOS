@@ -8,6 +8,7 @@ import {
   UseInterceptors,
   UploadedFile,
   Req,
+  UseGuards,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -26,11 +27,11 @@ import { CreateContractDto } from './dto/create-contract.dto';
 import { Role } from '@prisma/client';
 import { ProjectActor } from '../project/domain/project-access.types';
 import { auditRequestContext } from '../../common/audit/audit-request';
+import { ProjectFileAccessGuard } from './project-file-access.guard';
 
 /**
  * multer diskStorage：先落盘到 storage/contracts/.staging/，不占内存。
- * 不能在鉴权前写入项目目录，正式目录移动由 ContractFileService 在 Policy
- * 校验通过后完成（P1-06）。
+ * ProjectFileAccessGuard 在落盘前授权；提交文件元数据前再次检查当前指派。
  * 文件名用 uuid+扩展名，避免路径穿越与中文文件名问题。
  */
 const storageDir = process.env.CONTRACT_STORAGE_DIR
@@ -152,6 +153,7 @@ export class ContractController {
   /** 上传合同附件（multipart: file + kind） */
   @Post('projects/:id/files')
   @Roles(Role.admin, Role.business, Role.legal_bp, Role.legal_lead)
+  @UseGuards(ProjectFileAccessGuard)
   @UseInterceptors(FileInterceptor('file', {
     storage: contractStorage,
     limits: {

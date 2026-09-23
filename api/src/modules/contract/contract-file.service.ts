@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
   Optional,
+  HttpException,
 } from '@nestjs/common';
 import { Response } from 'express';
 import {
@@ -114,6 +115,9 @@ export class ContractFileService {
       record = await this.prisma.$transaction(async (tx) => {
         // 先锁父行，再创建带外键的文件，避免并发上传在共享锁上互相等待升级。
         await tx.$queryRaw`SELECT id FROM projects WHERE id = ${projectId} FOR UPDATE`;
+        const currentProject = await tx.project.findUnique({ where: { id: projectId } });
+        if (!currentProject) throw new NotFoundException('工单不存在');
+        this.accessPolicy.assertCan(actor, ProjectAction.ManageFile, currentProject);
         const created = await tx.contractFile.create({
           data: {
             projectId,
@@ -147,6 +151,7 @@ export class ContractFileService {
       });
     } catch (e) {
       this.tryCleanup(finalPath);
+      if (e instanceof HttpException) throw e;
       this.logger.error(`附件记录落库失败：${safeErrorTag(e)}`);
       throw new InternalServerErrorException('附件保存失败');
     }

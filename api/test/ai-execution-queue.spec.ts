@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { getEventListeners } from 'node:events';
 import {
   AiExecutionQueueService,
   AiQueueBusyError,
@@ -22,6 +23,19 @@ const makeQueue = (over: Record<string, string> = {}) =>
 
 /** 永不结束的 done（占用槽位） */
 const hold = () => ({ result: 'hold', done: new Promise<void>(() => {}) });
+
+describe('AiExecutionQueueService 配置边界', () => {
+  it.each(['NaN', 'Infinity', '1.5', '0', '-1', ''])('拒绝非法并发上限 %s，不允许静默失控或永久排队', (value) => {
+    expect(() => makeQueue({ AI_EXECUTION_CONCURRENCY: value })).toThrow('AI_EXECUTION_CONCURRENCY');
+  });
+
+  it.each([
+    { AI_EXECUTION_QUEUE_MAX_SIZE: 'Infinity' },
+    { AI_EXECUTION_QUEUE_TIMEOUT_MS: '2147483648' },
+  ])('拒绝非法队列容量或溢出计时器 %j', (config) => {
+    expect(() => makeQueue(config)).toThrow();
+  });
+});
 
 describe('AiExecutionQueueService 并发上限', () => {
   it('同时提交 CONCURRENCY+2 任务：实际 start 峰值不超过上限，释放后继续', async () => {
@@ -108,6 +122,46 @@ describe('AiExecutionQueueService 队列满/超时', () => {
 });
 
 describe('AiExecutionQueueService 槽位释放', () => {
+  it('result 拒绝但 done 尚未完成时，不能提前启动同会话的后续任务', async () => {
+    const queue = makeQueue({ AI_EXECUTION_CONCURRENCY: '2' });
+    let finish!: () => void;
+    const first = queue.run({ sessionId: 's1' }, () => ({
+      result: Promise.reject(new Error('result failed')),
+      done: new Promise<void>((resolve) => { finish = resolve; }),
+    }));
+    await expect(first).rejects.toThrow('result failed');
+    const startNext = vi.fn(() => ({ result: 'next', done: Promise.resolve() }));
+    const next = queue.run({ sessionId: 's1' }, startNext);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(startNext).not.toHaveBeenCalled();
+    expect(queue.getStats()).toMatchObject({ active: 1, queued: 1 });
+    finish();
+    await expect(next).resolves.toBe('next');
+  });
+
+  it('成功后移除外部 AbortSignal 监听，不随复用信号累计任务闭包', async () => {
+    const queue = makeQueue();
+    const abort = new AbortController();
+    for (let i = 0; i < 15; i++) {
+      await queue.run({ signal: abort.signal }, () => ({ result: 'ok', done: Promise.resolve() }));
+      await new Promise(resolve => setImmediate(resolve));
+      expect(getEventListeners(abort.signal, 'abort')).toHaveLength(0);
+    }
+  });
+
+  it.each(['cancel', 'timeout'] as const)('排队 %s 后移除外部监听', async (termination) => {
+    const queue = makeQueue({ AI_EXECUTION_CONCURRENCY: '1' });
+    let finish!: () => void;
+    await queue.run({}, () => ({ result: 'running', done: new Promise<void>(resolve => { finish = resolve; }) }));
+    const abort = new AbortController();
+    const queued = queue.run({ signal: abort.signal, queueTimeoutMs: 5 }, () => hold());
+    const rejected = expect(queued).rejects.toBeInstanceOf(termination === 'cancel' ? AiExecutionCancelledError : AiQueueBusyError);
+    if (termination === 'cancel') abort.abort();
+    await rejected;
+    expect(getEventListeners(abort.signal, 'abort')).toHaveLength(0);
+    finish();
+  });
+
   it('start 抛错释放槽位，后续任务可启动', async () => {
     const queue = makeQueue({ AI_EXECUTION_CONCURRENCY: '1' });
     const t1 = queue.run({}, () => {

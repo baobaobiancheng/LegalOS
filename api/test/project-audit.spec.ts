@@ -174,6 +174,65 @@ describe('ProjectService 平台审计', () => {
     expect(prisma.outboxEvent.create).not.toHaveBeenCalled();
   });
 
+  it('CRM 工单不能通过通用 PATCH 绕过正式回传用例', async () => {
+    prisma.project.findUnique.mockResolvedValue({
+      ...baseProject, sourceAppId: 'crm-legal', crmTaskId: 'task-1',
+    });
+
+    await expect(service.update('p-1', { status: '已回传', result: '未确认结论' }, {
+      id: 'bp-1', role: 'legal_bp',
+    })).rejects.toMatchObject({ status: 409 });
+    expect(prisma.project.updateMany).not.toHaveBeenCalled();
+    expect(prisma.outboxEvent.create).not.toHaveBeenCalled();
+  });
+
+  it.each(['pending', 'sending', 'delivered', 'failed', 'dead'])('CRM %s 阶段不能改写已确认结论', async (crmDeliveryStatus) => {
+    prisma.project.findUnique.mockResolvedValue({
+      ...baseProject, sourceAppId: 'crm-legal', crmTaskId: 'task-1',
+      status: '已回传', reviewStatus: 'review_completed', result: '已确认结论', crmDeliveryStatus,
+    });
+
+    await expect(service.update('p-1', { result: '未经确认的新结论' }, {
+      id: 'admin-1', role: 'admin',
+    })).rejects.toMatchObject({ status: 409 });
+    expect(prisma.project.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('在 PATCH 等待行锁期间完成审核，也必须拒绝覆盖结论', async () => {
+    const crmProject = { ...baseProject, sourceAppId: 'crm-legal', crmTaskId: 'task-1' };
+    prisma.$queryRaw = vi.fn().mockResolvedValue([]);
+    prisma.project.findUnique.mockResolvedValueOnce(crmProject).mockResolvedValue({
+      ...crmProject, status: '已回传', reviewStatus: 'review_completed', result: '并发确认的结论',
+    });
+
+    await expect(service.update('p-1', { result: '过时编辑' }, {
+      id: 'bp-1', role: 'legal_bp',
+    })).rejects.toMatchObject({ status: 409 });
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+    expect(prisma.project.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('CRM 审核前仍可保存结论草稿', async () => {
+    prisma.project.findUnique.mockResolvedValue({
+      ...baseProject, sourceAppId: 'crm-legal', crmTaskId: 'task-1',
+    });
+    await service.update('p-1', { result: '草稿' }, { id: 'bp-1', role: 'legal_bp' });
+    expect(prisma.project.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: { result: '草稿' } }));
+  });
+
+  it('完成后的相同结论重放及风险更新不受影响', async () => {
+    prisma.project.findUnique.mockResolvedValue({
+      ...baseProject, sourceAppId: 'crm-legal', crmTaskId: 'task-1',
+      status: '已回传', reviewStatus: 'review_completed', result: '已确认结论',
+    });
+    await service.update('p-1', { result: '已确认结论', status: '已回传', risk: 'P0' }, {
+      id: 'bp-1', role: 'legal_bp',
+    });
+    expect(prisma.project.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { result: '已确认结论', status: '已回传', risk: 'P0' },
+    }));
+  });
+
   it('CRM 回传文件不是法务角色上传的权威版本时拒绝完成', async () => {
     const crmProject = {
       ...baseProject,

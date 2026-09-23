@@ -17,7 +17,7 @@ import {
 } from './adapters/adapter.interfaces';
 import { CreateProjectDto, CreateProjectMessageDto, ReplyProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
-import { Prisma, Role } from '@prisma/client';
+import { Prisma, Project, Role } from '@prisma/client';
 import { ConsultationReplyOrchestrator } from './application/consultation-reply.orchestrator';
 import { formatEventTime } from '../../common/utils/event-time';
 import { ProjectAccessPolicy } from './domain/project-access.policy';
@@ -208,6 +208,7 @@ export class ProjectService {
     const project = await this.prisma.project.findUnique({ where: { id } });
     if (!project) throw new NotFoundException('工单不存在');
     this.accessPolicy.assertCan(actor, ProjectAction.Update, project);
+    this.assertPatchPreservesReview(project, dto);
 
     // 字段受限（5.2 权限矩阵）：legal_bp 只能更新状态/风险/结果，不能改指派/路由（转派属 lead/admin）
     if (actor.role === 'legal_bp') {
@@ -276,6 +277,7 @@ export class ProjectService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const before = await this.lockProjectForAudit(tx, id, project);
       this.accessPolicy.assertCan(actor, ProjectAction.Update, before);
+      this.assertPatchPreservesReview(before, dto);
       if (dto.legalBpId) await requireActiveLegalAssignee(tx, dto.legalBpId);
       if (dto.ownerId) await requireActiveLegalAssignee(tx, dto.ownerId);
       if (dto.status && dto.status !== before.status && !this.stateMachine.canTransition(before.status, dto.status)) {
@@ -832,6 +834,19 @@ export class ProjectService {
   // ═══════════════════════════════════════════
   // 内部方法
   // ═══════════════════════════════════════════
+
+  private assertPatchPreservesReview(
+    project: Pick<Project, 'sourceAppId' | 'crmTaskId' | 'status' | 'reviewStatus' | 'result'>,
+    dto: UpdateProjectDto,
+  ): void {
+    if (project.sourceAppId && project.crmTaskId && dto.status === '已回传' && project.status !== '已回传') {
+      throw new ConflictException('CRM 工单必须通过正式回传完成审核并确认交付文件');
+    }
+    // Worker 重读 Project.result；人工确认后冻结结论，避免交付与确认记录不一致。
+    if (project.reviewStatus === 'review_completed' && dto.result !== undefined && dto.result !== project.result) {
+      throw new ConflictException('人工审核已完成，不能修改已确认结论');
+    }
+  }
 
   /** MySQL 生产路径锁定工单后再采集 before，避免并发转派/状态变更使审计快照失真。 */
   private async lockProjectForAudit(tx: Prisma.TransactionClient, projectId: string, testFallback: any) {
